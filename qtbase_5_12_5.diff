@@ -1,0 +1,555 @@
+diff --git a/src/corelib/kernel/qcore_mac_objc.mm b/src/corelib/kernel/qcore_mac_objc.mm
+index 266faca0ed..cf9dafb6d8 100644
+--- a/src/corelib/kernel/qcore_mac_objc.mm
++++ b/src/corelib/kernel/qcore_mac_objc.mm
+@@ -140,7 +140,8 @@ QMacAutoReleasePool::QMacAutoReleasePool()
+ {
+     Class trackerClass = [QMacAutoReleasePoolTracker class];
+ 
+-#ifdef QT_DEBUG
++// Patch: Disable this debug code because it is very slow.
++#ifdef QT_DEBUG____REMOVED
+     void *poolFrame = nullptr;
+     if (__builtin_available(macOS 10.14, iOS 12.0, tvOS 12.0, watchOS 5.0, *)) {
+         void *frame;
+diff --git a/src/gui/painting/qbezier.cpp b/src/gui/painting/qbezier.cpp
+index 65e6063fe4..fcf19a1a63 100644
+--- a/src/gui/painting/qbezier.cpp
++++ b/src/gui/painting/qbezier.cpp
+@@ -400,6 +400,33 @@ static bool addCircle(const QBezier *b, qreal offset, QBezier *o)
+     return true;
+ }
+ 
++// Patch: Workaround VS2019 compiler bug, see QTBUG-75280.
++#ifdef Q_OS_WIN
++Q_NEVER_INLINE void QBezier::split(QBezier *firstHalf, QBezier *secondHalf) const
++{
++    Q_ASSERT(firstHalf);
++    Q_ASSERT(secondHalf);
++
++    qreal c = (x2 + x3)*.5;
++    firstHalf->x2 = (x1 + x2)*.5;
++    secondHalf->x3 = (x3 + x4)*.5;
++    firstHalf->x1 = x1;
++    secondHalf->x4 = x4;
++    firstHalf->x3 = (firstHalf->x2 + c)*.5;
++    secondHalf->x2 = (secondHalf->x3 + c)*.5;
++    firstHalf->x4 = secondHalf->x1 = (firstHalf->x3 + secondHalf->x2)*.5;
++
++    c = (y2 + y3)/2;
++    firstHalf->y2 = (y1 + y2)*.5;
++    secondHalf->y3 = (y3 + y4)*.5;
++    firstHalf->y1 = y1;
++    secondHalf->y4 = y4;
++    firstHalf->y3 = (firstHalf->y2 + c)*.5;
++    secondHalf->y2 = (secondHalf->y3 + c)*.5;
++    firstHalf->y4 = secondHalf->y1 = (firstHalf->y3 + secondHalf->y2)*.5;
++}
++#endif // Q_OS_WIN
++
+ int QBezier::shifted(QBezier *curveSegments, int maxSegments, qreal offset, float threshold) const
+ {
+     Q_ASSERT(curveSegments);
+diff --git a/src/gui/painting/qbezier_p.h b/src/gui/painting/qbezier_p.h
+index f8a91e9ef3..50c60b2d71 100644
+--- a/src/gui/painting/qbezier_p.h
++++ b/src/gui/painting/qbezier_p.h
+@@ -222,6 +222,8 @@ inline QPointF QBezier::secondDerivedAt(qreal t) const
+                        a * y1 + b * y2 + c * y3 + d * y4);
+ }
+ 
++// Patch: Workaround VS2019 compiler bug, see QTBUG-75280.
++#ifndef Q_OS_WIN
+ inline void QBezier::split(QBezier *firstHalf, QBezier *secondHalf) const
+ {
+     Q_ASSERT(firstHalf);
+@@ -245,6 +247,7 @@ inline void QBezier::split(QBezier *firstHalf, QBezier *secondHalf) const
+     secondHalf->y2 = (secondHalf->y3 + c)*.5;
+     firstHalf->y4 = secondHalf->y1 = (firstHalf->y3 + secondHalf->y2)*.5;
+ }
++#endif // Q_OS_WIN
+ 
+ inline void QBezier::parameterSplitLeft(qreal t, QBezier *left)
+ {
+diff --git a/src/gui/text/qinputcontrol.cpp b/src/gui/text/qinputcontrol.cpp
+index 3381fdb673..6036f052e9 100644
+--- a/src/gui/text/qinputcontrol.cpp
++++ b/src/gui/text/qinputcontrol.cpp
+@@ -40,6 +40,10 @@
+ #include "qinputcontrol_p.h"
+ #include <QtGui/qevent.h>
+ 
++// Patch: Enable Ctrl+key and Ctrl+Shift+key in all locales except German.
++// See https://github.com/telegramdesktop/tdesktop/pull/1185.
++#include <QtCore/QLocale>
++
+ QT_BEGIN_NAMESPACE
+ 
+ QInputControl::QInputControl(Type type, QObject *parent)
+@@ -67,9 +71,16 @@ bool QInputControl::isAcceptableInput(const QKeyEvent *event) const
+     if (c.category() == QChar::Other_Format)
+         return true;
+ 
+-    // QTBUG-35734: ignore Ctrl/Ctrl+Shift; accept only AltGr (Alt+Ctrl) on German keyboards
+-    if (event->modifiers() == Qt::ControlModifier
+-            || event->modifiers() == (Qt::ShiftModifier | Qt::ControlModifier)) {
++    // Patch: Enable Ctrl+key and Ctrl+Shift+key in all locales except German.
++    // See https://github.com/telegramdesktop/tdesktop/pull/1185.
++    bool skipCtrlAndCtrlShift = false;
++    if (QGuiApplication::inputMethod()->locale().language() == QLocale::German) {
++        if (event->modifiers() == Qt::ControlModifier
++            || event->modifiers() == (Qt::ControlModifier | Qt::ShiftModifier)) {
++            skipCtrlAndCtrlShift = true;
++        }
++    }
++    if (skipCtrlAndCtrlShift) {
+         return false;
+     }
+ 
+diff --git a/src/gui/text/qtextlayout.cpp b/src/gui/text/qtextlayout.cpp
+index f3f0caa379..c11a9e8896 100644
+--- a/src/gui/text/qtextlayout.cpp
++++ b/src/gui/text/qtextlayout.cpp
+@@ -706,6 +706,9 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
+         while (oldPos < len && !attributes[oldPos].graphemeBoundary)
+             oldPos++;
+     } else {
++        // Patch: Skip to the end of the current word, not to the start of the next one.
++        while (oldPos < len && attributes[oldPos].whiteSpace)
++            oldPos++;
+         if (oldPos < len && d->atWordSeparator(oldPos)) {
+             oldPos++;
+             while (oldPos < len && d->atWordSeparator(oldPos))
+@@ -714,8 +717,9 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
+             while (oldPos < len && !attributes[oldPos].whiteSpace && !d->atWordSeparator(oldPos))
+                 oldPos++;
+         }
+-        while (oldPos < len && attributes[oldPos].whiteSpace)
+-            oldPos++;
++        // Patch: Skip to the end of the current word, not to the start of the next one.
++        //while (oldPos < len && attributes[oldPos].whiteSpace)
++        //    oldPos++;
+     }
+ 
+     return oldPos;
+diff --git a/src/plugins/platforminputcontexts/compose/qcomposeplatforminputcontext.cpp b/src/plugins/platforminputcontexts/compose/qcomposeplatforminputcontext.cpp
+index 81a730232c..42bab9aa4b 100644
+--- a/src/plugins/platforminputcontexts/compose/qcomposeplatforminputcontext.cpp
++++ b/src/plugins/platforminputcontexts/compose/qcomposeplatforminputcontext.cpp
+@@ -273,6 +273,12 @@ bool QComposeInputContext::checkComposeTable()
+ 
+ void QComposeInputContext::commitText(uint character) const
+ {
++    // Patch: Crash fix when not focused widget still receives input events.
++    if (!m_focusObject) {
++        qWarning("QComposeInputContext::commitText: m_focusObject == nullptr, cannot commit text");
++        return;
++    }
++
+     QInputMethodEvent event;
+     event.setCommitString(QChar(character));
+     QCoreApplication::sendEvent(m_focusObject, &event);
+diff --git a/src/plugins/platforminputcontexts/platforminputcontexts.pro b/src/plugins/platforminputcontexts/platforminputcontexts.pro
+index ed6b1b8702..d17c6baa99 100644
+--- a/src/plugins/platforminputcontexts/platforminputcontexts.pro
++++ b/src/plugins/platforminputcontexts/platforminputcontexts.pro
+@@ -2,7 +2,8 @@ TEMPLATE = subdirs
+ QT_FOR_CONFIG += gui-private
+ 
+ qtHaveModule(dbus) {
+-!mac:!win32:SUBDIRS += ibus
++# Patch: Adding fcitx/hime/nimf input context plugin to our static build.
++!mac:!win32:SUBDIRS += ibus fcitx hime nimf
+ }
+ 
+ qtConfig(xcb): SUBDIRS += compose
+diff --git a/src/plugins/platforms/cocoa/qcocoaapplicationdelegate.mm b/src/plugins/platforms/cocoa/qcocoaapplicationdelegate.mm
+index 2cf6672da9..ef25bb4541 100644
+--- a/src/plugins/platforms/cocoa/qcocoaapplicationdelegate.mm
++++ b/src/plugins/platforms/cocoa/qcocoaapplicationdelegate.mm
+@@ -175,7 +175,8 @@ QT_USE_NAMESPACE
+     if (reflectionDelegate) {
+         if ([reflectionDelegate respondsToSelector:@selector(applicationShouldTerminate:)])
+             return [reflectionDelegate applicationShouldTerminate:sender];
+-        return NSTerminateNow;
++        // Patch: Don't terminate if reflectionDelegate does not respond to that selector, just use the default.
++        //return NSTerminateNow;
+     }
+ 
+     if ([self canQuit]) {
+@@ -252,7 +253,11 @@ QT_USE_NAMESPACE
+ 
+ - (void)applicationDidFinishLaunching:(NSNotification *)aNotification
+ {
+-    Q_UNUSED(aNotification);
++    // Patch: We need to catch that notification in delegate.
++    if (reflectionDelegate
++        && [reflectionDelegate respondsToSelector:@selector(applicationDidFinishLaunching:)])
++        [reflectionDelegate applicationDidFinishLaunching:aNotification];
++
+     inLaunch = false;
+ 
+     if (qEnvironmentVariableIsEmpty("QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM")) {
+diff --git a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm b/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
+index 597cfa8318..579d79734d 100644
+--- a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
++++ b/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
+@@ -96,12 +96,17 @@ QT_USE_NAMESPACE
+ 
+ @interface QT_MANGLE_NAMESPACE(QNSStatusItem) : NSObject <NSUserNotificationCenterDelegate>
+ @property (nonatomic, assign) QCocoaMenu *menu;
++// Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++@property (nonatomic, assign) bool menuVisible;
++@property (nonatomic, readonly) bool iconSelected;
+ @property (nonatomic, assign) QIcon icon;
+ @property (nonatomic, readonly) NSStatusItem *item;
+ @property (nonatomic, readonly) QRectF geometry;
+ - (instancetype)initWithSysTray:(QCocoaSystemTrayIcon *)systray;
+ - (void)triggerSelector:(id)sender button:(Qt::MouseButton)mouseButton;
+ - (void)doubleClickSelector:(id)sender;
++- (void)setIconSelected:(bool)selected;
++- (bool)hasMenu;
+ @end
+ 
+ @interface QT_MANGLE_NAMESPACE(QNSImageView) : NSImageView
+@@ -173,7 +178,10 @@ void QCocoaSystemTrayIcon::updateIcon(const QIcon &icon)
+     // (device independent pixels). The menu height on past and
+     // current OS X versions is 22 points. Provide some future-proofing
+     // by deriving the icon height from the menu height.
+-    const int padding = 4;
++
++    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++    const int padding = 0;
++
+     const int menuHeight = [[NSStatusBar systemStatusBar] thickness];
+     const int maxImageHeight = menuHeight - padding;
+ 
+@@ -183,8 +191,12 @@ void QCocoaSystemTrayIcon::updateIcon(const QIcon &icon)
+     // devicePixelRatio for the "best" screen on the system.
+     qreal devicePixelRatio = qApp->devicePixelRatio();
+     const int maxPixmapHeight = maxImageHeight * devicePixelRatio;
++
++    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++    const QIcon::Mode mode = m_sys->item.iconSelected ? QIcon::Selected : QIcon::Normal;
++
+     QSize selectedSize;
+-    Q_FOREACH (const QSize& size, sortByHeight(icon.availableSizes())) {
++    Q_FOREACH (const QSize& size, sortByHeight(icon.availableSizes(mode))) {
+         // Select a pixmap based on the height. We want the largest pixmap
+         // with a height smaller or equal to maxPixmapHeight. The pixmap
+         // may rectangular; assume it has a reasonable size. If there is
+@@ -200,9 +212,9 @@ void QCocoaSystemTrayIcon::updateIcon(const QIcon &icon)
+ 
+     // Handle SVG icons, which do not return anything for availableSizes().
+     if (!selectedSize.isValid())
+-        selectedSize = icon.actualSize(QSize(maxPixmapHeight, maxPixmapHeight));
++        selectedSize = icon.actualSize(QSize(maxPixmapHeight, maxPixmapHeight), mode);
+ 
+-    QPixmap pixmap = icon.pixmap(selectedSize);
++    QPixmap pixmap = icon.pixmap(selectedSize, mode);
+ 
+     // Draw a low-resolution icon if there is not enough pixels for a retina
+     // icon. This prevents showing a small icon on retina displays.
+@@ -301,6 +313,10 @@ QT_END_NAMESPACE
+ {
+     self.down = NO;
+ 
++    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++    [self.parent setIconSelected:false];
++    self.parent.menuVisible = false;
++
+     [self setNeedsDisplay:YES];
+ }
+ 
+@@ -310,6 +326,9 @@ QT_END_NAMESPACE
+     int clickCount = [mouseEvent clickCount];
+     [self setNeedsDisplay:YES];
+ 
++    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++    [self.parent setIconSelected:((clickCount != 2) && [self.parent hasMenu])];
++
+     if (clickCount == 2) {
+         [self menuTrackingDone:nil];
+         [self.parent doubleClickSelector:self];
+@@ -326,6 +345,10 @@ QT_END_NAMESPACE
+ - (void)mouseUp:(NSEvent *)mouseEvent
+ {
+     Q_UNUSED(mouseEvent);
++
++    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++    [self.parent setIconSelected:false];
++
+     [self menuTrackingDone:nil];
+ }
+ 
+@@ -337,6 +360,10 @@ QT_END_NAMESPACE
+ - (void)rightMouseUp:(NSEvent *)mouseEvent
+ {
+     Q_UNUSED(mouseEvent);
++
++    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++    [self.parent setIconSelected:false];
++
+     [self menuTrackingDone:nil];
+ }
+ 
+@@ -352,7 +379,8 @@ QT_END_NAMESPACE
+ }
+ 
+ - (void)drawRect:(NSRect)rect {
+-    [[self.parent item] drawStatusBarBackgroundInRect:rect withHighlight:self.down];
++    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++    [[self.parent item] drawStatusBarBackgroundInRect:rect withHighlight:([self.parent hasMenu] && self.down)];
+     [super drawRect:rect];
+ }
+ @end
+@@ -372,6 +400,10 @@ QT_END_NAMESPACE
+     if (self) {
+         item = [[[NSStatusBar systemStatusBar] statusItemWithLength:NSSquareStatusItemLength] retain];
+         menu = nullptr;
++
++        // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++        self.menuVisible = false;
++
+         systray = sys;
+         imageCell = [[QNSImageView alloc] initWithParent:self];
+         [item setView: imageCell];
+@@ -382,6 +414,11 @@ QT_END_NAMESPACE
+ - (void)dealloc {
+     [[NSStatusBar systemStatusBar] removeStatusItem:item];
+     [[NSNotificationCenter defaultCenter] removeObserver:imageCell];
++
++    // Patch: Fix crash in macOS 10.14.
++    // Somehow item and imageCell are retained and attempt to be drawn if left in view.
++    [item setView: nil];
++
+     imageCell.parent = nil;
+     [imageCell release];
+     [item release];
+@@ -416,6 +453,10 @@ QT_END_NAMESPACE
+          selector:@selector(menuTrackingDone:)
+              name:NSMenuDidEndTrackingNotification
+                  object:m];
++
++        // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++        self.menuVisible = true;
++
+         [item popUpStatusItemMenu: m];
+     }
+ }
+@@ -427,6 +468,15 @@ QT_END_NAMESPACE
+     emit systray->activated(QPlatformSystemTrayIcon::DoubleClick);
+ }
+ 
++- (void)setIconSelected:(bool)selected {
++    _iconSelected = selected;
++    systray->updateIcon(icon);
++}
++
++- (bool)hasMenu {
++    return menu != nil;
++}
++
+ - (BOOL)userNotificationCenter:(NSUserNotificationCenter *)center shouldPresentNotification:(NSUserNotification *)notification {
+     Q_UNUSED(center);
+     Q_UNUSED(notification);
+diff --git a/src/plugins/platforms/cocoa/qnsview_keys.mm b/src/plugins/platforms/cocoa/qnsview_keys.mm
+index ad751279bb..9a9d19693e 100644
+--- a/src/plugins/platforms/cocoa/qnsview_keys.mm
++++ b/src/plugins/platforms/cocoa/qnsview_keys.mm
+@@ -86,21 +86,29 @@
+     quint32 nativeVirtualKey = [nsevent keyCode];
+ 
+     QChar ch = QChar::ReplacementCharacter;
+-    int keyCode = Qt::Key_unknown;
+-
+-    // If a dead key occurs as a result of pressing a key combination then
+-    // characters will have 0 length, but charactersIgnoringModifiers will
+-    // have a valid character in it. This enables key combinations such as
+-    // ALT+E to be used as a shortcut with an English keyboard even though
+-    // pressing ALT+E will give a dead key while doing normal text input.
+-    if ([characters length] != 0 || [charactersIgnoringModifiers length] != 0) {
+-        auto ctrlOrMetaModifier = qApp->testAttribute(Qt::AA_MacDontSwapCtrlAndMeta) ? Qt::ControlModifier : Qt::MetaModifier;
+-        if (((modifiers & ctrlOrMetaModifier) || (modifiers & Qt::AltModifier)) && ([charactersIgnoringModifiers length] != 0))
+-            ch = QChar([charactersIgnoringModifiers characterAtIndex:0]);
+-        else if ([characters length] != 0)
+-            ch = QChar([characters characterAtIndex:0]);
+-        keyCode = [self convertKeyCode:ch];
+-    }
++
++    // Patch: Fix Alt+.. shortcuts in OS X. See https://bugreports.qt.io/browse/QTBUG-42584 at the end.
++    if ([characters length] != 0)
++        ch = QChar([characters characterAtIndex:0]);
++    else if ([charactersIgnoringModifiers length] != 0 && ((modifiers & Qt::MetaModifier) || (modifiers & Qt::AltModifier)))
++        ch = QChar([charactersIgnoringModifiers characterAtIndex:0]);
++
++    int keyCode = [self convertKeyCode:ch];
++    // int keyCode = Qt::Key_unknown;
++
++    // // If a dead key occurs as a result of pressing a key combination then
++    // // characters will have 0 length, but charactersIgnoringModifiers will
++    // // have a valid character in it. This enables key combinations such as
++    // // ALT+E to be used as a shortcut with an English keyboard even though
++    // // pressing ALT+E will give a dead key while doing normal text input.
++    // if ([characters length] != 0 || [charactersIgnoringModifiers length] != 0) {
++    //     auto ctrlOrMetaModifier = qApp->testAttribute(Qt::AA_MacDontSwapCtrlAndMeta) ? Qt::ControlModifier : Qt::MetaModifier;
++    //     if (((modifiers & ctrlOrMetaModifier) || (modifiers & Qt::AltModifier)) && ([charactersIgnoringModifiers length] != 0))
++    //         ch = QChar([charactersIgnoringModifiers characterAtIndex:0]);
++    //     else if ([characters length] != 0)
++    //         ch = QChar([characters characterAtIndex:0]);
++    //     keyCode = [self convertKeyCode:ch];
++    // }
+ 
+     // we will send a key event unless the input method sets m_sendKeyEvent to false
+     m_sendKeyEvent = true;
+@@ -196,6 +204,23 @@
+         [super keyUp:nsevent];
+ }
+ 
++// Patch: Enable Ctrl+Tab and Ctrl+Shift+Tab / Ctrl+Backtab handle in-app.
++- (BOOL)performKeyEquivalent:(NSEvent *)nsevent
++{
++    NSString *chars = [nsevent charactersIgnoringModifiers];
++
++    if ([nsevent type] == NSKeyDown && [chars length] > 0) {
++        QChar ch = [chars characterAtIndex:0];
++        Qt::Key qtKey = qt_mac_cocoaKey2QtKey(ch);
++        if ([nsevent modifierFlags] & NSControlKeyMask
++                && (qtKey == Qt::Key_Tab || qtKey == Qt::Key_Backtab)) {
++            [self handleKeyEvent:nsevent eventType:int(QEvent::KeyPress)];
++            return YES;
++        }
++    }
++    return [super performKeyEquivalent:nsevent];
++}
++
+ - (void)cancelOperation:(id)sender
+ {
+     Q_UNUSED(sender);
+diff --git a/src/plugins/platforms/windows/qwindowsdialoghelpers.cpp b/src/plugins/platforms/windows/qwindowsdialoghelpers.cpp
+index 9de3268fc8..a5de27ecbe 100644
+--- a/src/plugins/platforms/windows/qwindowsdialoghelpers.cpp
++++ b/src/plugins/platforms/windows/qwindowsdialoghelpers.cpp
+@@ -1456,7 +1456,8 @@ static QString createTemporaryItemCopy(QWindowsShellItem &qItem, QString *errorM
+ static QUrl itemToDialogUrl(QWindowsShellItem &qItem, QString *errorMessage)
+ {
+     QUrl url = qItem.url();
+-    if (url.isLocalFile() || url.scheme().startsWith(QLatin1String("http")))
++    // Patch: Make loaded 'http' resources copy.
++    if (url.isLocalFile()/*|| url.scheme().startsWith(QLatin1String("http"))*/)
+         return url;
+     const QString path = qItem.path();
+     if (path.isEmpty() && !qItem.isDir() && qItem.canStream()) {
+diff --git a/src/plugins/platforms/windows/qwindowsservices.cpp b/src/plugins/platforms/windows/qwindowsservices.cpp
+index 9504513a5e..811f3d62bd 100644
+--- a/src/plugins/platforms/windows/qwindowsservices.cpp
++++ b/src/plugins/platforms/windows/qwindowsservices.cpp
+@@ -125,6 +125,10 @@ static inline bool launchMail(const QUrl &url)
+             command.prepend(doubleQuote);
+         }
+     }
++
++    // Patch: Fix mail launch if no param is expected in this command.
++    if (command.indexOf(QStringLiteral("%1")) < 0) return false;
++
+     // Pass the url as the parameter. Should use QProcess::startDetached(),
+     // but that cannot handle a Windows command line [yet].
+     command.replace(QLatin1String("%1"), url.toString(QUrl::FullyEncoded));
+diff --git a/src/widgets/kernel/qwidget.cpp b/src/widgets/kernel/qwidget.cpp
+index bf339ca5c5..4cdf9189ad 100644
+--- a/src/widgets/kernel/qwidget.cpp
++++ b/src/widgets/kernel/qwidget.cpp
+@@ -5161,6 +5161,17 @@ void QWidget::render(QPainter *painter, const QPoint &targetOffset,
+         return; // Fully transparent.
+ 
+     Q_D(QWidget);
++
++    // Patch: save and restore dirtyOpaqueChildren field.
++    //
++    // Just like in QWidget::grab() this field should be restored
++    // after the d->render() call, because it will be set to 1 and
++    // opaqueChildren field will be filled with empty region in
++    // case the widget is hidden (because all the opaque children
++    // will be skipped in isVisible() check).
++    //
++    const bool oldDirtyOpaqueChildren = d->dirtyOpaqueChildren;
++
+     const bool inRenderWithPainter = d->extra && d->extra->inRenderWithPainter;
+     const QRegion toBePainted = !inRenderWithPainter ? d->prepareToRender(sourceRegion, renderFlags)
+                                                      : sourceRegion;
+@@ -5182,6 +5193,10 @@ void QWidget::render(QPainter *painter, const QPoint &targetOffset,
+     if (!inRenderWithPainter && (opacity < 1.0 || (target->devType() == QInternal::Printer))) {
+         d->render_helper(painter, targetOffset, toBePainted, renderFlags);
+         d->extra->inRenderWithPainter = inRenderWithPainter;
++
++        // Patch: save and restore dirtyOpaqueChildren field.
++        d->dirtyOpaqueChildren = oldDirtyOpaqueChildren;
++
+         return;
+     }
+ 
+@@ -5214,6 +5229,9 @@ void QWidget::render(QPainter *painter, const QPoint &targetOffset,
+     d->setSharedPainter(oldPainter);
+ 
+     d->extra->inRenderWithPainter = inRenderWithPainter;
++
++    // Patch: save and restore dirtyOpaqueChildren field.
++    d->dirtyOpaqueChildren = oldDirtyOpaqueChildren;
+ }
+ 
+ static void sendResizeEvents(QWidget *target)
+@@ -8968,7 +8986,8 @@ bool QWidget::event(QEvent *event)
+     case QEvent::KeyPress: {
+         QKeyEvent *k = (QKeyEvent *)event;
+         bool res = false;
+-        if (!(k->modifiers() & (Qt::ControlModifier | Qt::AltModifier))) {  //### Add MetaModifier?
++        // Patch: Enable Ctrl+Tab and Ctrl+Shift+Tab / Ctrl+Backtab handle in-app.
++        if (!(k->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+             if (k->key() == Qt::Key_Backtab
+                 || (k->key() == Qt::Key_Tab && (k->modifiers() & Qt::ShiftModifier)))
+                 res = focusNextPrevChild(false);
+diff --git a/src/widgets/util/qsystemtrayicon_qpa.cpp b/src/widgets/util/qsystemtrayicon_qpa.cpp
+index c0bf058681..1c8b627d01 100644
+--- a/src/widgets/util/qsystemtrayicon_qpa.cpp
++++ b/src/widgets/util/qsystemtrayicon_qpa.cpp
+@@ -93,6 +93,10 @@ void QSystemTrayIconPrivate::updateMenu_sys()
+     if (qpa_sys && menu) {
+         addPlatformMenu(menu);
+         qpa_sys->updateMenu(menu->platformMenu());
++
++    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++    } else if (qpa_sys) {
++        qpa_sys->updateMenu(nullptr);
+     }
+ #endif
+ }
+diff --git a/src/widgets/widgets/qabstractscrollarea.cpp b/src/widgets/widgets/qabstractscrollarea.cpp
+index 598d173144..fd2e636563 100644
+--- a/src/widgets/widgets/qabstractscrollarea.cpp
++++ b/src/widgets/widgets/qabstractscrollarea.cpp
+@@ -655,15 +655,21 @@ scrolling range.
+ QSize QAbstractScrollArea::maximumViewportSize() const
+ {
+     Q_D(const QAbstractScrollArea);
+-    int hsbExt = d->hbar->sizeHint().height();
+-    int vsbExt = d->vbar->sizeHint().width();
++    // Patch: Count the sizeHint of the bar only if it is displayed.
++    //int hsbExt = d->hbar->sizeHint().height();
++    //int vsbExt = d->vbar->sizeHint().width();
+ 
+     int f = 2 * d->frameWidth;
+     QSize max = size() - QSize(f + d->left + d->right, f + d->top + d->bottom);
+-    if (d->vbarpolicy == Qt::ScrollBarAlwaysOn)
++    // Patch: Count the sizeHint of the bar only if it is displayed.
++    if (d->vbarpolicy == Qt::ScrollBarAlwaysOn) {
++        int vsbExt = d->vbar->sizeHint().width();
+         max.rwidth() -= vsbExt;
+-    if (d->hbarpolicy == Qt::ScrollBarAlwaysOn)
++    }
++    if (d->hbarpolicy == Qt::ScrollBarAlwaysOn) {
++        int hsbExt = d->hbar->sizeHint().height();
+         max.rheight() -= hsbExt;
++    }
+     return max;
+ }
+ 
