@@ -107,19 +107,19 @@ index 3381fdb673..6036f052e9 100644
      }
  
 diff --git a/src/gui/text/qtextengine.cpp b/src/gui/text/qtextengine.cpp
-index a7834587b1..275e9a63a5 100644
+index a7834587b1..9a1fe9f5d5 100644
 --- a/src/gui/text/qtextengine.cpp
 +++ b/src/gui/text/qtextengine.cpp
-@@ -3028,7 +3028,7 @@ bool QTextEngine::atWordSeparator(int position) const
+@@ -3028,7 +3028,8 @@ bool QTextEngine::atWordSeparator(int position) const
      case '&':
      case '^':
      case '*':
 -    case '\'':
 +    // Patch: Make the apostrophe a non-separator for words.
++    //case '\'':
      case '"':
      case '`':
      case '~':
- 
 diff --git a/src/gui/text/qtextlayout.cpp b/src/gui/text/qtextlayout.cpp
 index f3f0caa379..c11a9e8896 100644
 --- a/src/gui/text/qtextlayout.cpp
@@ -469,6 +469,55 @@ index 9504513a5e..811f3d62bd 100644
      // Pass the url as the parameter. Should use QProcess::startDetached(),
      // but that cannot handle a Windows command line [yet].
      command.replace(QLatin1String("%1"), url.toString(QUrl::FullyEncoded));
+diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
+index 7d511bf0d7..da3879cb56 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.cpp
++++ b/src/plugins/platforms/windows/qwindowswindow.cpp
+@@ -1351,7 +1351,8 @@ void QWindowsWindow::destroyWindow()
+         for (QWindow *w : tlw) {
+             if (w->transientParent() == window()) {
+                 if (QWindowsWindow *tw = QWindowsWindow::windowsWindowOf(w))
+-                    tw->updateTransientParent();
++                    // Patch: Fix possibility of add / remove taskbar icon of the window.
++                    tw->clearTransientParent();
+             }
+         }
+         QWindowsContext *context = QWindowsContext::instance();
+@@ -1579,6 +1580,19 @@ void QWindowsWindow::updateTransientParent() const
+     // window is found, which can cause issues with modality. Loop up to top level.
+     while (newTransientParent && (GetWindowLongPtr(newTransientParent, GWL_STYLE) & WS_CHILD) != 0)
+         newTransientParent = GetParent(newTransientParent);
++    // Patch: Fix possibility of add / remove taskbar icon of the window.
++    if (newTransientParent && newTransientParent != oldTransientParent)
++        SetWindowLongPtr(m_data.hwnd, GWL_HWNDPARENT, (LONG_PTR)newTransientParent);
++}
++
++// Patch: Fix possibility of add / remove taskbar icon of the window.
++void QWindowsWindow::clearTransientParent() const
++{
++    if (window()->type() == Qt::Popup)
++        return; // QTBUG-34503, // a popup stays on top, no parent, see also WindowCreationData::fromWindow().
++    // Update transient parent.
++    const HWND oldTransientParent = GetWindow(m_data.hwnd, GW_OWNER);
++    HWND newTransientParent = 0;
+ 
+     if (newTransientParent != oldTransientParent)
+         SetWindowLongPtr(m_data.hwnd, GWL_HWNDPARENT, LONG_PTR(newTransientParent));
+diff --git a/src/plugins/platforms/windows/qwindowswindow.h b/src/plugins/platforms/windows/qwindowswindow.h
+index ce67e46df3..a60edc151f 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.h
++++ b/src/plugins/platforms/windows/qwindowswindow.h
+@@ -353,6 +353,10 @@ private:
+     inline void setWindowState_sys(Qt::WindowStates newState);
+     inline void setParent_sys(const QPlatformWindow *parent);
+     inline void updateTransientParent() const;
++
++    // Patch: Fix possibility of add / remove taskbar icon of the window.
++    inline void clearTransientParent() const;
++
+     void destroyWindow();
+     inline bool isDropSiteEnabled() const { return m_dropTarget != 0; }
+     void setDropSiteEnabled(bool enabled);
 diff --git a/src/widgets/kernel/qwidget.cpp b/src/widgets/kernel/qwidget.cpp
 index bf339ca5c5..4cdf9189ad 100644
 --- a/src/widgets/kernel/qwidget.cpp
