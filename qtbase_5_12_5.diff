@@ -221,6 +221,20 @@ index 2cf6672da9..ef25bb4541 100644
      inLaunch = false;
  
      if (qEnvironmentVariableIsEmpty("QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM")) {
+diff --git a/src/plugins/platforms/cocoa/qcocoakeymapper.mm b/src/plugins/platforms/cocoa/qcocoakeymapper.mm
+index 350ae4b9be..457bb3408d 100644
+--- a/src/plugins/platforms/cocoa/qcocoakeymapper.mm
++++ b/src/plugins/platforms/cocoa/qcocoakeymapper.mm
+@@ -462,7 +462,8 @@ QList<int> QCocoaKeyMapper::possibleKeys(const QKeyEvent *event) const
+         Qt::KeyboardModifiers neededMods = ModsTbl[i];
+         int key = kbItem->qtKey[i];
+         if (key && key != baseKey && ((keyMods & neededMods) == neededMods)) {
+-            ret << int(key + (keyMods & ~neededMods));
++            // Patch: Fix non-english layout global shortcuts.
++            ret << int(key + neededMods);
+         }
+     }
+     return ret;
 diff --git a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm b/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
 index 597cfa8318..579d79734d 100644
 --- a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
