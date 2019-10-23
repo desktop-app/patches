@@ -235,6 +235,30 @@ index 350ae4b9be..457bb3408d 100644
          }
      }
      return ret;
+diff --git a/src/plugins/platforms/cocoa/qcocoasystemsettings.mm b/src/plugins/platforms/cocoa/qcocoasystemsettings.mm
+index 9b6dc94d33..2f67cbe467 100644
+--- a/src/plugins/platforms/cocoa/qcocoasystemsettings.mm
++++ b/src/plugins/platforms/cocoa/qcocoasystemsettings.mm
+@@ -83,13 +83,17 @@ QPalette * qt_mac_createSystemPalette()
+     palette->setColor(QPalette::Inactive, QPalette::Dark, QColor(191, 191, 191));
+ 
+     // System palette initialization:
+-    QBrush br = qt_mac_toQBrush([NSColor selectedControlColor]);
+-    palette->setBrush(QPalette::Active, QPalette::Highlight, br);
+     if (__builtin_available(macOS 10.14, *)) {
++        // Patch: Use colors consistently, otherwise selected text is invisible,
++        // if you choose Dark Mode with Graphite highlight color.
++        QBrush highlight = qt_mac_toQBrush([NSColor selectedContentBackgroundColor]);
++        palette->setBrush(QPalette::Active, QPalette::Highlight, highlight);
+         const auto inactiveHighlight = qt_mac_toQBrush([NSColor unemphasizedSelectedContentBackgroundColor]);
+         palette->setBrush(QPalette::Inactive, QPalette::Highlight, inactiveHighlight);
+         palette->setBrush(QPalette::Disabled, QPalette::Highlight, inactiveHighlight);
+     } else {
++        QBrush br = qt_mac_toQBrush([NSColor selectedControlColor]);
++        palette->setBrush(QPalette::Active, QPalette::Highlight, br);
+         palette->setBrush(QPalette::Inactive, QPalette::Highlight, br);
+         palette->setBrush(QPalette::Disabled, QPalette::Highlight, br);
+     }
 diff --git a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm b/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
 index 597cfa8318..579d79734d 100644
 --- a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
