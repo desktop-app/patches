@@ -714,7 +714,7 @@ index b70b29e54e..23e701493c 100644
 +    constexpr qreal kMarkerHeight = 3;
 +
 +    const qreal height = kMarkerHeight * factor;
-+    const qreal width = height * 3;
++    const qreal width = height * 2;
 +
 +    pixmap = QPixmap(qCeil(width), qFloor(height) * 2);
 +    pixmap.setDevicePixelRatio(qApp->devicePixelRatio());
