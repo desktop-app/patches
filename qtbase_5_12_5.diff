@@ -1,5 +1,5 @@
 diff --git a/src/corelib/kernel/qcore_mac_objc.mm b/src/corelib/kernel/qcore_mac_objc.mm
-index 266faca..cf9dafb 100644
+index 266faca0ed..cf9dafb6d8 100644
 --- a/src/corelib/kernel/qcore_mac_objc.mm
 +++ b/src/corelib/kernel/qcore_mac_objc.mm
 @@ -140,7 +140,8 @@ QMacAutoReleasePool::QMacAutoReleasePool()
@@ -13,7 +13,7 @@ index 266faca..cf9dafb 100644
      if (__builtin_available(macOS 10.14, iOS 12.0, tvOS 12.0, watchOS 5.0, *)) {
          void *frame;
 diff --git a/src/gui/kernel/qstylehints.cpp b/src/gui/kernel/qstylehints.cpp
-index 48060a2..fff3271 100644
+index 48060a2c37..fff3271ec9 100644
 --- a/src/gui/kernel/qstylehints.cpp
 +++ b/src/gui/kernel/qstylehints.cpp
 @@ -374,7 +374,11 @@ bool QStyleHints::showIsMaximized() const
@@ -30,7 +30,7 @@ index 48060a2..fff3271 100644
  
  /*!
 diff --git a/src/gui/painting/qbezier.cpp b/src/gui/painting/qbezier.cpp
-index 65e6063..fcf19a1 100644
+index 65e6063fe4..fcf19a1a63 100644
 --- a/src/gui/painting/qbezier.cpp
 +++ b/src/gui/painting/qbezier.cpp
 @@ -400,6 +400,33 @@ static bool addCircle(const QBezier *b, qreal offset, QBezier *o)
@@ -68,7 +68,7 @@ index 65e6063..fcf19a1 100644
  {
      Q_ASSERT(curveSegments);
 diff --git a/src/gui/painting/qbezier_p.h b/src/gui/painting/qbezier_p.h
-index f8a91e9..50c60b2 100644
+index f8a91e9ef3..50c60b2d71 100644
 --- a/src/gui/painting/qbezier_p.h
 +++ b/src/gui/painting/qbezier_p.h
 @@ -222,6 +222,8 @@ inline QPointF QBezier::secondDerivedAt(qreal t) const
@@ -89,7 +89,7 @@ index f8a91e9..50c60b2 100644
  inline void QBezier::parameterSplitLeft(qreal t, QBezier *left)
  {
 diff --git a/src/gui/painting/qpainter.cpp b/src/gui/painting/qpainter.cpp
-index b70b29e..9519894 100644
+index b70b29e54e..9519894076 100644
 --- a/src/gui/painting/qpainter.cpp
 +++ b/src/gui/painting/qpainter.cpp
 @@ -6245,6 +6245,91 @@ static QPixmap generateWavyPixmap(qreal maxRadius, const QPen &pen)
@@ -232,7 +232,7 @@ index b70b29e..9519894 100644
          painter->save();
          painter->translate(0, pos.y() + 1);
 diff --git a/src/gui/text/qinputcontrol.cpp b/src/gui/text/qinputcontrol.cpp
-index 3381fdb..6036f05 100644
+index 3381fdb673..6036f052e9 100644
 --- a/src/gui/text/qinputcontrol.cpp
 +++ b/src/gui/text/qinputcontrol.cpp
 @@ -40,6 +40,10 @@
@@ -266,20 +266,6 @@ index 3381fdb..6036f05 100644
          return false;
      }
  
-diff --git a/src/gui/text/qtextengine.cpp b/src/gui/text/qtextengine.cpp
-index a783458..9a1fe9f 100644
---- a/src/gui/text/qtextengine.cpp
-+++ b/src/gui/text/qtextengine.cpp
-@@ -3028,7 +3028,8 @@ bool QTextEngine::atWordSeparator(int position) const
-     case '&':
-     case '^':
-     case '*':
--    case '\'':
-+    // Patch: Make the apostrophe a non-separator for words.
-+    //case '\'':
-     case '"':
-     case '`':
-     case '~':
 diff --git a/src/gui/text/qtextcursor.cpp b/src/gui/text/qtextcursor.cpp
 index c88497840f..2b08d13834 100644
 --- a/src/gui/text/qtextcursor.cpp
@@ -310,10 +296,20 @@ index c88497840f..2b08d13834 100644
          break;
      }
 diff --git a/src/gui/text/qtextengine.cpp b/src/gui/text/qtextengine.cpp
-index a7834587b1..a89dfe228c 100644
+index a7834587b1..cabe897268 100644
 --- a/src/gui/text/qtextengine.cpp
 +++ b/src/gui/text/qtextengine.cpp
-@@ -3041,6 +3041,74 @@ bool QTextEngine::atWordSeparator(int position) const
+@@ -3028,7 +3028,8 @@ bool QTextEngine::atWordSeparator(int position) const
+     case '&':
+     case '^':
+     case '*':
+-    case '\'':
++    // Patch: Make the apostrophe a non-separator for words.
++    //case '\'':
+     case '"':
+     case '`':
+     case '~':
+@@ -3041,6 +3042,74 @@ bool QTextEngine::atWordSeparator(int position) const
      return false;
  }
  
@@ -462,7 +458,7 @@ index f3f0caa379..081c5f03c0 100644
  
      return oldPos;
 diff --git a/src/platformsupport/linuxaccessibility/constant_mappings.cpp b/src/platformsupport/linuxaccessibility/constant_mappings.cpp
-index fce2919..4a7d0f7 100644
+index fce2919e73..4a7d0f7d92 100644
 --- a/src/platformsupport/linuxaccessibility/constant_mappings.cpp
 +++ b/src/platformsupport/linuxaccessibility/constant_mappings.cpp
 @@ -79,7 +79,12 @@ quint64 spiStatesFromQState(QAccessible::State state)
@@ -479,7 +475,7 @@ index fce2919..4a7d0f7 100644
      if (state.defaultButton)
          setSpiStateBit(&spiState, ATSPI_STATE_IS_DEFAULT);
 diff --git a/src/plugins/platforminputcontexts/compose/qcomposeplatforminputcontext.cpp b/src/plugins/platforminputcontexts/compose/qcomposeplatforminputcontext.cpp
-index 81a7302..42bab9a 100644
+index 81a730232c..42bab9aa4b 100644
 --- a/src/plugins/platforminputcontexts/compose/qcomposeplatforminputcontext.cpp
 +++ b/src/plugins/platforminputcontexts/compose/qcomposeplatforminputcontext.cpp
 @@ -273,6 +273,12 @@ bool QComposeInputContext::checkComposeTable()
@@ -496,7 +492,7 @@ index 81a7302..42bab9a 100644
      event.setCommitString(QChar(character));
      QCoreApplication::sendEvent(m_focusObject, &event);
 diff --git a/src/plugins/platforminputcontexts/platforminputcontexts.pro b/src/plugins/platforminputcontexts/platforminputcontexts.pro
-index ed6b1b8..d17c6ba 100644
+index ed6b1b8702..d17c6baa99 100644
 --- a/src/plugins/platforminputcontexts/platforminputcontexts.pro
 +++ b/src/plugins/platforminputcontexts/platforminputcontexts.pro
 @@ -2,7 +2,8 @@ TEMPLATE = subdirs
@@ -510,7 +506,7 @@ index ed6b1b8..d17c6ba 100644
  
  qtConfig(xcb): SUBDIRS += compose
 diff --git a/src/plugins/platforms/cocoa/qcocoaapplicationdelegate.mm b/src/plugins/platforms/cocoa/qcocoaapplicationdelegate.mm
-index 2cf6672..ef25bb4 100644
+index 2cf6672da9..ef25bb4541 100644
 --- a/src/plugins/platforms/cocoa/qcocoaapplicationdelegate.mm
 +++ b/src/plugins/platforms/cocoa/qcocoaapplicationdelegate.mm
 @@ -175,7 +175,8 @@ QT_USE_NAMESPACE
@@ -537,7 +533,7 @@ index 2cf6672..ef25bb4 100644
  
      if (qEnvironmentVariableIsEmpty("QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM")) {
 diff --git a/src/plugins/platforms/cocoa/qcocoakeymapper.mm b/src/plugins/platforms/cocoa/qcocoakeymapper.mm
-index 350ae4b..457bb34 100644
+index 350ae4b9be..457bb3408d 100644
 --- a/src/plugins/platforms/cocoa/qcocoakeymapper.mm
 +++ b/src/plugins/platforms/cocoa/qcocoakeymapper.mm
 @@ -462,7 +462,8 @@ QList<int> QCocoaKeyMapper::possibleKeys(const QKeyEvent *event) const
@@ -551,7 +547,7 @@ index 350ae4b..457bb34 100644
      }
      return ret;
 diff --git a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm b/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
-index 597cfa8..579d797 100644
+index 597cfa8318..579d79734d 100644
 --- a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
 +++ b/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
 @@ -96,12 +96,17 @@ QT_USE_NAMESPACE
@@ -713,8 +709,28 @@ index 597cfa8..579d797 100644
  - (BOOL)userNotificationCenter:(NSUserNotificationCenter *)center shouldPresentNotification:(NSUserNotification *)notification {
      Q_UNUSED(center);
      Q_UNUSED(notification);
+diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms/cocoa/qcocoawindow.mm
+index 3008a056a2..d98eade4a3 100644
+--- a/src/plugins/platforms/cocoa/qcocoawindow.mm
++++ b/src/plugins/platforms/cocoa/qcocoawindow.mm
+@@ -499,6 +499,15 @@ NSUInteger QCocoaWindow::windowStyleMask(Qt::WindowFlags flags)
+     // Select base window type. Note that the value of NSBorderlessWindowMask is 0.
+     NSUInteger styleMask = (frameless || !resizable) ? NSWindowStyleMaskBorderless : NSWindowStyleMaskResizable;
+ 
++    // Patch: allow creating panels floating on all spaces in macOS.
++    // If you call "setCollectionBehavior:NSWindowCollectionBehaviorFullScreenAuxiliary" before
++    // setting the "NSWindowStyleMaskNonactivatingPanel" bit in the style mask it won't work after that.
++    // So we need a way to set that bit before Qt sets collection behavior the way it does.
++    QVariant nonactivatingPanelMask = window()->property("_td_macNonactivatingPanelMask");
++    if (nonactivatingPanelMask.isValid() && nonactivatingPanelMask.toBool()) {
++        styleMask |= NSWindowStyleMaskNonactivatingPanel;
++    }
++
+     if (frameless) {
+         // No further customizations for frameless since there are no window decorations.
+     } else if (flags & Qt::CustomizeWindowHint) {
 diff --git a/src/plugins/platforms/cocoa/qnsview_keys.mm b/src/plugins/platforms/cocoa/qnsview_keys.mm
-index ad75127..9a9d196 100644
+index ad751279bb..9a9d19693e 100644
 --- a/src/plugins/platforms/cocoa/qnsview_keys.mm
 +++ b/src/plugins/platforms/cocoa/qnsview_keys.mm
 @@ -86,21 +86,29 @@
@@ -787,7 +803,7 @@ index ad75127..9a9d196 100644
  {
      Q_UNUSED(sender);
 diff --git a/src/plugins/platforms/windows/qwindowsdialoghelpers.cpp b/src/plugins/platforms/windows/qwindowsdialoghelpers.cpp
-index 9de3268..8b281c9 100644
+index 9de3268fc8..8b281c95db 100644
 --- a/src/plugins/platforms/windows/qwindowsdialoghelpers.cpp
 +++ b/src/plugins/platforms/windows/qwindowsdialoghelpers.cpp
 @@ -1179,7 +1179,14 @@ void QWindowsNativeFileDialogBase::selectFile(const QString &fileName) const
@@ -817,7 +833,7 @@ index 9de3268..8b281c9 100644
      const QString path = qItem.path();
      if (path.isEmpty() && !qItem.isDir() && qItem.canStream()) {
 diff --git a/src/plugins/platforms/windows/qwindowsservices.cpp b/src/plugins/platforms/windows/qwindowsservices.cpp
-index 9504513..811f3d6 100644
+index 9504513a5e..811f3d62bd 100644
 --- a/src/plugins/platforms/windows/qwindowsservices.cpp
 +++ b/src/plugins/platforms/windows/qwindowsservices.cpp
 @@ -125,6 +125,10 @@ static inline bool launchMail(const QUrl &url)
@@ -832,7 +848,7 @@ index 9504513..811f3d6 100644
      // but that cannot handle a Windows command line [yet].
      command.replace(QLatin1String("%1"), url.toString(QUrl::FullyEncoded));
 diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
-index 7d511bf..da3879c 100644
+index 7d511bf0d7..da3879cb56 100644
 --- a/src/plugins/platforms/windows/qwindowswindow.cpp
 +++ b/src/plugins/platforms/windows/qwindowswindow.cpp
 @@ -1351,7 +1351,8 @@ void QWindowsWindow::destroyWindow()
@@ -866,7 +882,7 @@ index 7d511bf..da3879c 100644
      if (newTransientParent != oldTransientParent)
          SetWindowLongPtr(m_data.hwnd, GWL_HWNDPARENT, LONG_PTR(newTransientParent));
 diff --git a/src/plugins/platforms/windows/qwindowswindow.h b/src/plugins/platforms/windows/qwindowswindow.h
-index ce67e46..a60edc1 100644
+index ce67e46df3..a60edc151f 100644
 --- a/src/plugins/platforms/windows/qwindowswindow.h
 +++ b/src/plugins/platforms/windows/qwindowswindow.h
 @@ -353,6 +353,10 @@ private:
@@ -881,7 +897,7 @@ index ce67e46..a60edc1 100644
      inline bool isDropSiteEnabled() const { return m_dropTarget != 0; }
      void setDropSiteEnabled(bool enabled);
 diff --git a/src/widgets/kernel/qwidget.cpp b/src/widgets/kernel/qwidget.cpp
-index bf339ca..4cdf918 100644
+index bf339ca5c5..4cdf9189ad 100644
 --- a/src/widgets/kernel/qwidget.cpp
 +++ b/src/widgets/kernel/qwidget.cpp
 @@ -5161,6 +5161,17 @@ void QWidget::render(QPainter *painter, const QPoint &targetOffset,
@@ -934,7 +950,7 @@ index bf339ca..4cdf918 100644
                  || (k->key() == Qt::Key_Tab && (k->modifiers() & Qt::ShiftModifier)))
                  res = focusNextPrevChild(false);
 diff --git a/src/widgets/util/qsystemtrayicon_qpa.cpp b/src/widgets/util/qsystemtrayicon_qpa.cpp
-index c0bf058..1c8b627 100644
+index c0bf058681..1c8b627d01 100644
 --- a/src/widgets/util/qsystemtrayicon_qpa.cpp
 +++ b/src/widgets/util/qsystemtrayicon_qpa.cpp
 @@ -93,6 +93,10 @@ void QSystemTrayIconPrivate::updateMenu_sys()
@@ -949,7 +965,7 @@ index c0bf058..1c8b627 100644
  #endif
  }
 diff --git a/src/widgets/widgets/qabstractscrollarea.cpp b/src/widgets/widgets/qabstractscrollarea.cpp
-index 598d173..fd2e636 100644
+index 598d173144..fd2e636563 100644
 --- a/src/widgets/widgets/qabstractscrollarea.cpp
 +++ b/src/widgets/widgets/qabstractscrollarea.cpp
 @@ -655,15 +655,21 @@ scrolling range.
