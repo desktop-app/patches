@@ -35,6 +35,48 @@ index 391fbcc519..d07802bb7a 100644
              if (totalWritten == 0) {
                  // Note: Only return error if the first WriteFile failed.
                  q->setError(QFile::WriteError, qt_error_string());
+diff --git a/src/corelib/tools/qsimd_p.h b/src/corelib/tools/qsimd_p.h
+index d689654b29..582ec9936b 100644
+--- a/src/corelib/tools/qsimd_p.h
++++ b/src/corelib/tools/qsimd_p.h
+@@ -456,20 +456,23 @@ static __forceinline unsigned long _bit_scan_forward(uint val)
+     && !defined(Q_CC_INTEL)
+ // Clang is missing the intrinsic for _bit_scan_reverse
+ // GCC only added it in version 4.5
+-static inline __attribute__((always_inline))
+-unsigned _bit_scan_reverse(unsigned val)
+-{
+-    unsigned result;
+-    asm("bsr %1, %0" : "=r" (result) : "r" (val));
+-    return result;
+-}
+-static inline __attribute__((always_inline))
+-unsigned _bit_scan_forward(unsigned val)
+-{
+-    unsigned result;
+-    asm("bsf %1, %0" : "=r" (result) : "r" (val));
+-    return result;
+-}
++//
++// Patch: In Xcode 11.4 those are defined already.
++//
++//static inline __attribute__((always_inline))
++//unsigned _bit_scan_reverse(unsigned val)
++//{
++//    unsigned result;
++//    asm("bsr %1, %0" : "=r" (result) : "r" (val));
++//    return result;
++//}
++//static inline __attribute__((always_inline))
++//unsigned _bit_scan_forward(unsigned val)
++//{
++//    unsigned result;
++//    asm("bsf %1, %0" : "=r" (result) : "r" (val));
++//    return result;
++//}
+ #  endif
+ #endif // Q_PROCESSOR_X86
+ 
 diff --git a/src/corelib/tools/qunicodetables.cpp b/src/corelib/tools/qunicodetables.cpp
 index 14e4fd10aa..0619a176a7 100644
 --- a/src/corelib/tools/qunicodetables.cpp
