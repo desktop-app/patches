@@ -458,7 +458,7 @@ index f3f0caa379..081c5f03c0 100644
  
      return oldPos;
 diff --git a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
-index 9e6e5d88c7..4f43ee7bab 100644
+index 9e6e5d88c7..bfde9ac9ba 100644
 --- a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
 +++ b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
 @@ -1694,50 +1694,50 @@ HFONT QWindowsFontDatabase::systemFont()
@@ -470,7 +470,7 @@ index 9e6e5d88c7..4f43ee7bab 100644
 -    "SimSun",
 -    "PMingLiU",
 +    "Yu Gothic UI",
-+    "맑은 고딕",
++    "Malgun Gothic",
 +    "Microsoft YaHei",
 +    "Microsoft JhengHei UI",
      "Arial Unicode MS",
@@ -484,7 +484,7 @@ index 9e6e5d88c7..4f43ee7bab 100644
 -    "Gulim",
 -    "SimSun",
 -    "PMingLiU",
-+    "맑은 고딕",
++    "Malgun Gothic",
 +    "Microsoft YaHei",
 +    "Microsoft JhengHei UI",
      "Arial Unicode MS",
@@ -499,7 +499,7 @@ index 9e6e5d88c7..4f43ee7bab 100644
 -    "Gulim",
 -    "MS UI Gothic",
 +    "Microsoft JhengHei UI",
-+    "맑은 고딕",
++    "Malgun Gothic",
 +    "Yu Gothic UI",
      "Arial Unicode MS",
      0
@@ -513,7 +513,7 @@ index 9e6e5d88c7..4f43ee7bab 100644
 -    "Gulim",
 -    "MS UI Gothic",
 +    "Microsoft YaHei",
-+    "맑은 고딕",
++    "Malgun Gothic",
 +    "Yu Gothic UI",
      "Arial Unicode MS",
      0
@@ -521,7 +521,7 @@ index 9e6e5d88c7..4f43ee7bab 100644
  
  static const char *kr_tryFonts[] = {
 -    "Gulim",
-+    "맑은 고딕",
++    "Malgun Gothic",
      "Arial",
 -    "PMingLiU",
 -    "SimSun",
