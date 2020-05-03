@@ -566,20 +566,6 @@ index 81a730232c..42bab9aa4b 100644
      QInputMethodEvent event;
      event.setCommitString(QChar(character));
      QCoreApplication::sendEvent(m_focusObject, &event);
-diff --git a/src/plugins/platforminputcontexts/platforminputcontexts.pro b/src/plugins/platforminputcontexts/platforminputcontexts.pro
-index ed6b1b8702..d17c6baa99 100644
---- a/src/plugins/platforminputcontexts/platforminputcontexts.pro
-+++ b/src/plugins/platforminputcontexts/platforminputcontexts.pro
-@@ -2,7 +2,8 @@ TEMPLATE = subdirs
- QT_FOR_CONFIG += gui-private
- 
- qtHaveModule(dbus) {
--!mac:!win32:SUBDIRS += ibus
-+# Patch: Adding fcitx/hime/nimf input context plugin to our static build.
-+!mac:!win32:SUBDIRS += ibus fcitx hime nimf
- }
- 
- qtConfig(xcb): SUBDIRS += compose
 diff --git a/src/plugins/platforms/cocoa/qcocoaapplicationdelegate.mm b/src/plugins/platforms/cocoa/qcocoaapplicationdelegate.mm
 index 2cf6672da9..ef25bb4541 100644
 --- a/src/plugins/platforms/cocoa/qcocoaapplicationdelegate.mm
