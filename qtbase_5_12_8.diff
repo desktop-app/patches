@@ -458,10 +458,10 @@ index f3f0caa379..081c5f03c0 100644
  
      return oldPos;
 diff --git a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
-index 9e6e5d88c7..dc5986d9c7 100644
+index 9e6e5d88c7..decc535362 100644
 --- a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
 +++ b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
-@@ -1694,50 +1694,50 @@ HFONT QWindowsFontDatabase::systemFont()
+@@ -1694,50 +1694,75 @@ HFONT QWindowsFontDatabase::systemFont()
  
  static const char *other_tryFonts[] = {
      "Arial",
@@ -470,9 +470,14 @@ index 9e6e5d88c7..dc5986d9c7 100644
 -    "SimSun",
 -    "PMingLiU",
 +    "Yu Gothic UI",
++    "Meiryo UI",
++    "Yu Gothic",
++    "Meiryo",
 +    "Malgun Gothic",
 +    "Microsoft YaHei UI",
++    "Microsoft YaHei",
 +    "Microsoft JhengHei UI",
++    "Microsoft JhengHei",
      "Arial Unicode MS",
      0
  };
@@ -480,13 +485,18 @@ index 9e6e5d88c7..dc5986d9c7 100644
  static const char *jp_tryFonts [] = {
 -    "MS UI Gothic",
 +    "Yu Gothic UI",
++    "Meiryo UI",
++    "Yu Gothic",
++    "Meiryo",
      "Arial",
 -    "Gulim",
 -    "SimSun",
 -    "PMingLiU",
 +    "Malgun Gothic",
 +    "Microsoft YaHei UI",
++    "Microsoft YaHei",
 +    "Microsoft JhengHei UI",
++    "Microsoft JhengHei",
      "Arial Unicode MS",
      0
  };
@@ -494,13 +504,18 @@ index 9e6e5d88c7..dc5986d9c7 100644
  static const char *ch_CN_tryFonts [] = {
 -    "SimSun",
 +    "Microsoft YaHei UI",
++    "Microsoft YaHei",
      "Arial",
 -    "PMingLiU",
 -    "Gulim",
 -    "MS UI Gothic",
 +    "Microsoft JhengHei UI",
++    "Microsoft JhengHei",
 +    "Malgun Gothic",
 +    "Yu Gothic UI",
++    "Meiryo UI",
++    "Yu Gothic",
++    "Meiryo",
      "Arial Unicode MS",
      0
  };
@@ -508,13 +523,18 @@ index 9e6e5d88c7..dc5986d9c7 100644
  static const char *ch_TW_tryFonts [] = {
 -    "PMingLiU",
 +    "Microsoft JhengHei UI",
++    "Microsoft JhengHei",
      "Arial",
 -    "SimSun",
 -    "Gulim",
 -    "MS UI Gothic",
 +    "Microsoft YaHei UI",
++    "Microsoft YaHei",
 +    "Malgun Gothic",
 +    "Yu Gothic UI",
++    "Meiryo UI",
++    "Yu Gothic",
++    "Meiryo",
      "Arial Unicode MS",
      0
  };
@@ -527,8 +547,13 @@ index 9e6e5d88c7..dc5986d9c7 100644
 -    "SimSun",
 -    "MS UI Gothic",
 +    "Microsoft JhengHei UI",
++    "Microsoft JhengHei",
 +    "Microsoft YaHei UI",
++    "Microsoft YaHei",
 +    "Yu Gothic UI",
++    "Meiryo UI",
++    "Yu Gothic",
++    "Meiryo",
      "Arial Unicode MS",
      0
  };
