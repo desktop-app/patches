@@ -458,7 +458,7 @@ index f3f0caa379..081c5f03c0 100644
  
      return oldPos;
 diff --git a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
-index 9e6e5d88c7..11b84998e8 100644
+index 9e6e5d88c7..8e951a2281 100644
 --- a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
 +++ b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
 @@ -1694,50 +1694,85 @@ HFONT QWindowsFontDatabase::systemFont()
@@ -567,24 +567,6 @@ index 9e6e5d88c7..11b84998e8 100644
      "Arial Unicode MS",
      0
  };
-@@ -1901,7 +1936,7 @@ QString QWindowsFontDatabase::familyForStyleHint(QFont::StyleHint styleHint)
-     default:
-         break;
-     }
--    return QStringLiteral("MS Shell Dlg 2");
-+    return QStringLiteral("Segoe UI");
- }
- 
- QStringList QWindowsFontDatabase::fallbacksForFamily(const QString &family, QFont::Style style, QFont::StyleHint styleHint, QChar::Script script) const
-@@ -2022,7 +2057,7 @@ QFontEngine *QWindowsFontDatabase::createEngine(const QFontDef &request, const Q
- 
- QFont QWindowsFontDatabase::systemDefaultFont()
- {
--#if QT_VERSION >= 0x060000
-+#if 1
-     // Qt 6: Obtain default GUI font (typically "Segoe UI, 9pt", see QTBUG-58610)
-     NONCLIENTMETRICS ncm;
-     ncm.cbSize = FIELD_OFFSET(NONCLIENTMETRICS, lfMessageFont) + sizeof(LOGFONT);
 diff --git a/src/platformsupport/linuxaccessibility/constant_mappings.cpp b/src/platformsupport/linuxaccessibility/constant_mappings.cpp
 index fce2919e73..4a7d0f7d92 100644
 --- a/src/platformsupport/linuxaccessibility/constant_mappings.cpp
