@@ -458,10 +458,10 @@ index f3f0caa379..081c5f03c0 100644
  
      return oldPos;
 diff --git a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
-index 9e6e5d88c7..842e114436 100644
+index 9e6e5d88c7..11b84998e8 100644
 --- a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
 +++ b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
-@@ -1694,50 +1694,75 @@ HFONT QWindowsFontDatabase::systemFont()
+@@ -1694,50 +1694,85 @@ HFONT QWindowsFontDatabase::systemFont()
  
  static const char *other_tryFonts[] = {
      "Arial",
@@ -478,6 +478,8 @@ index 9e6e5d88c7..842e114436 100644
 +    "Microsoft YaHei",
 +    "Microsoft JhengHei UI",
 +    "Microsoft JhengHei",
++    "Nirmala UI",
++    "Iskoola Pota",
      "Arial Unicode MS",
      0
  };
@@ -497,6 +499,8 @@ index 9e6e5d88c7..842e114436 100644
 +    "Microsoft YaHei",
 +    "Microsoft JhengHei UI",
 +    "Microsoft JhengHei",
++    "Nirmala UI",
++    "Iskoola Pota",
      "Arial Unicode MS",
      0
  };
@@ -516,6 +520,8 @@ index 9e6e5d88c7..842e114436 100644
 +    "Meiryo UI",
 +    "Yu Gothic",
 +    "Meiryo",
++    "Nirmala UI",
++    "Iskoola Pota",
      "Arial Unicode MS",
      0
  };
@@ -535,6 +541,8 @@ index 9e6e5d88c7..842e114436 100644
 +    "Meiryo UI",
 +    "Yu Gothic",
 +    "Meiryo",
++    "Nirmala UI",
++    "Iskoola Pota",
      "Arial Unicode MS",
      0
  };
@@ -554,10 +562,12 @@ index 9e6e5d88c7..842e114436 100644
 +    "Meiryo UI",
 +    "Yu Gothic",
 +    "Meiryo",
++    "Nirmala UI",
++    "Iskoola Pota",
      "Arial Unicode MS",
      0
  };
-@@ -1901,7 +1926,7 @@ QString QWindowsFontDatabase::familyForStyleHint(QFont::StyleHint styleHint)
+@@ -1901,7 +1936,7 @@ QString QWindowsFontDatabase::familyForStyleHint(QFont::StyleHint styleHint)
      default:
          break;
      }
@@ -566,7 +576,7 @@ index 9e6e5d88c7..842e114436 100644
  }
  
  QStringList QWindowsFontDatabase::fallbacksForFamily(const QString &family, QFont::Style style, QFont::StyleHint styleHint, QChar::Script script) const
-@@ -2022,7 +2047,7 @@ QFontEngine *QWindowsFontDatabase::createEngine(const QFontDef &request, const Q
+@@ -2022,7 +2057,7 @@ QFontEngine *QWindowsFontDatabase::createEngine(const QFontDef &request, const Q
  
  QFont QWindowsFontDatabase::systemDefaultFont()
  {
