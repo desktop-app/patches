@@ -1,0 +1,1939 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+new file mode 100644
+index 0000000000..69ce20fc56
+--- /dev/null
++++ b/CMakeLists.txt
+@@ -0,0 +1,46 @@
++cmake_minimum_required(VERSION 3.16)
++cmake_policy(SET CMP0076 NEW)
++cmake_policy(SET CMP0091 NEW)
++
++set_property(GLOBAL PROPERTY USE_FOLDERS ON)
++
++project(skottie
++    LANGUAGES C CXX
++)
++
++get_filename_component(loc "." REALPATH)
++
++function(init_target target)
++    target_compile_definitions(${target}
++    PRIVATE
++        SK_SUPPORT_GPU=0
++    )
++    target_include_directories(${target}
++    PRIVATE
++        ${loc}
++    )
++    target_compile_features(${target} PUBLIC cxx_std_17)
++    set_target_properties(${target} PROPERTIES
++        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
++endfunction()
++
++add_subdirectory(third_party/skcms)
++add_subdirectory(src/shaders)
++# add_subdirectory(src/gpu)
++add_subdirectory(src/images)
++add_subdirectory(src/image)
++add_subdirectory(src/sksl)
++add_subdirectory(src/opts)
++add_subdirectory(src/core)
++add_subdirectory(src/codec)
++add_subdirectory(src/sfnt)
++add_subdirectory(src/fonts)
++add_subdirectory(src/ports)
++add_subdirectory(src/pathops)
++add_subdirectory(src/effects)
++add_subdirectory(src/utils)
++add_subdirectory(modules/sksg)
++add_subdirectory(modules/skshaper)
++add_subdirectory(modules/skottie)
++
++add_library(skottie::skottie ALIAS lib_skottie)
+diff --git a/modules/skottie/CMakeLists.txt b/modules/skottie/CMakeLists.txt
+new file mode 100644
+index 0000000000..9dad9d735a
+--- /dev/null
++++ b/modules/skottie/CMakeLists.txt
+@@ -0,0 +1,102 @@
++add_library(lib_skottie STATIC)
++init_target(lib_skottie)
++
++target_link_libraries(lib_skottie
++PUBLIC
++    lib_sksg
++    lib_skshaper
++    lib_ports
++    lib_core
++)
++
++set_target_properties(lib_skottie PROPERTIES
++    ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
++    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
++)
++
++set(skottie_loc ${loc}/modules/skottie)
++set(skottie_src ${skottie_loc}/src)
++set(skottie_inc ${skottie_loc}/include)
++
++target_sources(lib_skottie
++PUBLIC
++    ${skottie_inc}/Skottie.h
++    ${skottie_inc}/ExternalLayer.h
++    ${skottie_inc}/SkottieProperty.h
++PRIVATE
++    ${skottie_src}/Adapter.h
++    ${skottie_src}/Camera.cpp
++    ${skottie_src}/Camera.h
++    ${skottie_src}/Composition.cpp
++    ${skottie_src}/Composition.h
++    ${skottie_src}/Layer.cpp
++    ${skottie_src}/Layer.h
++    ${skottie_src}/Path.cpp
++    ${skottie_src}/Skottie.cpp
++    ${skottie_src}/SkottieJson.cpp
++    ${skottie_src}/SkottieJson.h
++    ${skottie_src}/SkottiePriv.h
++    ${skottie_src}/SkottieProperty.cpp
++    ${skottie_src}/SkottieValue.h
++    ${skottie_src}/Transform.cpp
++    ${skottie_src}/Transform.h
++    ${skottie_src}/animator/Animator.cpp
++    ${skottie_src}/animator/Animator.h
++    ${skottie_src}/animator/KeyframeAnimator.cpp
++    ${skottie_src}/animator/KeyframeAnimator.h
++    ${skottie_src}/animator/ScalarKeyframeAnimator.cpp
++    ${skottie_src}/animator/ShapeKeyframeAnimator.cpp
++    ${skottie_src}/animator/TextKeyframeAnimator.cpp
++    ${skottie_src}/animator/Vec2KeyframeAnimator.cpp
++    ${skottie_src}/animator/VectorKeyframeAnimator.cpp
++    ${skottie_src}/animator/VectorKeyframeAnimator.h
++    ${skottie_src}/effects/BrightnessContrastEffect.cpp
++    ${skottie_src}/effects/CornerPinEffect.cpp
++    ${skottie_src}/effects/DropShadowEffect.cpp
++    ${skottie_src}/effects/Effects.cpp
++    ${skottie_src}/effects/Effects.h
++    ${skottie_src}/effects/FillEffect.cpp
++    ${skottie_src}/effects/GaussianBlurEffect.cpp
++    ${skottie_src}/effects/GlowStyles.cpp
++    ${skottie_src}/effects/GradientEffect.cpp
++    ${skottie_src}/effects/HueSaturationEffect.cpp
++    ${skottie_src}/effects/InvertEffect.cpp
++    ${skottie_src}/effects/LevelsEffect.cpp
++    ${skottie_src}/effects/LinearWipeEffect.cpp
++    ${skottie_src}/effects/MotionBlurEffect.cpp
++    ${skottie_src}/effects/MotionBlurEffect.h
++    ${skottie_src}/effects/MotionTileEffect.cpp
++    ${skottie_src}/effects/RadialWipeEffect.cpp
++    ${skottie_src}/effects/ShadowStyles.cpp
++    ${skottie_src}/effects/ShiftChannelsEffect.cpp
++    ${skottie_src}/effects/TintEffect.cpp
++    ${skottie_src}/effects/TransformEffect.cpp
++    ${skottie_src}/effects/TritoneEffect.cpp
++    ${skottie_src}/effects/VenetianBlindsEffect.cpp
++    ${skottie_src}/layers/FootageLayer.cpp
++    ${skottie_src}/layers/NullLayer.cpp
++    ${skottie_src}/layers/PrecompLayer.cpp
++    ${skottie_src}/layers/SolidLayer.cpp
++    ${skottie_src}/layers/TextLayer.cpp
++    ${skottie_src}/layers/shapelayer/Ellipse.cpp
++    ${skottie_src}/layers/shapelayer/FillStroke.cpp
++    ${skottie_src}/layers/shapelayer/Gradient.cpp
++    ${skottie_src}/layers/shapelayer/MergePaths.cpp
++    ${skottie_src}/layers/shapelayer/Polystar.cpp
++    ${skottie_src}/layers/shapelayer/Rectangle.cpp
++    ${skottie_src}/layers/shapelayer/Repeater.cpp
++    ${skottie_src}/layers/shapelayer/RoundCorners.cpp
++    ${skottie_src}/layers/shapelayer/ShapeLayer.cpp
++    ${skottie_src}/layers/shapelayer/ShapeLayer.h
++    ${skottie_src}/layers/shapelayer/TrimPaths.cpp
++    ${skottie_src}/text/RangeSelector.cpp
++    ${skottie_src}/text/RangeSelector.h
++    ${skottie_src}/text/SkottieShaper.cpp
++    ${skottie_src}/text/SkottieShaper.h
++    ${skottie_src}/text/TextAdapter.cpp
++    ${skottie_src}/text/TextAdapter.h
++    ${skottie_src}/text/TextAnimator.cpp
++    ${skottie_src}/text/TextAnimator.h
++    ${skottie_src}/text/TextValue.cpp
++    ${skottie_src}/text/TextValue.h
++)
+diff --git a/modules/sksg/CMakeLists.txt b/modules/sksg/CMakeLists.txt
+new file mode 100644
+index 0000000000..11b8c2ff02
+--- /dev/null
++++ b/modules/sksg/CMakeLists.txt
+@@ -0,0 +1,45 @@
++add_library(lib_sksg STATIC)
++init_target(lib_sksg)
++
++target_link_libraries(lib_sksg
++PUBLIC
++    lib_effects
++    lib_pathops
++    lib_ports
++    lib_core
++)
++
++set(sksg_loc ${loc}/modules/sksg)
++set(sksg_src ${sksg_loc}/src)
++
++target_sources(lib_sksg
++PRIVATE
++    ${sksg_src}/SkSGClipEffect.cpp
++    ${sksg_src}/SkSGColorFilter.cpp
++    ${sksg_src}/SkSGDashEffect.cpp
++    ${sksg_src}/SkSGDraw.cpp
++    ${sksg_src}/SkSGEffectNode.cpp
++    ${sksg_src}/SkSGGeometryNode.cpp
++    ${sksg_src}/SkSGGeometryTransform.cpp
++    ${sksg_src}/SkSGGradient.cpp
++    ${sksg_src}/SkSGGroup.cpp
++    ${sksg_src}/SkSGImage.cpp
++    ${sksg_src}/SkSGInvalidationController.cpp
++    ${sksg_src}/SkSGMaskEffect.cpp
++    ${sksg_src}/SkSGMerge.cpp
++    ${sksg_src}/SkSGNode.cpp
++    ${sksg_src}/SkSGNodePriv.h
++    ${sksg_src}/SkSGOpacityEffect.cpp
++    ${sksg_src}/SkSGPaint.cpp
++    ${sksg_src}/SkSGPath.cpp
++    ${sksg_src}/SkSGPlane.cpp
++    ${sksg_src}/SkSGRect.cpp
++    ${sksg_src}/SkSGRenderEffect.cpp
++    ${sksg_src}/SkSGRenderNode.cpp
++    ${sksg_src}/SkSGRoundEffect.cpp
++    ${sksg_src}/SkSGScene.cpp
++    ${sksg_src}/SkSGText.cpp
++    ${sksg_src}/SkSGTransform.cpp
++    ${sksg_src}/SkSGTransformPriv.h
++    ${sksg_src}/SkSGTrimEffect.cpp
++)
+diff --git a/modules/skshaper/CMakeLists.txt b/modules/skshaper/CMakeLists.txt
+new file mode 100644
+index 0000000000..29e9d90f44
+--- /dev/null
++++ b/modules/skshaper/CMakeLists.txt
+@@ -0,0 +1,22 @@
++add_library(lib_skshaper STATIC)
++init_target(lib_skshaper)
++
++target_link_libraries(lib_skshaper
++PUBLIC
++    lib_ports
++    lib_core
++)
++
++set(skshaper_loc ${loc}/modules/skshaper)
++set(skshaper_src ${skshaper_loc}/src)
++set(skshaper_inc ${skshaper_loc}/include)
++
++target_sources(lib_skshaper
++PUBLIC
++    ${skshaper_inc}/SkShaper.h
++PRIVATE
++    ${skshaper_src}/SkShaper.cpp
++    ${skshaper_src}/SkShaper_coretext.cpp
++    ${skshaper_src}/SkShaper_primitive.cpp
++    # ${skshaper_src}/SkShaper_harfbuzz.cpp
++)
+diff --git a/src/codec/CMakeLists.txt b/src/codec/CMakeLists.txt
+new file mode 100644
+index 0000000000..398acb992c
+--- /dev/null
++++ b/src/codec/CMakeLists.txt
+@@ -0,0 +1,68 @@
++add_library(lib_codec STATIC)
++init_target(lib_codec)
++
++set(codec_loc ${loc}/src/codec)
++
++target_sources(lib_codec
++PRIVATE
++    ${codec_loc}/SkAndroidCodec.cpp
++    ${codec_loc}/SkAndroidCodecAdapter.cpp
++    ${codec_loc}/SkAndroidCodecAdapter.h
++    ${codec_loc}/SkBmpBaseCodec.cpp
++    ${codec_loc}/SkBmpBaseCodec.h
++    ${codec_loc}/SkBmpCodec.cpp
++    ${codec_loc}/SkBmpCodec.h
++    ${codec_loc}/SkBmpMaskCodec.cpp
++    ${codec_loc}/SkBmpMaskCodec.h
++    ${codec_loc}/SkBmpRLECodec.cpp
++    ${codec_loc}/SkBmpRLECodec.h
++    ${codec_loc}/SkBmpStandardCodec.cpp
++    ${codec_loc}/SkBmpStandardCodec.h
++    ${codec_loc}/SkCodec.cpp
++    ${codec_loc}/SkCodecAnimationPriv.h
++    ${codec_loc}/SkCodecImageGenerator.cpp
++    ${codec_loc}/SkCodecImageGenerator.h
++    ${codec_loc}/SkCodecPriv.h
++    ${codec_loc}/SkColorTable.cpp
++    ${codec_loc}/SkColorTable.h
++    ${codec_loc}/SkEncodedInfo.cpp
++    ${codec_loc}/SkFrameHolder.h
++    ${codec_loc}/SkHeifCodec.cpp
++    ${codec_loc}/SkHeifCodec.h
++    ${codec_loc}/SkIcoCodec.cpp
++    ${codec_loc}/SkIcoCodec.h
++    # ${codec_loc}/SkJpegCodec.cpp
++    # ${codec_loc}/SkJpegCodec.h
++    # ${codec_loc}/SkJpegDecoderMgr.cpp
++    # ${codec_loc}/SkJpegDecoderMgr.h
++    # ${codec_loc}/SkJpegPriv.h
++    # ${codec_loc}/SkJpegUtility.cpp
++    # ${codec_loc}/SkJpegUtility.h
++    ${codec_loc}/SkMaskSwizzler.cpp
++    ${codec_loc}/SkMaskSwizzler.h
++    ${codec_loc}/SkMasks.cpp
++    ${codec_loc}/SkMasks.h
++    ${codec_loc}/SkParseEncodedOrigin.cpp
++    ${codec_loc}/SkParseEncodedOrigin.h
++    # ${codec_loc}/SkPngCodec.cpp
++    # ${codec_loc}/SkPngCodec.h
++    # ${codec_loc}/SkPngPriv.h
++    # ${codec_loc}/SkRawCodec.cpp
++    # ${codec_loc}/SkRawCodec.h
++    ${codec_loc}/SkSampledCodec.cpp
++    ${codec_loc}/SkSampledCodec.h
++    ${codec_loc}/SkSampler.cpp
++    ${codec_loc}/SkSampler.h
++    ${codec_loc}/SkScalingCodec.h
++    ${codec_loc}/SkStreamBuffer.cpp
++    ${codec_loc}/SkStreamBuffer.h
++    ${codec_loc}/SkStubHeifDecoderAPI.h
++    ${codec_loc}/SkSwizzler.cpp
++    ${codec_loc}/SkSwizzler.h
++    ${codec_loc}/SkWbmpCodec.cpp
++    ${codec_loc}/SkWbmpCodec.h
++    # ${codec_loc}/SkWebpCodec.cpp
++    # ${codec_loc}/SkWebpCodec.h
++    # ${codec_loc}/SkWuffsCodec.cpp
++    # ${codec_loc}/SkWuffsCodec.h
++)
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+new file mode 100644
+index 0000000000..da97e58088
+--- /dev/null
++++ b/src/core/CMakeLists.txt
+@@ -0,0 +1,406 @@
++add_library(lib_core STATIC)
++init_target(lib_core)
++
++target_link_libraries(lib_core
++PUBLIC
++    lib_skcms
++    lib_utils
++    lib_shaders
++    lib_image
++    lib_opts
++    lib_sksl
++#    lib_gpu
++)
++
++set(core_loc ${loc}/src/core)
++
++target_sources(lib_core
++PRIVATE
++    ${core_loc}/Sk4px.h
++    ${core_loc}/SkAAClip.cpp
++    ${core_loc}/SkAAClip.h
++    ${core_loc}/SkATrace.cpp
++    ${core_loc}/SkATrace.h
++    ${core_loc}/SkAdvancedTypefaceMetrics.h
++    ${core_loc}/SkAlphaRuns.cpp
++    ${core_loc}/SkAnalyticEdge.cpp
++    ${core_loc}/SkAnalyticEdge.h
++    ${core_loc}/SkAnnotation.cpp
++    ${core_loc}/SkAnnotationKeys.h
++    ${core_loc}/SkAntiRun.h
++    ${core_loc}/SkArenaAlloc.cpp
++    ${core_loc}/SkArenaAlloc.h
++    ${core_loc}/SkArenaAllocList.h
++    ${core_loc}/SkAutoBlitterChoose.h
++    ${core_loc}/SkAutoMalloc.h
++    ${core_loc}/SkAutoPixmapStorage.cpp
++    ${core_loc}/SkAutoPixmapStorage.h
++    ${core_loc}/SkBBHFactory.cpp
++    ${core_loc}/SkBigPicture.cpp
++    ${core_loc}/SkBigPicture.h
++    ${core_loc}/SkBitmap.cpp
++    ${core_loc}/SkBitmapCache.cpp
++    ${core_loc}/SkBitmapCache.h
++    ${core_loc}/SkBitmapController.cpp
++    ${core_loc}/SkBitmapController.h
++    ${core_loc}/SkBitmapDevice.cpp
++    ${core_loc}/SkBitmapDevice.h
++    ${core_loc}/SkBitmapProcState.cpp
++    ${core_loc}/SkBitmapProcState.h
++    ${core_loc}/SkBitmapProcState_matrixProcs.cpp
++    ${core_loc}/SkBlendMode.cpp
++    ${core_loc}/SkBlendModePriv.h
++    ${core_loc}/SkBlitBWMaskTemplate.h
++    ${core_loc}/SkBlitRow.h
++    ${core_loc}/SkBlitRow_D32.cpp
++    ${core_loc}/SkBlitter.cpp
++    ${core_loc}/SkBlitter.h
++    ${core_loc}/SkBlitter_A8.cpp
++    ${core_loc}/SkBlitter_ARGB32.cpp
++    ${core_loc}/SkBlitter_RGB565.cpp
++    ${core_loc}/SkBlitter_Sprite.cpp
++    ${core_loc}/SkBlurMF.cpp
++    ${core_loc}/SkBlurMask.cpp
++    ${core_loc}/SkBlurMask.h
++    ${core_loc}/SkBlurPriv.h
++    ${core_loc}/SkBuffer.cpp
++    ${core_loc}/SkBuffer.h
++    ${core_loc}/SkCachedData.cpp
++    ${core_loc}/SkCachedData.h
++    ${core_loc}/SkCanvas.cpp
++    ${core_loc}/SkCanvasPriv.cpp
++    ${core_loc}/SkCanvasPriv.h
++    ${core_loc}/SkClipOpPriv.h
++    ${core_loc}/SkClipStack.cpp
++    ${core_loc}/SkClipStack.h
++    ${core_loc}/SkClipStackDevice.cpp
++    ${core_loc}/SkClipStackDevice.h
++    ${core_loc}/SkColor.cpp
++    ${core_loc}/SkColorFilter.cpp
++    ${core_loc}/SkColorFilterPriv.h
++    ${core_loc}/SkColorFilter_Matrix.cpp
++    ${core_loc}/SkColorFilter_Matrix.h
++    ${core_loc}/SkColorSpace.cpp
++    ${core_loc}/SkColorSpacePriv.h
++    ${core_loc}/SkColorSpaceXformSteps.cpp
++    ${core_loc}/SkColorSpaceXformSteps.h
++    ${core_loc}/SkCompressedDataUtils.cpp
++    ${core_loc}/SkCompressedDataUtils.h
++    ${core_loc}/SkContourMeasure.cpp
++    ${core_loc}/SkConvertPixels.cpp
++    ${core_loc}/SkConvertPixels.h
++    ${core_loc}/SkCoreBlitters.h
++    ${core_loc}/SkCoverageModePriv.h
++    ${core_loc}/SkCpu.cpp
++    ${core_loc}/SkCpu.h
++    ${core_loc}/SkCubicClipper.cpp
++    ${core_loc}/SkCubicClipper.h
++    ${core_loc}/SkCubicMap.cpp
++    ${core_loc}/SkCubicSolver.h
++    ${core_loc}/SkData.cpp
++    ${core_loc}/SkDataTable.cpp
++    ${core_loc}/SkDebug.cpp
++    ${core_loc}/SkDeferredDisplayList.cpp
++    ${core_loc}/SkDeferredDisplayListPriv.h
++    ${core_loc}/SkDeferredDisplayListRecorder.cpp
++    ${core_loc}/SkDeque.cpp
++    ${core_loc}/SkDescriptor.cpp
++    ${core_loc}/SkDescriptor.h
++    ${core_loc}/SkDevice.cpp
++    ${core_loc}/SkDevice.h
++    ${core_loc}/SkDiscardableMemory.h
++    ${core_loc}/SkDistanceFieldGen.cpp
++    ${core_loc}/SkDistanceFieldGen.h
++    ${core_loc}/SkDocument.cpp
++    ${core_loc}/SkDraw.cpp
++    ${core_loc}/SkDraw.h
++    ${core_loc}/SkDrawLooper.cpp
++    ${core_loc}/SkDrawProcs.h
++    ${core_loc}/SkDrawShadowInfo.cpp
++    ${core_loc}/SkDrawShadowInfo.h
++    ${core_loc}/SkDraw_atlas.cpp
++    ${core_loc}/SkDraw_text.cpp
++    ${core_loc}/SkDraw_vertices.cpp
++    ${core_loc}/SkDrawable.cpp
++    ${core_loc}/SkEdge.cpp
++    ${core_loc}/SkEdge.h
++    ${core_loc}/SkEdgeBuilder.cpp
++    ${core_loc}/SkEdgeBuilder.h
++    ${core_loc}/SkEdgeClipper.cpp
++    ${core_loc}/SkEdgeClipper.h
++    ${core_loc}/SkEffectPriv.h
++    ${core_loc}/SkEndian.h
++    ${core_loc}/SkEnumerate.h
++    ${core_loc}/SkExecutor.cpp
++    ${core_loc}/SkFDot6.h
++    ${core_loc}/SkFixed15.h
++    ${core_loc}/SkFlattenable.cpp
++    ${core_loc}/SkFont.cpp
++    ${core_loc}/SkFontDescriptor.cpp
++    ${core_loc}/SkFontDescriptor.h
++    ${core_loc}/SkFontLCDConfig.cpp
++    ${core_loc}/SkFontMgr.cpp
++    ${core_loc}/SkFontMgrPriv.h
++    ${core_loc}/SkFontPriv.h
++    ${core_loc}/SkFontStream.cpp
++    ${core_loc}/SkFontStream.h
++    ${core_loc}/SkFont_serial.cpp
++    ${core_loc}/SkFuzzLogging.h
++    ${core_loc}/SkGaussFilter.cpp
++    ${core_loc}/SkGaussFilter.h
++    ${core_loc}/SkGeometry.cpp
++    ${core_loc}/SkGeometry.h
++    ${core_loc}/SkGlobalInitialization_core.cpp
++    ${core_loc}/SkGlyph.cpp
++    ${core_loc}/SkGlyph.h
++    ${core_loc}/SkGlyphBuffer.cpp
++    ${core_loc}/SkGlyphBuffer.h
++    ${core_loc}/SkGlyphRun.cpp
++    ${core_loc}/SkGlyphRun.h
++    ${core_loc}/SkGlyphRunPainter.cpp
++    ${core_loc}/SkGlyphRunPainter.h
++    ${core_loc}/SkGpuBlurUtils.cpp
++    ${core_loc}/SkGpuBlurUtils.h
++    ${core_loc}/SkGraphics.cpp
++    ${core_loc}/SkHalf.cpp
++    ${core_loc}/SkICC.cpp
++    ${core_loc}/SkICCPriv.h
++    ${core_loc}/SkIDChangeListener.cpp
++    ${core_loc}/SkIPoint16.h
++    ${core_loc}/SkImageFilter.cpp
++    ${core_loc}/SkImageFilterCache.cpp
++    ${core_loc}/SkImageFilterCache.h
++    ${core_loc}/SkImageFilterTypes.cpp
++    ${core_loc}/SkImageFilterTypes.h
++    ${core_loc}/SkImageFilter_Base.h
++    ${core_loc}/SkImageGenerator.cpp
++    ${core_loc}/SkImageInfo.cpp
++    ${core_loc}/SkImagePriv.h
++    ${core_loc}/SkLRUCache.h
++    ${core_loc}/SkLatticeIter.cpp
++    ${core_loc}/SkLatticeIter.h
++    ${core_loc}/SkLeanWindows.h
++    ${core_loc}/SkLineClipper.cpp
++    ${core_loc}/SkLineClipper.h
++    ${core_loc}/SkLocalMatrixImageFilter.cpp
++    ${core_loc}/SkLocalMatrixImageFilter.h
++    ${core_loc}/SkM44.cpp
++    ${core_loc}/SkMD5.cpp
++    ${core_loc}/SkMD5.h
++    ${core_loc}/SkMSAN.h
++    ${core_loc}/SkMalloc.cpp
++    ${core_loc}/SkMallocPixelRef.cpp
++    ${core_loc}/SkMarkerStack.cpp
++    ${core_loc}/SkMarkerStack.h
++    ${core_loc}/SkMask.cpp
++    ${core_loc}/SkMask.h
++    ${core_loc}/SkMaskBlurFilter.cpp
++    ${core_loc}/SkMaskBlurFilter.h
++    ${core_loc}/SkMaskCache.cpp
++    ${core_loc}/SkMaskCache.h
++    ${core_loc}/SkMaskFilter.cpp
++    ${core_loc}/SkMaskFilterBase.h
++    ${core_loc}/SkMaskGamma.cpp
++    ${core_loc}/SkMaskGamma.h
++    ${core_loc}/SkMath.cpp
++    ${core_loc}/SkMathPriv.h
++    ${core_loc}/SkMatrix.cpp
++    ${core_loc}/SkMatrix44.cpp
++    ${core_loc}/SkMatrixImageFilter.cpp
++    ${core_loc}/SkMatrixImageFilter.h
++    ${core_loc}/SkMatrixPriv.h
++    ${core_loc}/SkMatrixProvider.h
++    ${core_loc}/SkMatrixUtils.h
++    ${core_loc}/SkMessageBus.h
++    ${core_loc}/SkMiniRecorder.cpp
++    ${core_loc}/SkMiniRecorder.h
++    ${core_loc}/SkMipMap.cpp
++    ${core_loc}/SkMipMap.h
++    ${core_loc}/SkModeColorFilter.cpp
++    ${core_loc}/SkModeColorFilter.h
++    ${core_loc}/SkNextID.h
++    ${core_loc}/SkOSFile.h
++    ${core_loc}/SkOpts.cpp
++    ${core_loc}/SkOpts.h
++    ${core_loc}/SkOpts_skx.cpp
++    ${core_loc}/SkOrderedReadBuffer.h
++    ${core_loc}/SkOverdrawCanvas.cpp
++    ${core_loc}/SkPaint.cpp
++    ${core_loc}/SkPaintDefaults.h
++    ${core_loc}/SkPaintPriv.cpp
++    ${core_loc}/SkPaintPriv.h
++    ${core_loc}/SkPath.cpp
++    ${core_loc}/SkPathEffect.cpp
++    ${core_loc}/SkPathMakers.h
++    ${core_loc}/SkPathMeasure.cpp
++    ${core_loc}/SkPathMeasurePriv.h
++    ${core_loc}/SkPathPriv.h
++    ${core_loc}/SkPathRef.cpp
++    ${core_loc}/SkPath_serial.cpp
++    ${core_loc}/SkPicture.cpp
++    ${core_loc}/SkPictureCommon.h
++    ${core_loc}/SkPictureData.cpp
++    ${core_loc}/SkPictureData.h
++    ${core_loc}/SkPictureFlat.cpp
++    ${core_loc}/SkPictureFlat.h
++    ${core_loc}/SkPictureImageGenerator.cpp
++    ${core_loc}/SkPicturePlayback.cpp
++    ${core_loc}/SkPicturePlayback.h
++    ${core_loc}/SkPicturePriv.h
++    ${core_loc}/SkPictureRecord.cpp
++    ${core_loc}/SkPictureRecord.h
++    ${core_loc}/SkPictureRecorder.cpp
++    ${core_loc}/SkPixelRef.cpp
++    ${core_loc}/SkPixelRefPriv.h
++    ${core_loc}/SkPixmap.cpp
++    ${core_loc}/SkPixmapPriv.h
++    ${core_loc}/SkPoint.cpp
++    ${core_loc}/SkPoint3.cpp
++    ${core_loc}/SkPointPriv.h
++    ${core_loc}/SkPromiseImageTexture.cpp
++    ${core_loc}/SkPtrRecorder.cpp
++    ${core_loc}/SkPtrRecorder.h
++    ${core_loc}/SkQuadClipper.cpp
++    ${core_loc}/SkQuadClipper.h
++    ${core_loc}/SkRRect.cpp
++    ${core_loc}/SkRRectPriv.h
++    ${core_loc}/SkRTree.cpp
++    ${core_loc}/SkRTree.h
++    ${core_loc}/SkRWBuffer.cpp
++    ${core_loc}/SkRasterClip.cpp
++    ${core_loc}/SkRasterClip.h
++    ${core_loc}/SkRasterClipStack.h
++    ${core_loc}/SkRasterPipeline.cpp
++    ${core_loc}/SkRasterPipeline.h
++    ${core_loc}/SkRasterPipelineBlitter.cpp
++    ${core_loc}/SkReadBuffer.cpp
++    ${core_loc}/SkReadBuffer.h
++    ${core_loc}/SkReader32.h
++    ${core_loc}/SkRecord.cpp
++    ${core_loc}/SkRecord.h
++    ${core_loc}/SkRecordDraw.cpp
++    ${core_loc}/SkRecordDraw.h
++    ${core_loc}/SkRecordOpts.cpp
++    ${core_loc}/SkRecordOpts.h
++    ${core_loc}/SkRecordPattern.h
++    ${core_loc}/SkRecordedDrawable.cpp
++    ${core_loc}/SkRecordedDrawable.h
++    ${core_loc}/SkRecorder.cpp
++    ${core_loc}/SkRecorder.h
++    ${core_loc}/SkRecords.cpp
++    ${core_loc}/SkRecords.h
++    ${core_loc}/SkRect.cpp
++    ${core_loc}/SkRectPriv.h
++    ${core_loc}/SkRegion.cpp
++    ${core_loc}/SkRegionPriv.h
++    ${core_loc}/SkRegion_path.cpp
++    ${core_loc}/SkRemoteGlyphCache.cpp
++    ${core_loc}/SkRemoteGlyphCache.h
++    ${core_loc}/SkResourceCache.cpp
++    ${core_loc}/SkResourceCache.h
++    ${core_loc}/SkRuntimeEffect.cpp
++    ${core_loc}/SkSafeMath.h
++    ${core_loc}/SkSafeRange.h
++    ${core_loc}/SkScalar.cpp
++    ${core_loc}/SkScaleToSides.h
++    ${core_loc}/SkScalerCache.cpp
++    ${core_loc}/SkScalerCache.h
++    ${core_loc}/SkScalerContext.cpp
++    ${core_loc}/SkScalerContext.h
++    ${core_loc}/SkScan.cpp
++    ${core_loc}/SkScan.h
++    ${core_loc}/SkScanPriv.h
++    ${core_loc}/SkScan_AAAPath.cpp
++    ${core_loc}/SkScan_AntiPath.cpp
++    ${core_loc}/SkScan_Antihair.cpp
++    ${core_loc}/SkScan_Hairline.cpp
++    ${core_loc}/SkScan_Path.cpp
++    ${core_loc}/SkScopeExit.h
++    ${core_loc}/SkSemaphore.cpp
++    ${core_loc}/SkSharedMutex.cpp
++    ${core_loc}/SkSharedMutex.h
++    ${core_loc}/SkSpan.h
++    ${core_loc}/SkSpecialImage.cpp
++    ${core_loc}/SkSpecialImage.h
++    ${core_loc}/SkSpecialSurface.cpp
++    ${core_loc}/SkSpecialSurface.h
++    ${core_loc}/SkSpinlock.cpp
++    ${core_loc}/SkSpriteBlitter.h
++    ${core_loc}/SkSpriteBlitter_ARGB32.cpp
++    ${core_loc}/SkSpriteBlitter_RGB565.cpp
++    ${core_loc}/SkStream.cpp
++    ${core_loc}/SkStreamPriv.h
++    ${core_loc}/SkStrikeCache.cpp
++    ${core_loc}/SkStrikeCache.h
++    ${core_loc}/SkStrikeForGPU.cpp
++    ${core_loc}/SkStrikeForGPU.h
++    ${core_loc}/SkStrikeSpec.cpp
++    ${core_loc}/SkStrikeSpec.h
++    ${core_loc}/SkString.cpp
++    ${core_loc}/SkStringUtils.cpp
++    ${core_loc}/SkStringUtils.h
++    ${core_loc}/SkStroke.cpp
++    ${core_loc}/SkStroke.h
++    ${core_loc}/SkStrokeRec.cpp
++    ${core_loc}/SkStrokerPriv.cpp
++    ${core_loc}/SkStrokerPriv.h
++    ${core_loc}/SkSurfaceCharacterization.cpp
++    ${core_loc}/SkSurfacePriv.h
++    ${core_loc}/SkSwizzle.cpp
++    ${core_loc}/SkTDPQueue.h
++    ${core_loc}/SkTDynamicHash.h
++    ${core_loc}/SkTInternalLList.h
++    ${core_loc}/SkTLList.h
++    ${core_loc}/SkTLazy.h
++    ${core_loc}/SkTMultiMap.h
++    ${core_loc}/SkTSearch.cpp
++    ${core_loc}/SkTSearch.h
++    ${core_loc}/SkTSort.h
++    ${core_loc}/SkTTopoSort.h
++    ${core_loc}/SkTaskGroup.cpp
++    ${core_loc}/SkTaskGroup.h
++    ${core_loc}/SkTextBlob.cpp
++    ${core_loc}/SkTextBlobPriv.h
++    ${core_loc}/SkTextBlobTrace.cpp
++    ${core_loc}/SkTextBlobTrace.h
++    ${core_loc}/SkTextFormatParams.h
++    ${core_loc}/SkThreadID.cpp
++    ${core_loc}/SkTime.cpp
++    ${core_loc}/SkTraceEvent.h
++    ${core_loc}/SkTraceEventCommon.h
++    ${core_loc}/SkTypeface.cpp
++    ${core_loc}/SkTypefaceCache.cpp
++    ${core_loc}/SkTypefaceCache.h
++    ${core_loc}/SkTypeface_remote.cpp
++    ${core_loc}/SkTypeface_remote.h
++    ${core_loc}/SkUnPreMultiply.cpp
++    ${core_loc}/SkUtils.cpp
++    ${core_loc}/SkUtils.h
++    ${core_loc}/SkUtilsArm.cpp
++    ${core_loc}/SkVM.cpp
++    ${core_loc}/SkVM.h
++    ${core_loc}/SkVMBlitter.cpp
++    ${core_loc}/SkVM_fwd.h
++    ${core_loc}/SkValidatingReadBuffer.h
++    ${core_loc}/SkValidationUtils.h
++    ${core_loc}/SkVertState.cpp
++    ${core_loc}/SkVertState.h
++    ${core_loc}/SkVertices.cpp
++    ${core_loc}/SkVerticesPriv.h
++    ${core_loc}/SkVptr.h
++    ${core_loc}/SkWriteBuffer.cpp
++    ${core_loc}/SkWriteBuffer.h
++    ${core_loc}/SkWritePixelsRec.h
++    ${core_loc}/SkWriter32.cpp
++    ${core_loc}/SkWriter32.h
++    ${core_loc}/SkXfermode.cpp
++    ${core_loc}/SkXfermodeInterpretation.cpp
++    ${core_loc}/SkXfermodeInterpretation.h
++    ${core_loc}/SkXfermodePriv.h
++    ${core_loc}/SkYUVASizeInfo.cpp
++    ${core_loc}/SkYUVMath.cpp
++    ${core_loc}/SkYUVMath.h
++    ${core_loc}/SkYUVPlanesCache.cpp
++    ${core_loc}/SkYUVPlanesCache.h
++    ${core_loc}/SkZip.h
++)
+diff --git a/src/effects/CMakeLists.txt b/src/effects/CMakeLists.txt
+new file mode 100644
+index 0000000000..3987b3b273
+--- /dev/null
++++ b/src/effects/CMakeLists.txt
+@@ -0,0 +1,52 @@
++add_library(lib_effects STATIC)
++init_target(lib_effects)
++
++set(effects_loc ${loc}/src/effects)
++
++target_sources(lib_effects
++PRIVATE
++    ${effects_loc}/Sk1DPathEffect.cpp
++    ${effects_loc}/Sk2DPathEffect.cpp
++    ${effects_loc}/SkColorMatrix.cpp
++    ${effects_loc}/SkColorMatrixFilter.cpp
++    ${effects_loc}/SkCornerPathEffect.cpp
++    ${effects_loc}/SkDashImpl.h
++    ${effects_loc}/SkDashPathEffect.cpp
++    ${effects_loc}/SkDiscretePathEffect.cpp
++    ${effects_loc}/SkEmbossMask.cpp
++    ${effects_loc}/SkEmbossMask.h
++    ${effects_loc}/SkEmbossMaskFilter.cpp
++    ${effects_loc}/SkEmbossMaskFilter.h
++    ${effects_loc}/SkHighContrastFilter.cpp
++    ${effects_loc}/SkLayerDrawLooper.cpp
++    ${effects_loc}/SkLumaColorFilter.cpp
++    ${effects_loc}/SkOpPE.h
++    ${effects_loc}/SkOpPathEffect.cpp
++    ${effects_loc}/SkOverdrawColorFilter.cpp
++    ${effects_loc}/SkPackBits.cpp
++    ${effects_loc}/SkPackBits.h
++    ${effects_loc}/SkShaderMaskFilter.cpp
++    ${effects_loc}/SkTableColorFilter.cpp
++    ${effects_loc}/SkTableMaskFilter.cpp
++    ${effects_loc}/SkTrimPE.h
++    ${effects_loc}/SkTrimPathEffect.cpp
++    ${effects_loc}/imagefilters/SkAlphaThresholdFilter.cpp
++    ${effects_loc}/imagefilters/SkArithmeticImageFilter.cpp
++    ${effects_loc}/imagefilters/SkBlurImageFilter.cpp
++    ${effects_loc}/imagefilters/SkColorFilterImageFilter.cpp
++    ${effects_loc}/imagefilters/SkComposeImageFilter.cpp
++    ${effects_loc}/imagefilters/SkDisplacementMapEffect.cpp
++    ${effects_loc}/imagefilters/SkDropShadowImageFilter.cpp
++    ${effects_loc}/imagefilters/SkImageFilters.cpp
++    ${effects_loc}/imagefilters/SkImageSource.cpp
++    ${effects_loc}/imagefilters/SkLightingImageFilter.cpp
++    ${effects_loc}/imagefilters/SkMagnifierImageFilter.cpp
++    ${effects_loc}/imagefilters/SkMatrixConvolutionImageFilter.cpp
++    ${effects_loc}/imagefilters/SkMergeImageFilter.cpp
++    ${effects_loc}/imagefilters/SkMorphologyImageFilter.cpp
++    ${effects_loc}/imagefilters/SkOffsetImageFilter.cpp
++    ${effects_loc}/imagefilters/SkPaintImageFilter.cpp
++    ${effects_loc}/imagefilters/SkPictureImageFilter.cpp
++    ${effects_loc}/imagefilters/SkTileImageFilter.cpp
++    ${effects_loc}/imagefilters/SkXfermodeImageFilter.cpp
++)
+diff --git a/src/fonts/CMakeLists.txt b/src/fonts/CMakeLists.txt
+new file mode 100644
+index 0000000000..f597e4ab18
+--- /dev/null
++++ b/src/fonts/CMakeLists.txt
+@@ -0,0 +1,10 @@
++add_library(lib_fonts STATIC)
++init_target(lib_fonts)
++
++set(fonts_loc ${loc}/src/fonts)
++
++target_sources(lib_fonts
++PRIVATE
++    ${fonts_loc}/SkFontMgr_indirect.cpp
++    ${fonts_loc}/SkRemotableFontMgr.cpp
++)
+diff --git a/src/gpu/CMakeLists.txt b/src/gpu/CMakeLists.txt
+new file mode 100644
+index 0000000000..b1c0b9e108
+--- /dev/null
++++ b/src/gpu/CMakeLists.txt
+@@ -0,0 +1,504 @@
++add_library(lib_gpu STATIC)
++init_target(lib_gpu)
++
++set(gpu_loc ${loc}/src/gpu)
++
++target_sources(lib_gpu
++PRIVATE
++    ${gpu_loc}/GrAHardwareBufferImageGenerator.cpp
++    ${gpu_loc}/GrAHardwareBufferImageGenerator.h
++    ${gpu_loc}/GrAHardwareBufferUtils.cpp
++    ${gpu_loc}/GrAHardwareBufferUtils.h
++    ${gpu_loc}/GrAppliedClip.h
++    ${gpu_loc}/GrAuditTrail.cpp
++    ${gpu_loc}/GrAuditTrail.h
++    ${gpu_loc}/GrAutoLocaleSetter.h
++    ${gpu_loc}/GrBackendSurface.cpp
++    ${gpu_loc}/GrBackendTextureImageGenerator.cpp
++    ${gpu_loc}/GrBackendTextureImageGenerator.h
++    ${gpu_loc}/GrBaseContextPriv.h
++    ${gpu_loc}/GrBitmapTextureMaker.cpp
++    ${gpu_loc}/GrBitmapTextureMaker.h
++    ${gpu_loc}/GrBlend.h
++    ${gpu_loc}/GrBlockAllocator.cpp
++    ${gpu_loc}/GrBlockAllocator.h
++    ${gpu_loc}/GrBlurUtils.cpp
++    ${gpu_loc}/GrBlurUtils.h
++    ${gpu_loc}/GrBuffer.h
++    ${gpu_loc}/GrBufferAllocPool.cpp
++    ${gpu_loc}/GrBufferAllocPool.h
++    ${gpu_loc}/GrCaps.cpp
++    ${gpu_loc}/GrCaps.h
++    ${gpu_loc}/GrClientMappedBufferManager.cpp
++    ${gpu_loc}/GrClientMappedBufferManager.h
++    ${gpu_loc}/GrClip.h
++    ${gpu_loc}/GrClipStackClip.cpp
++    ${gpu_loc}/GrClipStackClip.h
++    ${gpu_loc}/GrColor.h
++    ${gpu_loc}/GrColorInfo.cpp
++    ${gpu_loc}/GrColorInfo.h
++    ${gpu_loc}/GrColorSpaceXform.cpp
++    ${gpu_loc}/GrColorSpaceXform.h
++    ${gpu_loc}/GrContext.cpp
++    ${gpu_loc}/GrContextPriv.cpp
++    ${gpu_loc}/GrContextPriv.h
++    ${gpu_loc}/GrContextThreadSafeProxy.cpp
++    ${gpu_loc}/GrContextThreadSafeProxyPriv.h
++    ${gpu_loc}/GrContext_Base.cpp
++    ${gpu_loc}/GrCoordTransform.h
++    ${gpu_loc}/GrCopyRenderTask.cpp
++    ${gpu_loc}/GrCopyRenderTask.h
++    ${gpu_loc}/GrCpuBuffer.h
++    ${gpu_loc}/GrDDLContext.cpp
++    ${gpu_loc}/GrDataUtils.cpp
++    ${gpu_loc}/GrDataUtils.h
++    ${gpu_loc}/GrDefaultGeoProcFactory.cpp
++    ${gpu_loc}/GrDefaultGeoProcFactory.h
++    ${gpu_loc}/GrDeferredProxyUploader.h
++    ${gpu_loc}/GrDeferredUpload.h
++    ${gpu_loc}/GrDistanceFieldGenFromVector.cpp
++    ${gpu_loc}/GrDistanceFieldGenFromVector.h
++    ${gpu_loc}/GrDrawOpAtlas.cpp
++    ${gpu_loc}/GrDrawOpAtlas.h
++    ${gpu_loc}/GrDrawOpTest.cpp
++    ${gpu_loc}/GrDrawOpTest.h
++    ${gpu_loc}/GrDrawingManager.cpp
++    ${gpu_loc}/GrDrawingManager.h
++    ${gpu_loc}/GrDriverBugWorkarounds.cpp
++    ${gpu_loc}/GrDynamicAtlas.cpp
++    ${gpu_loc}/GrDynamicAtlas.h
++    ${gpu_loc}/GrEagerVertexAllocator.h
++    ${gpu_loc}/GrFPArgs.h
++    ${gpu_loc}/GrFinishCallbacks.cpp
++    ${gpu_loc}/GrFinishCallbacks.h
++    ${gpu_loc}/GrFixedClip.cpp
++    ${gpu_loc}/GrFixedClip.h
++    ${gpu_loc}/GrFragmentProcessor.cpp
++    ${gpu_loc}/GrFragmentProcessor.h
++    ${gpu_loc}/GrGeometryProcessor.h
++    ${gpu_loc}/GrGlyph.h
++    ${gpu_loc}/GrGpu.cpp
++    ${gpu_loc}/GrGpu.h
++    ${gpu_loc}/GrGpuBuffer.cpp
++    ${gpu_loc}/GrGpuBuffer.h
++    ${gpu_loc}/GrGpuResource.cpp
++    ${gpu_loc}/GrGpuResource.h
++    ${gpu_loc}/GrGpuResourceCacheAccess.h
++    ${gpu_loc}/GrGpuResourcePriv.h
++    ${gpu_loc}/GrImageContext.cpp
++    ${gpu_loc}/GrImageContextPriv.h
++    ${gpu_loc}/GrImageInfo.h
++    ${gpu_loc}/GrImageTextureMaker.cpp
++    ${gpu_loc}/GrImageTextureMaker.h
++    ${gpu_loc}/GrLegacyDirectContext.cpp
++    ${gpu_loc}/GrManagedResource.cpp
++    ${gpu_loc}/GrManagedResource.h
++    ${gpu_loc}/GrMemoryPool.cpp
++    ${gpu_loc}/GrMemoryPool.h
++    ${gpu_loc}/GrNativeRect.h
++    ${gpu_loc}/GrNonAtomicRef.h
++    ${gpu_loc}/GrOnFlushResourceProvider.cpp
++    ${gpu_loc}/GrOnFlushResourceProvider.h
++    ${gpu_loc}/GrOpFlushState.cpp
++    ${gpu_loc}/GrOpFlushState.h
++    ${gpu_loc}/GrOpsRenderPass.cpp
++    ${gpu_loc}/GrOpsRenderPass.h
++    ${gpu_loc}/GrOpsTask.cpp
++    ${gpu_loc}/GrOpsTask.h
++    ${gpu_loc}/GrPaint.cpp
++    ${gpu_loc}/GrPaint.h
++    ${gpu_loc}/GrPath.cpp
++    ${gpu_loc}/GrPath.h
++    ${gpu_loc}/GrPathProcessor.cpp
++    ${gpu_loc}/GrPathProcessor.h
++    ${gpu_loc}/GrPathRenderer.cpp
++    ${gpu_loc}/GrPathRenderer.h
++    ${gpu_loc}/GrPathRendererChain.cpp
++    ${gpu_loc}/GrPathRendererChain.h
++    ${gpu_loc}/GrPathRendering.cpp
++    ${gpu_loc}/GrPathRendering.h
++    # ${gpu_loc}/GrPathRendering_none.cpp
++    ${gpu_loc}/GrPersistentCacheUtils.h
++    ${gpu_loc}/GrPipeline.cpp
++    ${gpu_loc}/GrPipeline.h
++    ${gpu_loc}/GrPrimitiveProcessor.cpp
++    ${gpu_loc}/GrPrimitiveProcessor.h
++    ${gpu_loc}/GrProcessor.cpp
++    ${gpu_loc}/GrProcessor.h
++    ${gpu_loc}/GrProcessorAnalysis.cpp
++    ${gpu_loc}/GrProcessorAnalysis.h
++    ${gpu_loc}/GrProcessorSet.cpp
++    ${gpu_loc}/GrProcessorSet.h
++    ${gpu_loc}/GrProcessorUnitTest.cpp
++    ${gpu_loc}/GrProcessorUnitTest.h
++    ${gpu_loc}/GrProgramDesc.cpp
++    ${gpu_loc}/GrProgramDesc.h
++    ${gpu_loc}/GrProgramInfo.cpp
++    ${gpu_loc}/GrProgramInfo.h
++    ${gpu_loc}/GrProxyProvider.cpp
++    ${gpu_loc}/GrProxyProvider.h
++    ${gpu_loc}/GrRecordingContext.cpp
++    ${gpu_loc}/GrRecordingContextPriv.h
++    ${gpu_loc}/GrRectanizerSkyline.cpp
++    ${gpu_loc}/GrRectanizerSkyline.h
++    ${gpu_loc}/GrReducedClip.cpp
++    ${gpu_loc}/GrReducedClip.h
++    ${gpu_loc}/GrRenderTarget.cpp
++    ${gpu_loc}/GrRenderTarget.h
++    ${gpu_loc}/GrRenderTargetContext.cpp
++    ${gpu_loc}/GrRenderTargetContext.h
++    ${gpu_loc}/GrRenderTargetContextPriv.h
++    ${gpu_loc}/GrRenderTargetPriv.h
++    ${gpu_loc}/GrRenderTargetProxy.cpp
++    ${gpu_loc}/GrRenderTargetProxy.h
++    ${gpu_loc}/GrRenderTargetProxyPriv.h
++    ${gpu_loc}/GrRenderTask.cpp
++    ${gpu_loc}/GrRenderTask.h
++    ${gpu_loc}/GrResourceAllocator.cpp
++    ${gpu_loc}/GrResourceAllocator.h
++    ${gpu_loc}/GrResourceCache.cpp
++    ${gpu_loc}/GrResourceCache.h
++    ${gpu_loc}/GrResourceHandle.h
++    ${gpu_loc}/GrResourceProvider.cpp
++    ${gpu_loc}/GrResourceProvider.h
++    ${gpu_loc}/GrResourceProviderPriv.h
++    ${gpu_loc}/GrSPIRVUniformHandler.cpp
++    ${gpu_loc}/GrSPIRVUniformHandler.h
++    ${gpu_loc}/GrSPIRVVaryingHandler.cpp
++    ${gpu_loc}/GrSPIRVVaryingHandler.h
++    ${gpu_loc}/GrSWMaskHelper.cpp
++    ${gpu_loc}/GrSWMaskHelper.h
++    ${gpu_loc}/GrSamplePatternDictionary.cpp
++    ${gpu_loc}/GrSamplePatternDictionary.h
++    ${gpu_loc}/GrSamplerState.h
++    ${gpu_loc}/GrScissorState.h
++    ${gpu_loc}/GrSemaphore.h
++    ${gpu_loc}/GrShaderCaps.cpp
++    ${gpu_loc}/GrShaderCaps.h
++    ${gpu_loc}/GrShaderUtils.cpp
++    ${gpu_loc}/GrShaderUtils.h
++    ${gpu_loc}/GrShaderVar.cpp
++    ${gpu_loc}/GrShaderVar.h
++    ${gpu_loc}/GrSimpleMesh.h
++    ${gpu_loc}/GrSoftwarePathRenderer.cpp
++    ${gpu_loc}/GrSoftwarePathRenderer.h
++    ${gpu_loc}/GrStagingBuffer.cpp
++    ${gpu_loc}/GrStagingBuffer.h
++    ${gpu_loc}/GrStencilAttachment.cpp
++    ${gpu_loc}/GrStencilAttachment.h
++    ${gpu_loc}/GrStencilClip.h
++    ${gpu_loc}/GrStencilSettings.cpp
++    ${gpu_loc}/GrStencilSettings.h
++    ${gpu_loc}/GrStyle.cpp
++    ${gpu_loc}/GrStyle.h
++    ${gpu_loc}/GrSurface.cpp
++    ${gpu_loc}/GrSurface.h
++    ${gpu_loc}/GrSurfaceContext.cpp
++    ${gpu_loc}/GrSurfaceContext.h
++    ${gpu_loc}/GrSurfaceContextPriv.h
++    ${gpu_loc}/GrSurfacePriv.h
++    ${gpu_loc}/GrSurfaceProxy.cpp
++    ${gpu_loc}/GrSurfaceProxy.h
++    ${gpu_loc}/GrSurfaceProxyPriv.h
++    ${gpu_loc}/GrSurfaceProxyView.h
++    ${gpu_loc}/GrSwizzle.cpp
++    ${gpu_loc}/GrSwizzle.h
++    ${gpu_loc}/GrTAllocator.h
++    ${gpu_loc}/GrTRecorder.h
++    ${gpu_loc}/GrTestUtils.cpp
++    ${gpu_loc}/GrTestUtils.h
++    ${gpu_loc}/GrTexture.cpp
++    ${gpu_loc}/GrTexture.h
++    ${gpu_loc}/GrTextureAdjuster.cpp
++    ${gpu_loc}/GrTextureAdjuster.h
++    ${gpu_loc}/GrTextureMaker.cpp
++    ${gpu_loc}/GrTextureMaker.h
++    ${gpu_loc}/GrTexturePriv.h
++    ${gpu_loc}/GrTextureProducer.cpp
++    ${gpu_loc}/GrTextureProducer.h
++    ${gpu_loc}/GrTextureProxy.cpp
++    ${gpu_loc}/GrTextureProxy.h
++    ${gpu_loc}/GrTextureProxyCacheAccess.h
++    ${gpu_loc}/GrTextureProxyPriv.h
++    ${gpu_loc}/GrTextureRenderTargetProxy.cpp
++    ${gpu_loc}/GrTextureRenderTargetProxy.h
++    ${gpu_loc}/GrTextureResolveManager.h
++    ${gpu_loc}/GrTextureResolveRenderTask.cpp
++    ${gpu_loc}/GrTextureResolveRenderTask.h
++    ${gpu_loc}/GrTracing.h
++    ${gpu_loc}/GrTransferFromRenderTask.cpp
++    ${gpu_loc}/GrTransferFromRenderTask.h
++    ${gpu_loc}/GrTriangulator.cpp
++    ${gpu_loc}/GrTriangulator.h
++    ${gpu_loc}/GrUserStencilSettings.h
++    ${gpu_loc}/GrUtil.h
++    ${gpu_loc}/GrVertexWriter.h
++    ${gpu_loc}/GrWaitRenderTask.cpp
++    ${gpu_loc}/GrWaitRenderTask.h
++    ${gpu_loc}/GrWindowRectangles.h
++    ${gpu_loc}/GrWindowRectsState.h
++    ${gpu_loc}/GrXferProcessor.cpp
++    ${gpu_loc}/GrXferProcessor.h
++    ${gpu_loc}/GrYUVProvider.cpp
++    ${gpu_loc}/GrYUVProvider.h
++    ${gpu_loc}/SkGpuDevice.cpp
++    ${gpu_loc}/SkGpuDevice.h
++    ${gpu_loc}/SkGpuDevice_drawTexture.cpp
++    ${gpu_loc}/SkGr.cpp
++    ${gpu_loc}/SkGr.h
++    ${gpu_loc}/effects/GrAARectEffect.fp
++    ${gpu_loc}/effects/GrAlphaThresholdFragmentProcessor.fp
++    ${gpu_loc}/effects/GrAtlasedShaderHelpers.h
++    ${gpu_loc}/effects/GrBezierEffect.cpp
++    ${gpu_loc}/effects/GrBezierEffect.h
++    ${gpu_loc}/effects/GrBicubicEffect.cpp
++    ${gpu_loc}/effects/GrBicubicEffect.h
++    ${gpu_loc}/effects/GrBitmapTextGeoProc.cpp
++    ${gpu_loc}/effects/GrBitmapTextGeoProc.h
++    ${gpu_loc}/effects/GrBlurredEdgeFragmentProcessor.fp
++    ${gpu_loc}/effects/GrCircleBlurFragmentProcessor.fp
++    ${gpu_loc}/effects/GrCircleEffect.fp
++    ${gpu_loc}/effects/GrClampFragmentProcessor.fp
++    ${gpu_loc}/effects/GrColorMatrixFragmentProcessor.fp
++    ${gpu_loc}/effects/GrComposeLerpEffect.fp
++    ${gpu_loc}/effects/GrConfigConversionEffect.fp
++    ${gpu_loc}/effects/GrConstColorProcessor.fp
++    ${gpu_loc}/effects/GrConvexPolyEffect.cpp
++    ${gpu_loc}/effects/GrConvexPolyEffect.h
++    ${gpu_loc}/effects/GrCoverageSetOpXP.cpp
++    ${gpu_loc}/effects/GrCoverageSetOpXP.h
++    ${gpu_loc}/effects/GrCustomXfermode.cpp
++    ${gpu_loc}/effects/GrCustomXfermode.h
++    ${gpu_loc}/effects/GrDeviceSpaceEffect.fp
++    ${gpu_loc}/effects/GrDisableColorXP.cpp
++    ${gpu_loc}/effects/GrDisableColorXP.h
++    ${gpu_loc}/effects/GrDistanceFieldGeoProc.cpp
++    ${gpu_loc}/effects/GrDistanceFieldGeoProc.h
++    ${gpu_loc}/effects/GrEllipseEffect.fp
++    ${gpu_loc}/effects/GrGaussianConvolutionFragmentProcessor.cpp
++    ${gpu_loc}/effects/GrGaussianConvolutionFragmentProcessor.h
++    ${gpu_loc}/effects/GrHSLToRGBFilterEffect.fp
++    ${gpu_loc}/effects/GrLumaColorFilterEffect.fp
++    ${gpu_loc}/effects/GrMagnifierEffect.fp
++    ${gpu_loc}/effects/GrMatrixConvolutionEffect.cpp
++    ${gpu_loc}/effects/GrMatrixConvolutionEffect.h
++    ${gpu_loc}/effects/GrMatrixEffect.fp
++    ${gpu_loc}/effects/GrMixerEffect.fp
++    ${gpu_loc}/effects/GrOvalEffect.cpp
++    ${gpu_loc}/effects/GrOvalEffect.h
++    ${gpu_loc}/effects/GrOverrideInputFragmentProcessor.fp
++    ${gpu_loc}/effects/GrPorterDuffXferProcessor.cpp
++    ${gpu_loc}/effects/GrPorterDuffXferProcessor.h
++    ${gpu_loc}/effects/GrPremulInputFragmentProcessor.fp
++    ${gpu_loc}/effects/GrRGBToHSLFilterEffect.fp
++    ${gpu_loc}/effects/GrRRectBlurEffect.fp
++    ${gpu_loc}/effects/GrRRectEffect.cpp
++    ${gpu_loc}/effects/GrRRectEffect.h
++    ${gpu_loc}/effects/GrRectBlurEffect.fp
++    ${gpu_loc}/effects/GrShadowGeoProc.cpp
++    ${gpu_loc}/effects/GrShadowGeoProc.h
++    ${gpu_loc}/effects/GrSkSLFP.cpp
++    ${gpu_loc}/effects/GrSkSLFP.h
++    ${gpu_loc}/effects/GrTextureEffect.cpp
++    ${gpu_loc}/effects/GrTextureEffect.h
++    ${gpu_loc}/effects/GrXfermodeFragmentProcessor.cpp
++    ${gpu_loc}/effects/GrXfermodeFragmentProcessor.h
++    ${gpu_loc}/effects/GrYUVtoRGBEffect.cpp
++    ${gpu_loc}/effects/GrYUVtoRGBEffect.h
++    ${gpu_loc}/effects/generated/GrAARectEffect.cpp
++    ${gpu_loc}/effects/generated/GrAARectEffect.h
++    ${gpu_loc}/effects/generated/GrAlphaThresholdFragmentProcessor.cpp
++    ${gpu_loc}/effects/generated/GrAlphaThresholdFragmentProcessor.h
++    ${gpu_loc}/effects/generated/GrBlurredEdgeFragmentProcessor.cpp
++    ${gpu_loc}/effects/generated/GrBlurredEdgeFragmentProcessor.h
++    ${gpu_loc}/effects/generated/GrCircleBlurFragmentProcessor.cpp
++    ${gpu_loc}/effects/generated/GrCircleBlurFragmentProcessor.h
++    ${gpu_loc}/effects/generated/GrCircleEffect.cpp
++    ${gpu_loc}/effects/generated/GrCircleEffect.h
++    ${gpu_loc}/effects/generated/GrClampFragmentProcessor.cpp
++    ${gpu_loc}/effects/generated/GrClampFragmentProcessor.h
++    ${gpu_loc}/effects/generated/GrColorMatrixFragmentProcessor.cpp
++    ${gpu_loc}/effects/generated/GrColorMatrixFragmentProcessor.h
++    ${gpu_loc}/effects/generated/GrComposeLerpEffect.cpp
++    ${gpu_loc}/effects/generated/GrComposeLerpEffect.h
++    ${gpu_loc}/effects/generated/GrConfigConversionEffect.cpp
++    ${gpu_loc}/effects/generated/GrConfigConversionEffect.h
++    ${gpu_loc}/effects/generated/GrConstColorProcessor.cpp
++    ${gpu_loc}/effects/generated/GrConstColorProcessor.h
++    ${gpu_loc}/effects/generated/GrDeviceSpaceEffect.cpp
++    ${gpu_loc}/effects/generated/GrDeviceSpaceEffect.h
++    ${gpu_loc}/effects/generated/GrEllipseEffect.cpp
++    ${gpu_loc}/effects/generated/GrEllipseEffect.h
++    ${gpu_loc}/effects/generated/GrHSLToRGBFilterEffect.cpp
++    ${gpu_loc}/effects/generated/GrHSLToRGBFilterEffect.h
++    ${gpu_loc}/effects/generated/GrLumaColorFilterEffect.cpp
++    ${gpu_loc}/effects/generated/GrLumaColorFilterEffect.h
++    ${gpu_loc}/effects/generated/GrMagnifierEffect.cpp
++    ${gpu_loc}/effects/generated/GrMagnifierEffect.h
++    ${gpu_loc}/effects/generated/GrMatrixEffect.cpp
++    ${gpu_loc}/effects/generated/GrMatrixEffect.h
++    ${gpu_loc}/effects/generated/GrMixerEffect.cpp
++    ${gpu_loc}/effects/generated/GrMixerEffect.h
++    ${gpu_loc}/effects/generated/GrOverrideInputFragmentProcessor.cpp
++    ${gpu_loc}/effects/generated/GrOverrideInputFragmentProcessor.h
++    ${gpu_loc}/effects/generated/GrPremulInputFragmentProcessor.cpp
++    ${gpu_loc}/effects/generated/GrPremulInputFragmentProcessor.h
++    ${gpu_loc}/effects/generated/GrRGBToHSLFilterEffect.cpp
++    ${gpu_loc}/effects/generated/GrRGBToHSLFilterEffect.h
++    ${gpu_loc}/effects/generated/GrRRectBlurEffect.cpp
++    ${gpu_loc}/effects/generated/GrRRectBlurEffect.h
++    ${gpu_loc}/effects/generated/GrRectBlurEffect.cpp
++    ${gpu_loc}/effects/generated/GrRectBlurEffect.h
++    ${gpu_loc}/geometry/GrPathUtils.cpp
++    ${gpu_loc}/geometry/GrPathUtils.h
++    ${gpu_loc}/geometry/GrQuad.cpp
++    ${gpu_loc}/geometry/GrQuad.h
++    ${gpu_loc}/geometry/GrQuadBuffer.h
++    ${gpu_loc}/geometry/GrQuadUtils.cpp
++    ${gpu_loc}/geometry/GrQuadUtils.h
++    ${gpu_loc}/geometry/GrRect.h
++    ${gpu_loc}/geometry/GrShape.cpp
++    ${gpu_loc}/geometry/GrShape.h
++    ${gpu_loc}/geometry/GrStyledShape.cpp
++    ${gpu_loc}/geometry/GrStyledShape.h
++    ${gpu_loc}/glsl/GrGLSL.cpp
++    ${gpu_loc}/glsl/GrGLSL.h
++    ${gpu_loc}/glsl/GrGLSLBlend.cpp
++    ${gpu_loc}/glsl/GrGLSLBlend.h
++    ${gpu_loc}/glsl/GrGLSLColorSpaceXformHelper.h
++    ${gpu_loc}/glsl/GrGLSLFragmentProcessor.cpp
++    ${gpu_loc}/glsl/GrGLSLFragmentProcessor.h
++    ${gpu_loc}/glsl/GrGLSLFragmentShaderBuilder.cpp
++    ${gpu_loc}/glsl/GrGLSLFragmentShaderBuilder.h
++    ${gpu_loc}/glsl/GrGLSLGeometryProcessor.cpp
++    ${gpu_loc}/glsl/GrGLSLGeometryProcessor.h
++    ${gpu_loc}/glsl/GrGLSLPrimitiveProcessor.cpp
++    ${gpu_loc}/glsl/GrGLSLPrimitiveProcessor.h
++    ${gpu_loc}/glsl/GrGLSLProgramBuilder.cpp
++    ${gpu_loc}/glsl/GrGLSLProgramBuilder.h
++    ${gpu_loc}/glsl/GrGLSLProgramDataManager.cpp
++    ${gpu_loc}/glsl/GrGLSLProgramDataManager.h
++    ${gpu_loc}/glsl/GrGLSLShaderBuilder.cpp
++    ${gpu_loc}/glsl/GrGLSLShaderBuilder.h
++    ${gpu_loc}/glsl/GrGLSLUniformHandler.cpp
++    ${gpu_loc}/glsl/GrGLSLUniformHandler.h
++    ${gpu_loc}/glsl/GrGLSLVarying.cpp
++    ${gpu_loc}/glsl/GrGLSLVarying.h
++    ${gpu_loc}/glsl/GrGLSLVertexGeoBuilder.cpp
++    ${gpu_loc}/glsl/GrGLSLVertexGeoBuilder.h
++    ${gpu_loc}/glsl/GrGLSLXferProcessor.cpp
++    ${gpu_loc}/glsl/GrGLSLXferProcessor.h
++    ${gpu_loc}/gradients/generated/GrClampedGradientEffect.cpp
++    ${gpu_loc}/gradients/generated/GrClampedGradientEffect.h
++    ${gpu_loc}/gradients/generated/GrDualIntervalGradientColorizer.cpp
++    ${gpu_loc}/gradients/generated/GrDualIntervalGradientColorizer.h
++    ${gpu_loc}/gradients/generated/GrLinearGradientLayout.cpp
++    ${gpu_loc}/gradients/generated/GrLinearGradientLayout.h
++    ${gpu_loc}/gradients/generated/GrRadialGradientLayout.cpp
++    ${gpu_loc}/gradients/generated/GrRadialGradientLayout.h
++    ${gpu_loc}/gradients/generated/GrSingleIntervalGradientColorizer.cpp
++    ${gpu_loc}/gradients/generated/GrSingleIntervalGradientColorizer.h
++    ${gpu_loc}/gradients/generated/GrSweepGradientLayout.cpp
++    ${gpu_loc}/gradients/generated/GrSweepGradientLayout.h
++    ${gpu_loc}/gradients/generated/GrTextureGradientColorizer.cpp
++    ${gpu_loc}/gradients/generated/GrTextureGradientColorizer.h
++    ${gpu_loc}/gradients/generated/GrTiledGradientEffect.cpp
++    ${gpu_loc}/gradients/generated/GrTiledGradientEffect.h
++    ${gpu_loc}/gradients/generated/GrTwoPointConicalGradientLayout.cpp
++    ${gpu_loc}/gradients/generated/GrTwoPointConicalGradientLayout.h
++    ${gpu_loc}/gradients/generated/GrUnrolledBinaryGradientColorizer.cpp
++    ${gpu_loc}/gradients/generated/GrUnrolledBinaryGradientColorizer.h
++    ${gpu_loc}/gradients/GrClampedGradientEffect.fp
++    ${gpu_loc}/gradients/GrDualIntervalGradientColorizer.fp
++    ${gpu_loc}/gradients/GrGradientBitmapCache.cpp
++    ${gpu_loc}/gradients/GrGradientBitmapCache.h
++    ${gpu_loc}/gradients/GrGradientShader.cpp
++    ${gpu_loc}/gradients/GrGradientShader.h
++    ${gpu_loc}/gradients/GrLinearGradientLayout.fp
++    ${gpu_loc}/gradients/GrRadialGradientLayout.fp
++    ${gpu_loc}/gradients/GrSingleIntervalGradientColorizer.fp
++    ${gpu_loc}/gradients/GrSweepGradientLayout.fp
++    ${gpu_loc}/gradients/GrTextureGradientColorizer.fp
++    ${gpu_loc}/gradients/GrTiledGradientEffect.fp
++    ${gpu_loc}/gradients/GrTwoPointConicalGradientLayout.fp
++    ${gpu_loc}/gradients/GrUnrolledBinaryGradientColorizer.fp
++    ${gpu_loc}/ops/GrAAConvexPathRenderer.cpp
++    ${gpu_loc}/ops/GrAAConvexPathRenderer.h
++    ${gpu_loc}/ops/GrAAConvexTessellator.cpp
++    ${gpu_loc}/ops/GrAAConvexTessellator.h
++    ${gpu_loc}/ops/GrAAHairLinePathRenderer.cpp
++    ${gpu_loc}/ops/GrAAHairLinePathRenderer.h
++    ${gpu_loc}/ops/GrAALinearizingConvexPathRenderer.cpp
++    ${gpu_loc}/ops/GrAALinearizingConvexPathRenderer.h
++    ${gpu_loc}/ops/GrAtlasTextOp.cpp
++    ${gpu_loc}/ops/GrAtlasTextOp.h
++    ${gpu_loc}/ops/GrClearOp.cpp
++    ${gpu_loc}/ops/GrClearOp.h
++    ${gpu_loc}/ops/GrClearStencilClipOp.cpp
++    ${gpu_loc}/ops/GrClearStencilClipOp.h
++    ${gpu_loc}/ops/GrDashLinePathRenderer.cpp
++    ${gpu_loc}/ops/GrDashLinePathRenderer.h
++    ${gpu_loc}/ops/GrDashOp.cpp
++    ${gpu_loc}/ops/GrDashOp.h
++    ${gpu_loc}/ops/GrDefaultPathRenderer.cpp
++    ${gpu_loc}/ops/GrDefaultPathRenderer.h
++    ${gpu_loc}/ops/GrDrawAtlasOp.cpp
++    ${gpu_loc}/ops/GrDrawAtlasOp.h
++    ${gpu_loc}/ops/GrDrawOp.h
++    ${gpu_loc}/ops/GrDrawPathOp.cpp
++    ${gpu_loc}/ops/GrDrawPathOp.h
++    ${gpu_loc}/ops/GrDrawVerticesOp.cpp
++    ${gpu_loc}/ops/GrDrawVerticesOp.h
++    ${gpu_loc}/ops/GrDrawableOp.cpp
++    ${gpu_loc}/ops/GrDrawableOp.h
++    ${gpu_loc}/ops/GrFillRRectOp.cpp
++    ${gpu_loc}/ops/GrFillRRectOp.h
++    ${gpu_loc}/ops/GrFillRectOp.cpp
++    ${gpu_loc}/ops/GrFillRectOp.h
++    ${gpu_loc}/ops/GrLatticeOp.cpp
++    ${gpu_loc}/ops/GrLatticeOp.h
++    ${gpu_loc}/ops/GrMeshDrawOp.cpp
++    ${gpu_loc}/ops/GrMeshDrawOp.h
++    ${gpu_loc}/ops/GrOp.cpp
++    ${gpu_loc}/ops/GrOp.h
++    ${gpu_loc}/ops/GrOvalOpFactory.cpp
++    ${gpu_loc}/ops/GrOvalOpFactory.h
++    ${gpu_loc}/ops/GrPathStencilSettings.h
++    ${gpu_loc}/ops/GrQuadPerEdgeAA.cpp
++    ${gpu_loc}/ops/GrQuadPerEdgeAA.h
++    ${gpu_loc}/ops/GrRegionOp.cpp
++    ${gpu_loc}/ops/GrRegionOp.h
++    ${gpu_loc}/ops/GrShadowRRectOp.cpp
++    ${gpu_loc}/ops/GrShadowRRectOp.h
++    ${gpu_loc}/ops/GrSimpleMeshDrawOpHelper.cpp
++    ${gpu_loc}/ops/GrSimpleMeshDrawOpHelper.h
++    ${gpu_loc}/ops/GrSimpleMeshDrawOpHelperWithStencil.cpp
++    ${gpu_loc}/ops/GrSimpleMeshDrawOpHelperWithStencil.h
++    ${gpu_loc}/ops/GrSmallPathRenderer.cpp
++    ${gpu_loc}/ops/GrSmallPathRenderer.h
++    ${gpu_loc}/ops/GrStencilAndCoverPathRenderer.cpp
++    ${gpu_loc}/ops/GrStencilAndCoverPathRenderer.h
++    ${gpu_loc}/ops/GrStencilPathOp.cpp
++    ${gpu_loc}/ops/GrStencilPathOp.h
++    ${gpu_loc}/ops/GrStrokeRectOp.cpp
++    ${gpu_loc}/ops/GrStrokeRectOp.h
++    ${gpu_loc}/ops/GrTextureOp.cpp
++    ${gpu_loc}/ops/GrTextureOp.h
++    ${gpu_loc}/ops/GrTriangulatingPathRenderer.cpp
++    ${gpu_loc}/ops/GrTriangulatingPathRenderer.h
++    ${gpu_loc}/text/GrAtlasManager.cpp
++    ${gpu_loc}/text/GrAtlasManager.h
++    ${gpu_loc}/text/GrDistanceFieldAdjustTable.cpp
++    ${gpu_loc}/text/GrDistanceFieldAdjustTable.h
++    ${gpu_loc}/text/GrSDFMaskFilter.cpp
++    ${gpu_loc}/text/GrSDFMaskFilter.h
++    ${gpu_loc}/text/GrStrikeCache.cpp
++    ${gpu_loc}/text/GrStrikeCache.h
++    ${gpu_loc}/text/GrTextBlob.cpp
++    ${gpu_loc}/text/GrTextBlob.h
++    ${gpu_loc}/text/GrTextBlobCache.cpp
++    ${gpu_loc}/text/GrTextBlobCache.h
++    ${gpu_loc}/text/GrTextContext.cpp
++    ${gpu_loc}/text/GrTextContext.h
++    ${gpu_loc}/text/GrTextTarget.h
++)
+diff --git a/src/image/CMakeLists.txt b/src/image/CMakeLists.txt
+new file mode 100644
+index 0000000000..2368fbec8f
+--- /dev/null
++++ b/src/image/CMakeLists.txt
+@@ -0,0 +1,31 @@
++add_library(lib_image STATIC)
++init_target(lib_image)
++
++target_link_libraries(lib_image
++PUBLIC
++    lib_images
++)
++
++set(image_loc ${loc}/src/image)
++
++target_sources(lib_image
++PRIVATE
++    ${image_loc}/SkImage.cpp
++    ${image_loc}/SkImage_Base.h
++    # ${image_loc}/SkImage_Gpu.cpp
++    # ${image_loc}/SkImage_Gpu.h
++    # ${image_loc}/SkImage_GpuBase.cpp
++    # ${image_loc}/SkImage_GpuBase.h
++    # ${image_loc}/SkImage_GpuYUVA.cpp
++    # ${image_loc}/SkImage_GpuYUVA.h
++    ${image_loc}/SkImage_Lazy.cpp
++    ${image_loc}/SkImage_Lazy.h
++    ${image_loc}/SkImage_Raster.cpp
++    ${image_loc}/SkReadPixelsRec.h
++    ${image_loc}/SkSurface.cpp
++    ${image_loc}/SkSurface_Base.h
++    # ${image_loc}/SkSurface_Gpu.cpp
++    # ${image_loc}/SkSurface_Gpu.h
++    # ${image_loc}/SkSurface_GpuMtl.mm
++    ${image_loc}/SkSurface_Raster.cpp
++)
+diff --git a/src/images/CMakeLists.txt b/src/images/CMakeLists.txt
+new file mode 100644
+index 0000000000..22778a7114
+--- /dev/null
++++ b/src/images/CMakeLists.txt
+@@ -0,0 +1,16 @@
++add_library(lib_images STATIC)
++init_target(lib_images)
++
++set(images_loc ${loc}/src/images)
++
++target_sources(lib_images
++PRIVATE
++    ${images_loc}/SkImageEncoder.cpp
++    ${images_loc}/SkImageEncoderFns.h
++    ${images_loc}/SkImageEncoderPriv.h
++    # ${images_loc}/SkJPEGWriteUtility.cpp
++    # ${images_loc}/SkJPEGWriteUtility.h
++    # ${images_loc}/SkJpegEncoder.cpp
++    # ${images_loc}/SkPngEncoder.cpp
++    # ${images_loc}/SkWebpEncoder.cpp
++)
+diff --git a/src/opts/CMakeLists.txt b/src/opts/CMakeLists.txt
+new file mode 100644
+index 0000000000..fe9831ccc2
+--- /dev/null
++++ b/src/opts/CMakeLists.txt
+@@ -0,0 +1,26 @@
++add_library(lib_opts STATIC)
++init_target(lib_opts)
++
++set(opts_loc ${loc}/src/opts)
++
++target_sources(lib_opts
++PRIVATE
++    ${opts_loc}/Sk4px_NEON.h
++    ${opts_loc}/Sk4px_SSE2.h
++    ${opts_loc}/Sk4px_none.h
++    ${opts_loc}/SkBitmapProcState_opts.h
++    ${opts_loc}/SkBlitMask_opts.h
++    ${opts_loc}/SkBlitRow_opts.h
++    ${opts_loc}/SkChecksum_opts.h
++    ${opts_loc}/SkOpts_avx.cpp
++    ${opts_loc}/SkOpts_crc32.cpp
++    ${opts_loc}/SkOpts_hsw.cpp
++    ${opts_loc}/SkOpts_sse41.cpp
++    ${opts_loc}/SkOpts_sse42.cpp
++    ${opts_loc}/SkOpts_ssse3.cpp
++    ${opts_loc}/SkRasterPipeline_opts.h
++    ${opts_loc}/SkSwizzler_opts.h
++    ${opts_loc}/SkUtils_opts.h
++    ${opts_loc}/SkVM_opts.h
++    ${opts_loc}/SkXfermode_opts.h
++)
+diff --git a/src/pathops/CMakeLists.txt b/src/pathops/CMakeLists.txt
+new file mode 100644
+index 0000000000..cd839275bb
+--- /dev/null
++++ b/src/pathops/CMakeLists.txt
+@@ -0,0 +1,65 @@
++add_library(lib_pathops STATIC)
++init_target(lib_pathops)
++
++set(pathops_loc ${loc}/src/pathops)
++
++target_sources(lib_pathops
++PRIVATE
++    ${pathops_loc}/SkAddIntersections.cpp
++    ${pathops_loc}/SkAddIntersections.h
++    ${pathops_loc}/SkDConicLineIntersection.cpp
++    ${pathops_loc}/SkDCubicLineIntersection.cpp
++    ${pathops_loc}/SkDCubicToQuads.cpp
++    ${pathops_loc}/SkDLineIntersection.cpp
++    ${pathops_loc}/SkDQuadLineIntersection.cpp
++    ${pathops_loc}/SkIntersectionHelper.h
++    ${pathops_loc}/SkIntersections.cpp
++    ${pathops_loc}/SkIntersections.h
++    ${pathops_loc}/SkLineParameters.h
++    ${pathops_loc}/SkOpAngle.cpp
++    ${pathops_loc}/SkOpAngle.h
++    ${pathops_loc}/SkOpBuilder.cpp
++    ${pathops_loc}/SkOpCoincidence.cpp
++    ${pathops_loc}/SkOpCoincidence.h
++    ${pathops_loc}/SkOpContour.cpp
++    ${pathops_loc}/SkOpContour.h
++    ${pathops_loc}/SkOpCubicHull.cpp
++    ${pathops_loc}/SkOpEdgeBuilder.cpp
++    ${pathops_loc}/SkOpEdgeBuilder.h
++    ${pathops_loc}/SkOpSegment.cpp
++    ${pathops_loc}/SkOpSegment.h
++    ${pathops_loc}/SkOpSpan.cpp
++    ${pathops_loc}/SkOpSpan.h
++    ${pathops_loc}/SkPathOpsAsWinding.cpp
++    ${pathops_loc}/SkPathOpsBounds.h
++    ${pathops_loc}/SkPathOpsCommon.cpp
++    ${pathops_loc}/SkPathOpsCommon.h
++    ${pathops_loc}/SkPathOpsConic.cpp
++    ${pathops_loc}/SkPathOpsConic.h
++    ${pathops_loc}/SkPathOpsCubic.cpp
++    ${pathops_loc}/SkPathOpsCubic.h
++    ${pathops_loc}/SkPathOpsCurve.cpp
++    ${pathops_loc}/SkPathOpsCurve.h
++    ${pathops_loc}/SkPathOpsDebug.cpp
++    ${pathops_loc}/SkPathOpsDebug.h
++    ${pathops_loc}/SkPathOpsLine.cpp
++    ${pathops_loc}/SkPathOpsLine.h
++    ${pathops_loc}/SkPathOpsOp.cpp
++    ${pathops_loc}/SkPathOpsPoint.h
++    ${pathops_loc}/SkPathOpsQuad.cpp
++    ${pathops_loc}/SkPathOpsQuad.h
++    ${pathops_loc}/SkPathOpsRect.cpp
++    ${pathops_loc}/SkPathOpsRect.h
++    ${pathops_loc}/SkPathOpsSimplify.cpp
++    ${pathops_loc}/SkPathOpsTCurve.h
++    ${pathops_loc}/SkPathOpsTSect.cpp
++    ${pathops_loc}/SkPathOpsTSect.h
++    ${pathops_loc}/SkPathOpsTightBounds.cpp
++    ${pathops_loc}/SkPathOpsTypes.cpp
++    ${pathops_loc}/SkPathOpsTypes.h
++    ${pathops_loc}/SkPathOpsWinding.cpp
++    ${pathops_loc}/SkPathWriter.cpp
++    ${pathops_loc}/SkPathWriter.h
++    ${pathops_loc}/SkReduceOrder.cpp
++    ${pathops_loc}/SkReduceOrder.h
++)
+diff --git a/src/ports/CMakeLists.txt b/src/ports/CMakeLists.txt
+new file mode 100644
+index 0000000000..ba2efa6d59
+--- /dev/null
++++ b/src/ports/CMakeLists.txt
+@@ -0,0 +1,103 @@
++add_library(lib_ports STATIC)
++init_target(lib_ports)
++
++target_link_libraries(lib_ports
++PUBLIC
++    lib_fonts
++    lib_codec
++    lib_sfnt
++)
++
++set(ports_loc ${loc}/src/ports)
++
++target_sources(lib_ports
++PRIVATE
++    # ${ports_loc}/SkDebug_android.cpp
++    ${ports_loc}/SkDebug_stdio.cpp
++    # ${ports_loc}/SkDebug_win.cpp
++    ${ports_loc}/SkDiscardableMemory_none.cpp
++    # ${ports_loc}/SkFontConfigInterface.cpp
++    # ${ports_loc}/SkFontConfigInterface_direct.cpp
++    # ${ports_loc}/SkFontConfigInterface_direct.h
++    # ${ports_loc}/SkFontConfigInterface_direct_factory.cpp
++    # ${ports_loc}/SkFontConfigTypeface.h
++    # ${ports_loc}/SkFontHost_FreeType.cpp
++    # ${ports_loc}/SkFontHost_FreeType_common.cpp
++    # ${ports_loc}/SkFontHost_FreeType_common.h
++    ${ports_loc}/SkFontHost_mac.cpp
++    # ${ports_loc}/SkFontHost_win.cpp
++    # ${ports_loc}/SkFontMgr_FontConfigInterface.cpp
++    # ${ports_loc}/SkFontMgr_FontConfigInterface_factory.cpp
++    # ${ports_loc}/SkFontMgr_android.cpp
++    # ${ports_loc}/SkFontMgr_android_factory.cpp
++    # ${ports_loc}/SkFontMgr_android_parser.cpp
++    # ${ports_loc}/SkFontMgr_android_parser.h
++    # ${ports_loc}/SkFontMgr_custom.cpp
++    # ${ports_loc}/SkFontMgr_custom.h
++    # ${ports_loc}/SkFontMgr_custom_directory.cpp
++    # ${ports_loc}/SkFontMgr_custom_directory_factory.cpp
++    # ${ports_loc}/SkFontMgr_custom_embedded.cpp
++    # ${ports_loc}/SkFontMgr_custom_embedded_factory.cpp
++    # ${ports_loc}/SkFontMgr_custom_empty.cpp
++    # ${ports_loc}/SkFontMgr_custom_empty_factory.cpp
++    ${ports_loc}/SkFontMgr_empty_factory.cpp
++    # ${ports_loc}/SkFontMgr_fontconfig.cpp
++    # ${ports_loc}/SkFontMgr_fontconfig_factory.cpp
++    # ${ports_loc}/SkFontMgr_fuchsia.cpp
++    # ${ports_loc}/SkFontMgr_win_dw.cpp
++    # ${ports_loc}/SkFontMgr_win_dw_factory.cpp
++    ${ports_loc}/SkGlobalInitialization_default.cpp
++    ${ports_loc}/SkImageEncoder_CG.cpp
++    # ${ports_loc}/SkImageEncoder_WIC.cpp
++    ${ports_loc}/SkImageGeneratorCG.cpp
++    # ${ports_loc}/SkImageGeneratorWIC.cpp
++    # ${ports_loc}/SkImageGenerator_none.cpp
++    ${ports_loc}/SkImageGenerator_skia.cpp
++    ${ports_loc}/SkMemory_malloc.cpp
++    # ${ports_loc}/SkMemory_mozalloc.cpp
++    # ${ports_loc}/SkOSFile_ios.h
++    ${ports_loc}/SkOSFile_posix.cpp
++    ${ports_loc}/SkOSFile_stdio.cpp
++    # ${ports_loc}/SkOSFile_win.cpp
++    ${ports_loc}/SkOSLibrary.h
++    ${ports_loc}/SkOSLibrary_posix.cpp
++    # ${ports_loc}/SkOSLibrary_win.cpp
++    # ${ports_loc}/SkRemotableFontMgr_win_dw.cpp
++    # ${ports_loc}/SkScalerContext_win_dw.cpp
++    # ${ports_loc}/SkScalerContext_win_dw.h
++    ${ports_loc}/SkTLS_pthread.cpp
++    # ${ports_loc}/SkTLS_win.cpp
++    # ${ports_loc}/SkTypeface_win_dw.cpp
++    # ${ports_loc}/SkTypeface_win_dw.h
++)
++
++if (WIN32)
++    target_sources(lib_ports
++    PRIVATE
++        ${ports_loc}/SkDebug_win.cpp
++        ${ports_loc}/SkFontHost_win.cpp
++        ${ports_loc}/SkFontMgr_win_dw.cpp
++        ${ports_loc}/SkFontMgr_win_dw_factory.cpp
++        ${ports_loc}/SkImageEncoder_WIC.cpp
++        ${ports_loc}/SkImageGeneratorWIC.cpp
++        ${ports_loc}/SkOSFile_win.cpp
++        ${ports_loc}/SkOSLibrary_win.cpp
++        ${ports_loc}/SkRemotableFontMgr_win_dw.cpp
++        ${ports_loc}/SkScalerContext_win_dw.cpp
++        ${ports_loc}/SkScalerContext_win_dw.h
++        ${ports_loc}/SkTLS_win.cpp
++        ${ports_loc}/SkTypeface_win_dw.cpp
++        ${ports_loc}/SkTypeface_win_dw.h
++    )
++elseif (APPLE)
++    target_sources(lib_ports
++    PRIVATE
++        ${ports_loc}/SkFontHost_mac.cpp
++        ${ports_loc}/SkFontMgr_empty_factory.cpp
++        ${ports_loc}/SkImageEncoder_CG.cpp
++        ${ports_loc}/SkImageGeneratorCG.cpp
++        ${ports_loc}/SkOSFile_posix.cpp
++        ${ports_loc}/SkOSLibrary_posix.cpp
++        ${ports_loc}/SkTLS_pthread.cpp
++    )
++endif()
+diff --git a/src/sfnt/CMakeLists.txt b/src/sfnt/CMakeLists.txt
+new file mode 100644
+index 0000000000..6e42531cad
+--- /dev/null
++++ b/src/sfnt/CMakeLists.txt
+@@ -0,0 +1,37 @@
++add_library(lib_sfnt STATIC)
++init_target(lib_sfnt)
++
++set(sfnt_loc ${loc}/src/sfnt)
++
++target_sources(lib_sfnt
++PRIVATE
++    ${sfnt_loc}/SkIBMFamilyClass.h
++    ${sfnt_loc}/SkOTTableTypes.h
++    ${sfnt_loc}/SkOTTable_EBDT.h
++    ${sfnt_loc}/SkOTTable_EBLC.h
++    ${sfnt_loc}/SkOTTable_EBSC.h
++    ${sfnt_loc}/SkOTTable_OS_2.h
++    ${sfnt_loc}/SkOTTable_OS_2_V0.h
++    ${sfnt_loc}/SkOTTable_OS_2_V1.h
++    ${sfnt_loc}/SkOTTable_OS_2_V2.h
++    ${sfnt_loc}/SkOTTable_OS_2_V3.h
++    ${sfnt_loc}/SkOTTable_OS_2_V4.h
++    ${sfnt_loc}/SkOTTable_OS_2_VA.h
++    ${sfnt_loc}/SkOTTable_fvar.h
++    ${sfnt_loc}/SkOTTable_gasp.h
++    ${sfnt_loc}/SkOTTable_glyf.h
++    ${sfnt_loc}/SkOTTable_head.h
++    ${sfnt_loc}/SkOTTable_hhea.h
++    ${sfnt_loc}/SkOTTable_loca.h
++    ${sfnt_loc}/SkOTTable_maxp.h
++    ${sfnt_loc}/SkOTTable_maxp_CFF.h
++    ${sfnt_loc}/SkOTTable_maxp_TT.h
++    ${sfnt_loc}/SkOTTable_name.cpp
++    ${sfnt_loc}/SkOTTable_name.h
++    ${sfnt_loc}/SkOTTable_post.h
++    ${sfnt_loc}/SkOTUtils.cpp
++    ${sfnt_loc}/SkOTUtils.h
++    ${sfnt_loc}/SkPanose.h
++    ${sfnt_loc}/SkSFNTHeader.h
++    ${sfnt_loc}/SkTTCFHeader.h
++)
+diff --git a/src/shaders/CMakeLists.txt b/src/shaders/CMakeLists.txt
+new file mode 100644
+index 0000000000..55198af5aa
+--- /dev/null
++++ b/src/shaders/CMakeLists.txt
+@@ -0,0 +1,41 @@
++add_library(lib_shaders STATIC)
++init_target(lib_shaders)
++
++set(shaders_loc ${loc}/src/shaders)
++
++target_sources(lib_shaders
++PRIVATE
++    ${shaders_loc}/SkBitmapProcShader.cpp
++    ${shaders_loc}/SkBitmapProcShader.h
++    ${shaders_loc}/SkColorFilterShader.cpp
++    ${shaders_loc}/SkColorFilterShader.h
++    ${shaders_loc}/SkColorShader.cpp
++    ${shaders_loc}/SkColorShader.h
++    ${shaders_loc}/SkComposeShader.cpp
++    ${shaders_loc}/SkComposeShader.h
++    ${shaders_loc}/SkEmptyShader.h
++    ${shaders_loc}/SkImageShader.cpp
++    ${shaders_loc}/SkImageShader.h
++    ${shaders_loc}/SkLocalMatrixShader.cpp
++    ${shaders_loc}/SkLocalMatrixShader.h
++    ${shaders_loc}/SkPerlinNoiseShader.cpp
++    ${shaders_loc}/SkPictureShader.cpp
++    ${shaders_loc}/SkPictureShader.h
++    ${shaders_loc}/SkShader.cpp
++    ${shaders_loc}/SkShaderBase.h
++    ${shaders_loc}/gradients/Sk4fGradientBase.cpp
++    ${shaders_loc}/gradients/Sk4fGradientBase.h
++    ${shaders_loc}/gradients/Sk4fGradientPriv.h
++    ${shaders_loc}/gradients/Sk4fLinearGradient.cpp
++    ${shaders_loc}/gradients/Sk4fLinearGradient.h
++    ${shaders_loc}/gradients/SkGradientShader.cpp
++    ${shaders_loc}/gradients/SkGradientShaderPriv.h
++    ${shaders_loc}/gradients/SkLinearGradient.cpp
++    ${shaders_loc}/gradients/SkLinearGradient.h
++    ${shaders_loc}/gradients/SkRadialGradient.cpp
++    ${shaders_loc}/gradients/SkRadialGradient.h
++    ${shaders_loc}/gradients/SkSweepGradient.cpp
++    ${shaders_loc}/gradients/SkSweepGradient.h
++    ${shaders_loc}/gradients/SkTwoPointConicalGradient.cpp
++    ${shaders_loc}/gradients/SkTwoPointConicalGradient.h
++)
+diff --git a/src/sksl/CMakeLists.txt b/src/sksl/CMakeLists.txt
+new file mode 100644
+index 0000000000..d7bfea7cfd
+--- /dev/null
++++ b/src/sksl/CMakeLists.txt
+@@ -0,0 +1,144 @@
++add_library(lib_sksl STATIC)
++init_target(lib_sksl)
++
++set(sksl_loc ${loc}/src/sksl)
++
++target_sources(lib_sksl
++PRIVATE
++    ${sksl_loc}/GLSL.std.450.h
++    ${sksl_loc}/SkSLASTFile.h
++    ${sksl_loc}/SkSLASTNode.cpp
++    ${sksl_loc}/SkSLASTNode.h
++    ${sksl_loc}/SkSLByteCode.cpp
++    ${sksl_loc}/SkSLByteCode.h
++    ${sksl_loc}/SkSLByteCodeGenerator.cpp
++    ${sksl_loc}/SkSLByteCodeGenerator.h
++    ${sksl_loc}/SkSLCFGGenerator.cpp
++    ${sksl_loc}/SkSLCFGGenerator.h
++    ${sksl_loc}/SkSLCPP.h
++    ${sksl_loc}/SkSLCPPCodeGenerator.cpp
++    ${sksl_loc}/SkSLCPPCodeGenerator.h
++    ${sksl_loc}/SkSLCPPUniformCTypes.cpp
++    ${sksl_loc}/SkSLCPPUniformCTypes.h
++    ${sksl_loc}/SkSLCodeGenerator.h
++    ${sksl_loc}/SkSLCompiler.cpp
++    ${sksl_loc}/SkSLCompiler.h
++    ${sksl_loc}/SkSLContext.h
++    ${sksl_loc}/SkSLDefines.h
++    ${sksl_loc}/SkSLErrorReporter.h
++    ${sksl_loc}/SkSLExternalValue.h
++    ${sksl_loc}/SkSLFileOutputStream.h
++    ${sksl_loc}/SkSLGLSLCodeGenerator.cpp
++    ${sksl_loc}/SkSLGLSLCodeGenerator.h
++    ${sksl_loc}/SkSLHCodeGenerator.cpp
++    ${sksl_loc}/SkSLHCodeGenerator.h
++    ${sksl_loc}/SkSLIRGenerator.cpp
++    ${sksl_loc}/SkSLIRGenerator.h
++    ${sksl_loc}/SkSLLexer.cpp
++    ${sksl_loc}/SkSLLexer.h
++    ${sksl_loc}/SkSLMain.cpp
++    ${sksl_loc}/SkSLMemoryLayout.h
++    ${sksl_loc}/SkSLMetalCodeGenerator.cpp
++    ${sksl_loc}/SkSLMetalCodeGenerator.h
++    ${sksl_loc}/SkSLOutputStream.cpp
++    ${sksl_loc}/SkSLOutputStream.h
++    ${sksl_loc}/SkSLParser.cpp
++    ${sksl_loc}/SkSLParser.h
++    ${sksl_loc}/SkSLPipelineStageCodeGenerator.cpp
++    ${sksl_loc}/SkSLPipelineStageCodeGenerator.h
++    ${sksl_loc}/SkSLPosition.h
++    ${sksl_loc}/SkSLSPIRVCodeGenerator.cpp
++    ${sksl_loc}/SkSLSPIRVCodeGenerator.h
++    ${sksl_loc}/SkSLSPIRVtoHLSL.cpp
++    ${sksl_loc}/SkSLSPIRVtoHLSL.h
++    ${sksl_loc}/SkSLSampleMatrix.cpp
++    ${sksl_loc}/SkSLSampleMatrix.h
++    ${sksl_loc}/SkSLSectionAndParameterHelper.cpp
++    ${sksl_loc}/SkSLSectionAndParameterHelper.h
++    ${sksl_loc}/SkSLString.cpp
++    ${sksl_loc}/SkSLString.h
++    ${sksl_loc}/SkSLStringStream.h
++    ${sksl_loc}/SkSLUtil.cpp
++    ${sksl_loc}/SkSLUtil.h
++    ${sksl_loc}/sksl_blend.inc
++    ${sksl_loc}/sksl_enums.inc
++    ${sksl_loc}/sksl_fp.inc
++    ${sksl_loc}/sksl_frag.inc
++    ${sksl_loc}/sksl_geom.inc
++    ${sksl_loc}/sksl_gpu.inc
++    ${sksl_loc}/sksl_interp.inc
++    ${sksl_loc}/sksl_pipeline.inc
++    ${sksl_loc}/sksl_vert.inc
++    ${sksl_loc}/spirv.h
++    ${sksl_loc}/ir/SkSLBinaryExpression.h
++    ${sksl_loc}/ir/SkSLBlock.h
++    ${sksl_loc}/ir/SkSLBoolLiteral.h
++    ${sksl_loc}/ir/SkSLBreakStatement.h
++    ${sksl_loc}/ir/SkSLConstructor.h
++    ${sksl_loc}/ir/SkSLContinueStatement.h
++    ${sksl_loc}/ir/SkSLDiscardStatement.h
++    ${sksl_loc}/ir/SkSLDoStatement.h
++    ${sksl_loc}/ir/SkSLEnum.h
++    ${sksl_loc}/ir/SkSLExpression.h
++    ${sksl_loc}/ir/SkSLExpressionStatement.h
++    ${sksl_loc}/ir/SkSLExtension.h
++    ${sksl_loc}/ir/SkSLExternalFunctionCall.h
++    ${sksl_loc}/ir/SkSLExternalValueReference.h
++    ${sksl_loc}/ir/SkSLField.h
++    ${sksl_loc}/ir/SkSLFieldAccess.h
++    ${sksl_loc}/ir/SkSLFloatLiteral.h
++    ${sksl_loc}/ir/SkSLForStatement.h
++    ${sksl_loc}/ir/SkSLFunctionCall.h
++    ${sksl_loc}/ir/SkSLFunctionDeclaration.h
++    ${sksl_loc}/ir/SkSLFunctionDefinition.h
++    ${sksl_loc}/ir/SkSLFunctionReference.h
++    ${sksl_loc}/ir/SkSLIRNode.h
++    ${sksl_loc}/ir/SkSLIfStatement.h
++    ${sksl_loc}/ir/SkSLIndexExpression.h
++    ${sksl_loc}/ir/SkSLIntLiteral.h
++    ${sksl_loc}/ir/SkSLInterfaceBlock.h
++    ${sksl_loc}/ir/SkSLLayout.h
++    ${sksl_loc}/ir/SkSLModifiers.h
++    ${sksl_loc}/ir/SkSLModifiersDeclaration.h
++    ${sksl_loc}/ir/SkSLNop.h
++    ${sksl_loc}/ir/SkSLNullLiteral.h
++    ${sksl_loc}/ir/SkSLPostfixExpression.h
++    ${sksl_loc}/ir/SkSLPrefixExpression.h
++    ${sksl_loc}/ir/SkSLProgram.h
++    ${sksl_loc}/ir/SkSLProgramElement.h
++    ${sksl_loc}/ir/SkSLReturnStatement.h
++    ${sksl_loc}/ir/SkSLSection.h
++    ${sksl_loc}/ir/SkSLSetting.cpp
++    ${sksl_loc}/ir/SkSLSetting.h
++    ${sksl_loc}/ir/SkSLStatement.h
++    ${sksl_loc}/ir/SkSLSwitchCase.h
++    ${sksl_loc}/ir/SkSLSwitchStatement.h
++    ${sksl_loc}/ir/SkSLSwizzle.h
++    ${sksl_loc}/ir/SkSLSymbol.h
++    ${sksl_loc}/ir/SkSLSymbolTable.cpp
++    ${sksl_loc}/ir/SkSLSymbolTable.h
++    ${sksl_loc}/ir/SkSLTernaryExpression.h
++    ${sksl_loc}/ir/SkSLType.cpp
++    ${sksl_loc}/ir/SkSLType.h
++    ${sksl_loc}/ir/SkSLTypeReference.h
++    ${sksl_loc}/ir/SkSLUnresolvedFunction.h
++    ${sksl_loc}/ir/SkSLVarDeclarations.h
++    ${sksl_loc}/ir/SkSLVarDeclarationsStatement.h
++    ${sksl_loc}/ir/SkSLVariable.h
++    ${sksl_loc}/ir/SkSLVariableReference.cpp
++    ${sksl_loc}/ir/SkSLVariableReference.h
++    ${sksl_loc}/ir/SkSLWhileStatement.h
++    ${sksl_loc}/lex/DFA.h
++    ${sksl_loc}/lex/DFAState.h
++    ${sksl_loc}/lex/LexUtil.h
++    ${sksl_loc}/lex/Main.cpp
++    ${sksl_loc}/lex/NFA.cpp
++    ${sksl_loc}/lex/NFA.h
++    ${sksl_loc}/lex/NFAState.h
++    ${sksl_loc}/lex/NFAtoDFA.h
++    ${sksl_loc}/lex/RegexNode.cpp
++    ${sksl_loc}/lex/RegexNode.h
++    ${sksl_loc}/lex/RegexParser.cpp
++    ${sksl_loc}/lex/RegexParser.h
++    ${sksl_loc}/lex/sksl.lex
++)
+diff --git a/src/utils/CMakeLists.txt b/src/utils/CMakeLists.txt
+new file mode 100644
+index 0000000000..272ff94a17
+--- /dev/null
++++ b/src/utils/CMakeLists.txt
+@@ -0,0 +1,92 @@
++add_library(lib_utils STATIC)
++init_target(lib_utils)
++
++set(utils_loc ${loc}/src/utils)
++
++target_sources(lib_utils
++PRIVATE
++    ${utils_loc}/SkAnimCodecPlayer.cpp
++    ${utils_loc}/SkBase64.cpp
++    ${utils_loc}/SkBitSet.h
++    ${utils_loc}/SkCallableTraits.h
++    ${utils_loc}/SkCamera.cpp
++    ${utils_loc}/SkCanvasStack.cpp
++    ${utils_loc}/SkCanvasStack.h
++    ${utils_loc}/SkCanvasStateUtils.cpp
++    ${utils_loc}/SkCharToGlyphCache.cpp
++    ${utils_loc}/SkCharToGlyphCache.h
++    ${utils_loc}/SkClipStackUtils.cpp
++    ${utils_loc}/SkClipStackUtils.h
++    ${utils_loc}/SkCustomTypeface.cpp
++    ${utils_loc}/SkDashPath.cpp
++    ${utils_loc}/SkDashPathPriv.h
++    ${utils_loc}/SkEventTracer.cpp
++    ${utils_loc}/SkFloatToDecimal.cpp
++    ${utils_loc}/SkFloatToDecimal.h
++    ${utils_loc}/SkFloatUtils.h
++    ${utils_loc}/SkInterpolator.cpp
++    ${utils_loc}/SkJSON.cpp
++    ${utils_loc}/SkJSON.h
++    ${utils_loc}/SkJSONWriter.cpp
++    ${utils_loc}/SkJSONWriter.h
++    # ${utils_loc}/SkLua.cpp
++    # ${utils_loc}/SkLuaCanvas.cpp
++    ${utils_loc}/SkMatrix22.cpp
++    ${utils_loc}/SkMatrix22.h
++    ${utils_loc}/SkMultiPictureDocument.cpp
++    ${utils_loc}/SkMultiPictureDocument.h
++    ${utils_loc}/SkMultiPictureDocumentPriv.h
++    ${utils_loc}/SkNWayCanvas.cpp
++    ${utils_loc}/SkNullCanvas.cpp
++    ${utils_loc}/SkOSPath.cpp
++    ${utils_loc}/SkOSPath.h
++    ${utils_loc}/SkPaintFilterCanvas.cpp
++    ${utils_loc}/SkParse.cpp
++    ${utils_loc}/SkParseColor.cpp
++    ${utils_loc}/SkParsePath.cpp
++    ${utils_loc}/SkPatchUtils.cpp
++    ${utils_loc}/SkPatchUtils.h
++    ${utils_loc}/SkPolyUtils.cpp
++    ${utils_loc}/SkPolyUtils.h
++    ${utils_loc}/SkShadowTessellator.cpp
++    ${utils_loc}/SkShadowTessellator.h
++    ${utils_loc}/SkShadowUtils.cpp
++    ${utils_loc}/SkShaperJSONWriter.cpp
++    ${utils_loc}/SkShaperJSONWriter.h
++    ${utils_loc}/SkTextUtils.cpp
++    ${utils_loc}/SkThreadUtils_pthread.cpp
++    ${utils_loc}/SkThreadUtils_win.cpp
++    ${utils_loc}/SkUTF.cpp
++    ${utils_loc}/SkUTF.h
++    ${utils_loc}/SkWhitelistChecksums.inc
++    ${utils_loc}/SkWhitelistTypefaces.cpp
++)
++if (WIN32)
++    target_sources(lib_utils
++    PRIVATE
++        ${utils_loc}/win/SkAutoCoInitialize.cpp
++        ${utils_loc}/win/SkAutoCoInitialize.h
++        ${utils_loc}/win/SkDWrite.cpp
++        ${utils_loc}/win/SkDWrite.h
++        ${utils_loc}/win/SkDWriteFontFileStream.cpp
++        ${utils_loc}/win/SkDWriteFontFileStream.h
++        ${utils_loc}/win/SkDWriteGeometrySink.cpp
++        ${utils_loc}/win/SkDWriteGeometrySink.h
++        ${utils_loc}/win/SkDWriteNTDDI_VERSION.h
++        ${utils_loc}/win/SkHRESULT.cpp
++        ${utils_loc}/win/SkHRESULT.h
++        ${utils_loc}/win/SkIStream.cpp
++        ${utils_loc}/win/SkIStream.h
++        ${utils_loc}/win/SkObjBase.h
++        ${utils_loc}/win/SkTScopedComPtr.h
++        ${utils_loc}/win/SkWGL.h
++        ${utils_loc}/win/SkWGL_win.cpp
++    )
++elseif (APPLE)
++    target_sources(lib_utils
++    PRIVATE
++        ${utils_loc}/mac/SkCreateCGImageRef.cpp
++        ${utils_loc}/mac/SkStream_mac.cpp
++        ${utils_loc}/mac/SkUniqueCFRef.h
++    )
++endif()
+diff --git a/third_party/skcms/CMakeLists.txt b/third_party/skcms/CMakeLists.txt
+new file mode 100644
+index 0000000000..af55fd3b34
+--- /dev/null
++++ b/third_party/skcms/CMakeLists.txt
+@@ -0,0 +1,15 @@
++add_library(lib_skcms STATIC)
++target_compile_features(lib_skcms PUBLIC cxx_std_17)
++
++set(skcms_loc ${loc}/third_party/skcms)
++
++target_include_directories(lib_skcms
++PUBLIC
++    ${loc}/include/third_party/skcms
++    ${skcms_loc}
++)
++
++target_sources(lib_skcms
++PRIVATE
++    ${skcms_loc}/skcms.cc
++)
