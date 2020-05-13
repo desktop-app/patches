@@ -1,0 +1,26 @@
+diff --git a/rtc_base/BUILD.gn b/rtc_base/BUILD.gn
+index 0805a5c549..6150fdaaa9 100644
+--- a/rtc_base/BUILD.gn
++++ b/rtc_base/BUILD.gn
+@@ -24,6 +24,7 @@ if (!rtc_build_ssl) {
+     assert(rtc_ssl_root != "",
+            "You must specify rtc_ssl_root when rtc_build_ssl==0.")
+     include_dirs = [ rtc_ssl_root ]
++    libs = rtc_ssl_libs
+   }
+ }
+ 
+diff --git a/webrtc.gni b/webrtc.gni
+index 64a170c23f..044529a689 100644
+--- a/webrtc.gni
++++ b/webrtc.gni
+@@ -85,6 +85,9 @@ declare_args() {
+   # library that comes with WebRTC (i.e. rtc_build_ssl == 0).
+   rtc_ssl_root = ""
+ 
++  # Used to specify an external OpenSSL libs.
++  rtc_ssl_libs = []
++
+   # Selects fixed-point code where possible.
+   rtc_prefer_fixed_point = false
+ 

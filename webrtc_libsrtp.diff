@@ -1,0 +1,27 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index 6359585..0c9d2ff 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ import("//testing/test.gni")
++import("//webrtc.gni")
+ 
+ declare_args() {
+   # Tests may not be appropriate for some build environments, e.g. Windows.
+@@ -114,9 +115,11 @@ static_library("libsrtp") {
+     "srtp/ekt.c",
+     "srtp/srtp.c",
+   ]
+-  public_deps = [
+-    "//third_party/boringssl:boringssl",
+-  ]
++  if (rtc_build_ssl) {
++    public_deps += [ "//third_party/boringssl" ]
++  } else {
++    configs += [ "//rtc_base:external_ssl_library" ]
++  }
+ }
+ 
+ if (build_libsrtp_tests) {
