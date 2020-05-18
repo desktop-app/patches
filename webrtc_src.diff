@@ -1,5 +1,18 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index 24dc067..6c8eca8 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -307,7 +307,7 @@ config("common_config") {
+         "-Wnon-virtual-dtor",
+ 
+         # This is enabled for clang; enable for gcc as well.
+-        "-Woverloaded-virtual",
++        # "-Woverloaded-virtual", # a lot of such errors when compiling with g++.
+       ]
+     }
+ 
 diff --git a/api/test/video/BUILD.gn b/api/test/video/BUILD.gn
-index 4ebb0c9167..a4a0d7b887 100644
+index 4ebb0c9..a4a0d7b 100644
 --- a/api/test/video/BUILD.gn
 +++ b/api/test/video/BUILD.gn
 @@ -8,7 +8,7 @@
@@ -11,8 +24,21 @@ index 4ebb0c9167..a4a0d7b887 100644
    visibility = [ "*" ]
    testonly = true
    public = [
+diff --git a/audio/utility/channel_mixer.cc b/audio/utility/channel_mixer.cc
+index 8867a3e..4bd3662 100644
+--- a/audio/utility/channel_mixer.cc
++++ b/audio/utility/channel_mixer.cc
+@@ -10,6 +10,8 @@
+ 
+ #include "audio/utility/channel_mixer.h"
+ 
++#include <cstring> // fix build with -std=gnu++17
++
+ #include "audio/utility/channel_mixing_matrix.h"
+ #include "rtc_base/checks.h"
+ #include "rtc_base/logging.h"
 diff --git a/examples/BUILD.gn b/examples/BUILD.gn
-index 4f76cad185..bb61efc235 100644
+index 4f76cad..bb61efc 100644
 --- a/examples/BUILD.gn
 +++ b/examples/BUILD.gn
 @@ -197,7 +197,7 @@ if (is_ios || (is_mac && target_cpu != "x86")) {
@@ -54,7 +80,7 @@ index 4f76cad185..bb61efc235 100644
      }
    }
 diff --git a/modules/audio_device/audio_device_buffer.cc b/modules/audio_device/audio_device_buffer.cc
-index 336846ed11..5d0b280b36 100644
+index 336846e..f0c388b 100644
 --- a/modules/audio_device/audio_device_buffer.cc
 +++ b/modules/audio_device/audio_device_buffer.cc
 @@ -456,7 +456,7 @@ void AudioDeviceBuffer::LogStats(LogState state) {
@@ -62,12 +88,24 @@ index 336846ed11..5d0b280b36 100644
    last_stats_ = stats;
  
 -  int64_t time_to_wait_ms = next_callback_time - rtc::TimeMillis();
-+  int64_t time_to_wait_ms = std::max(next_callback_time - rtc::TimeMillis(), 1LL);
++  int64_t time_to_wait_ms = std::max(next_callback_time - rtc::TimeMillis(), int64_t(1));
    RTC_DCHECK_GT(time_to_wait_ms, 0) << "Invalid timer interval";
  
    // Keep posting new (delayed) tasks until state is changed to kLogStop.
+diff --git a/modules/audio_processing/aec3/reverb_model_estimator.h b/modules/audio_processing/aec3/reverb_model_estimator.h
+index 3b9971a..efc2912 100644
+--- a/modules/audio_processing/aec3/reverb_model_estimator.h
++++ b/modules/audio_processing/aec3/reverb_model_estimator.h
+@@ -13,6 +13,7 @@
+ 
+ #include <array>
+ #include <vector>
++#include <memory> // fix build with -std=gnu++17
+ 
+ #include "absl/types/optional.h"
+ #include "api/array_view.h"
 diff --git a/modules/utility/BUILD.gn b/modules/utility/BUILD.gn
-index 4e85129e43..4bad1f728b 100644
+index 4e85129..4bad1f7 100644
 --- a/modules/utility/BUILD.gn
 +++ b/modules/utility/BUILD.gn
 @@ -40,7 +40,7 @@ rtc_library("utility") {
@@ -80,7 +118,7 @@ index 4e85129e43..4bad1f728b 100644
    visibility = [ "*" ]
    sources = [ "include/mock/mock_process_thread.h" ]
 diff --git a/modules/video_coding/BUILD.gn b/modules/video_coding/BUILD.gn
-index bca50d5f92..495d6c8143 100644
+index bca50d5..495d6c8 100644
 --- a/modules/video_coding/BUILD.gn
 +++ b/modules/video_coding/BUILD.gn
 @@ -345,10 +345,12 @@ rtc_library("webrtc_h264") {
@@ -101,7 +139,7 @@ index bca50d5f92..495d6c8143 100644
        deps += [ "../../media:rtc_media_base" ]
      }
 diff --git a/modules/video_coding/codecs/h264/h264_color_space.h b/modules/video_coding/codecs/h264/h264_color_space.h
-index 392ccaf563..526e394d16 100644
+index 392ccaf..526e394 100644
 --- a/modules/video_coding/codecs/h264/h264_color_space.h
 +++ b/modules/video_coding/codecs/h264/h264_color_space.h
 @@ -17,13 +17,13 @@
@@ -121,7 +159,7 @@ index 392ccaf563..526e394d16 100644
  
  namespace webrtc {
 diff --git a/modules/video_coding/codecs/h264/h264_decoder_impl.cc b/modules/video_coding/codecs/h264/h264_decoder_impl.cc
-index 6725a3b7c7..a7e837ca01 100644
+index 6725a3b..a7e837c 100644
 --- a/modules/video_coding/codecs/h264/h264_decoder_impl.cc
 +++ b/modules/video_coding/codecs/h264/h264_decoder_impl.cc
 @@ -21,9 +21,9 @@
@@ -138,7 +176,7 @@ index 6725a3b7c7..a7e837ca01 100644
  
  #include "api/video/color_space.h"
 diff --git a/modules/video_coding/codecs/h264/h264_decoder_impl.h b/modules/video_coding/codecs/h264/h264_decoder_impl.h
-index 3c038e6425..187e6e007f 100644
+index 3c038e6..187e6e0 100644
 --- a/modules/video_coding/codecs/h264/h264_decoder_impl.h
 +++ b/modules/video_coding/codecs/h264/h264_decoder_impl.h
 @@ -18,7 +18,7 @@
@@ -160,7 +198,7 @@ index 3c038e6425..187e6e007f 100644
  
  #include "common_video/h264/h264_bitstream_parser.h"
 diff --git a/modules/video_coding/codecs/h264/h264_encoder_impl.h b/modules/video_coding/codecs/h264/h264_encoder_impl.h
-index ba996366a3..1b9129f54c 100644
+index ba99636..1b9129f 100644
 --- a/modules/video_coding/codecs/h264/h264_encoder_impl.h
 +++ b/modules/video_coding/codecs/h264/h264_encoder_impl.h
 @@ -18,7 +18,7 @@
@@ -172,8 +210,20 @@ index ba996366a3..1b9129f54c 100644
  #endif
  
  #include <memory>
+diff --git a/modules/video_coding/utility/ivf_file_reader.cc b/modules/video_coding/utility/ivf_file_reader.cc
+index 9667bb7..6fe4e88 100644
+--- a/modules/video_coding/utility/ivf_file_reader.cc
++++ b/modules/video_coding/utility/ivf_file_reader.cc
+@@ -12,6 +12,7 @@
+ 
+ #include <string>
+ #include <vector>
++#include <cstring> // fix build with -std=gnu++17
+ 
+ #include "api/video_codecs/video_codec.h"
+ #include "modules/rtp_rtcp/source/byte_io.h"
 diff --git a/p2p/BUILD.gn b/p2p/BUILD.gn
-index ae49deb264..af192415f7 100644
+index ae49deb..af19241 100644
 --- a/p2p/BUILD.gn
 +++ b/p2p/BUILD.gn
 @@ -118,7 +118,7 @@ rtc_library("rtc_p2p") {
@@ -195,7 +245,7 @@ index ae49deb264..af192415f7 100644
      visibility = [ "*" ]
      sources = [ "base/fake_port_allocator.h" ]
 diff --git a/rtc_base/BUILD.gn b/rtc_base/BUILD.gn
-index 0805a5c549..c75732f766 100644
+index 0805a5c..c75732f 100644
 --- a/rtc_base/BUILD.gn
 +++ b/rtc_base/BUILD.gn
 @@ -24,6 +24,19 @@ if (!rtc_build_ssl) {
@@ -228,7 +278,7 @@ index 0805a5c549..c75732f766 100644
          "openssl_adapter_unittest.cc",
          "openssl_session_cache_unittest.cc",
 diff --git a/sdk/BUILD.gn b/sdk/BUILD.gn
-index 13793fb06b..40ee438e50 100644
+index 13793fb..40ee438 100644
 --- a/sdk/BUILD.gn
 +++ b/sdk/BUILD.gn
 @@ -1386,6 +1386,126 @@ if (is_ios || is_mac) {
@@ -359,7 +409,7 @@ index 13793fb06b..40ee438e50 100644
          info_plist = "objc/Info.plist"
          output_name = "WebRTC"
 diff --git a/test/BUILD.gn b/test/BUILD.gn
-index 464f44f60a..ca539baf5a 100644
+index 464f44f..ca539ba 100644
 --- a/test/BUILD.gn
 +++ b/test/BUILD.gn
 @@ -749,7 +749,7 @@ rtc_library("encoder_settings") {
@@ -372,7 +422,7 @@ index 464f44f60a..ca539baf5a 100644
    sources = [ "testsupport/rtc_expect_death.h" ]
    deps = [ ":test_support" ]
 diff --git a/test/network/BUILD.gn b/test/network/BUILD.gn
-index 4b01479c9b..410e450b74 100644
+index 4b01479..410e450 100644
 --- a/test/network/BUILD.gn
 +++ b/test/network/BUILD.gn
 @@ -143,7 +143,7 @@ rtc_library("feedback_generator_unittest") {
@@ -385,7 +435,7 @@ index 4b01479c9b..410e450b74 100644
    deps = [
      ":cross_traffic_unittest",
 diff --git a/test/pc/e2e/BUILD.gn b/test/pc/e2e/BUILD.gn
-index 9aef78a35d..258782e3f0 100644
+index 9aef78a..258782e 100644
 --- a/test/pc/e2e/BUILD.gn
 +++ b/test/pc/e2e/BUILD.gn
 @@ -41,7 +41,7 @@ if (rtc_include_tests) {
@@ -406,8 +456,45 @@ index 9aef78a35d..258782e3f0 100644
    visibility = [ "*" ]
    testonly = true
    sources = [ "analyzer/video/encoded_image_data_injector.h" ]
+diff --git a/test/pc/e2e/analyzer/audio/default_audio_quality_analyzer.cc b/test/pc/e2e/analyzer/audio/default_audio_quality_analyzer.cc
+index b8f1740..4de32d7 100644
+--- a/test/pc/e2e/analyzer/audio/default_audio_quality_analyzer.cc
++++ b/test/pc/e2e/analyzer/audio/default_audio_quality_analyzer.cc
+@@ -10,6 +10,8 @@
+ 
+ #include "test/pc/e2e/analyzer/audio/default_audio_quality_analyzer.h"
+ 
++#include <cstring> // fix build with -std=gnu++17
++
+ #include "api/stats_types.h"
+ #include "rtc_base/logging.h"
+ 
+diff --git a/test/pc/e2e/analyzer/video/default_encoded_image_data_injector.cc b/test/pc/e2e/analyzer/video/default_encoded_image_data_injector.cc
+index 2634e6e..11d7f4b 100644
+--- a/test/pc/e2e/analyzer/video/default_encoded_image_data_injector.cc
++++ b/test/pc/e2e/analyzer/video/default_encoded_image_data_injector.cc
+@@ -12,6 +12,7 @@
+ 
+ #include <algorithm>
+ #include <cstddef>
++#include <cstring> // fix build with -std=gnu++17
+ 
+ #include "absl/memory/memory.h"
+ #include "api/video/encoded_image.h"
+diff --git a/test/pc/e2e/analyzer/video/single_process_encoded_image_data_injector.cc b/test/pc/e2e/analyzer/video/single_process_encoded_image_data_injector.cc
+index ec0d26b..f51d57c 100644
+--- a/test/pc/e2e/analyzer/video/single_process_encoded_image_data_injector.cc
++++ b/test/pc/e2e/analyzer/video/single_process_encoded_image_data_injector.cc
+@@ -12,6 +12,7 @@
+ 
+ #include <algorithm>
+ #include <cstddef>
++#include <cstring> // fix build with -std=gnu++17
+ 
+ #include "absl/memory/memory.h"
+ #include "api/video/encoded_image.h"
 diff --git a/test/testsupport/jpeg_frame_writer.cc b/test/testsupport/jpeg_frame_writer.cc
-index 8bf1ee4630..6817ee59c2 100644
+index 8bf1ee4..6817ee5 100644
 --- a/test/testsupport/jpeg_frame_writer.cc
 +++ b/test/testsupport/jpeg_frame_writer.cc
 @@ -65,7 +65,7 @@ bool JpegFrameWriter::WriteFrame(const VideoFrame& input_frame, int quality) {
@@ -420,7 +507,7 @@ index 8bf1ee4630..6817ee59c2 100644
    jpeg_set_quality(&cinfo, quality, TRUE);
  
 diff --git a/video/BUILD.gn b/video/BUILD.gn
-index 1878f3216c..9c50cddfe1 100644
+index 1878f32..9c50cdd 100644
 --- a/video/BUILD.gn
 +++ b/video/BUILD.gn
 @@ -240,7 +240,7 @@ rtc_library("video_stream_encoder_impl") {
@@ -433,14 +520,13 @@ index 1878f3216c..9c50cddfe1 100644
      sources = [ "test/mock_video_stream_encoder.h" ]
      deps = [
 diff --git a/webrtc.gni b/webrtc.gni
-index 64a170c23f..1acd203a9b 100644
+index 64a170c..1acd203 100644
 --- a/webrtc.gni
 +++ b/webrtc.gni
-@@ -35,6 +35,18 @@ if (is_mac) {
-   import("//build/config/mac/rules.gni")
+@@ -36,6 +36,18 @@ if (is_mac) {
  }
  
-+declare_args() {
+ declare_args() {
 +  # Allow providing external ffmpeg
 +  rtc_build_ffmpeg = true
 +
@@ -452,9 +538,10 @@ index 64a170c23f..1acd203a9b 100644
 +  rtc_ffmpeg_libs = []
 +}
 +
- declare_args() {
++declare_args() {
    # Setting this to true will make RTC_EXPORT (see rtc_base/system/rtc_export.h)
    # expand to code that will manage symbols visibility.
+   rtc_enable_symbol_export = false
 @@ -85,6 +97,9 @@ declare_args() {
    # library that comes with WebRTC (i.e. rtc_build_ssl == 0).
    rtc_ssl_root = ""
