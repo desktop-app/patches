@@ -1,0 +1,54 @@
+diff --git a/config/c++/c++.gni b/config/c++/c++.gni
+index 5ced4596f..db1b27cb2 100644
+--- a/config/c++/c++.gni
++++ b/config/c++/c++.gni
+@@ -11,7 +11,7 @@ declare_args() {
+   # Don't check in changes that set this to false for more platforms; doing so
+   # is not supported.
+   use_custom_libcxx =
+-      is_fuchsia || is_android || is_mac || (is_ios && !use_xcode_clang) ||
++      is_fuchsia || is_android || (is_mac && !use_xcode_clang) || (is_ios && !use_xcode_clang) ||
+       (is_win && is_clang) ||
+       (is_linux &&
+        (!is_chromeos || default_toolchain != "//build/toolchain/cros:target"))
+diff --git a/config/compiler/BUILD.gn b/config/compiler/BUILD.gn
+index d602b4494..2e55db6eb 100644
+--- a/config/compiler/BUILD.gn
++++ b/config/compiler/BUILD.gn
+@@ -1518,7 +1518,7 @@ config("default_warnings") {
+         cflags += [ "-Wno-nonportable-include-path" ]
+       }
+ 
+-      if (current_toolchain == host_toolchain || !use_xcode_clang) {
++      if (current_toolchain == host_toolchain && !use_xcode_clang) {
+         # Flags NaCl (Clang 3.7) and Xcode 9.2 (Clang clang-900.0.39.2) do not
+         # recognize.
+         cflags += [
+diff --git a/toolchain/mac/BUILD.gn b/toolchain/mac/BUILD.gn
+index cb96e1e3c..cb9fff066 100644
+--- a/toolchain/mac/BUILD.gn
++++ b/toolchain/mac/BUILD.gn
+@@ -86,7 +86,7 @@ template("mac_toolchain") {
+ 
+     # Supports building with the version of clang shipped with Xcode when
+     # targeting iOS by not respecting clang_base_path.
+-    if (toolchain_args.current_os == "ios" && use_xcode_clang) {
++    if (use_xcode_clang) {
+       prefix = ""
+     } else {
+       prefix = rebase_path("$clang_base_path/bin/", root_build_dir)
+diff --git a/toolchain/toolchain.gni b/toolchain/toolchain.gni
+index ee11e269d..5dd198a0e 100644
+--- a/toolchain/toolchain.gni
++++ b/toolchain/toolchain.gni
+@@ -49,8 +49,8 @@ declare_args() {
+ # Check target_os here instead of is_ios as this file is loaded for secondary
+ # toolchain (host toolchain in particular) but the argument is the same for
+ # all toolchains.
+-assert(!use_xcode_clang || target_os == "ios",
+-       "Using Xcode's clang is only supported in iOS builds")
++# assert(!use_xcode_clang || target_os == "ios",
++#        "Using Xcode's clang is only supported in iOS builds")
+ 
+ # Extension for shared library files (including leading dot).
+ if (is_mac || is_ios) {
