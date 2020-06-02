@@ -16,25 +16,6 @@ index aa0cb58a..8b77c061 100644
          QWindow *window = qobject_cast<QWindow*>(object);
          Q_ASSERT(window);
          window->removeEventFilter(this);
-diff --git a/src/client/qwaylandintegration.cpp b/src/client/qwaylandintegration.cpp
-index 46bef294..845bb038 100644
---- a/src/client/qwaylandintegration.cpp
-+++ b/src/client/qwaylandintegration.cpp
-@@ -293,12 +293,12 @@ QWaylandDisplay *QWaylandIntegration::display() const
- 
- QStringList QWaylandIntegration::themeNames() const
- {
--    return GenericWaylandTheme::themeNames();
-+    return QGenericUnixTheme::themeNames();
- }
- 
- QPlatformTheme *QWaylandIntegration::createPlatformTheme(const QString &name) const
- {
--    return GenericWaylandTheme::createUnixTheme(name);
-+    return QGenericUnixTheme::createUnixTheme(name);
- }
- 
- // May be called from non-GUI threads
 diff --git a/src/client/qwaylandwindow.cpp b/src/client/qwaylandwindow.cpp
 index f82898bd..e2d08b35 100644
 --- a/src/client/qwaylandwindow.cpp

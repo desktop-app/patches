@@ -1,0 +1,50 @@
+diff --git a/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp b/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
+index 30c43b67dc..08119609be 100644
+--- a/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
++++ b/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
+@@ -63,9 +63,11 @@ public:
+     ~QXdgDesktopPortalThemePrivate()
+     {
+         delete baseTheme;
++        delete gtkTheme;
+     }
+ 
+     QPlatformTheme *baseTheme;
++    QPlatformTheme *gtkTheme;
+     uint fileChooserPortalVersion = 0;
+ };
+ 
+@@ -92,12 +94,18 @@ QXdgDesktopPortalTheme::QXdgDesktopPortalTheme()
+                 break;
+         }
+         // No error message; not having a theme plugin is allowed.
++
++        // Try to use gtk's open directory dialog if there are no fallback theme
++        d->gtkTheme = QPlatformThemeFactory::create(QLatin1String("gtk3"), nullptr);
+     }
+ 
+     // 3) Fall back on the built-in "null" platform theme.
+     if (!d->baseTheme)
+         d->baseTheme = new QPlatformTheme;
+ 
++    if (!d->gtkTheme)
++        d->gtkTheme = new QPlatformTheme;
++
+     // Get information about portal version
+     QDBusMessage message = QDBusMessage::createMethodCall(QLatin1String("org.freedesktop.portal.Desktop"),
+                                                           QLatin1String("/org/freedesktop/portal/desktop"),
+@@ -155,8 +163,12 @@ QPlatformDialogHelper* QXdgDesktopPortalTheme::createPlatformDialogHelper(Dialog
+     if (type == FileDialog) {
+         // Older versions of FileChooser portal don't support opening directories, therefore we fallback
+         // to native file dialog opened inside the sandbox to open a directory.
+-        if (d->fileChooserPortalVersion < 3 && d->baseTheme->usePlatformNativeDialog(type))
+-            return new QXdgDesktopPortalFileDialog(static_cast<QPlatformFileDialogHelper*>(d->baseTheme->createPlatformDialogHelper(type)));
++        if (d->fileChooserPortalVersion < 3) {
++            if (d->baseTheme->usePlatformNativeDialog(type))
++                return new QXdgDesktopPortalFileDialog(static_cast<QPlatformFileDialogHelper*>(d->baseTheme->createPlatformDialogHelper(type)));
++            else if (d->gtkTheme->usePlatformNativeDialog(type))
++                return new QXdgDesktopPortalFileDialog(static_cast<QPlatformFileDialogHelper*>(d->gtkTheme->createPlatformDialogHelper(type)));
++        }
+ 
+         return new QXdgDesktopPortalFileDialog;
+     }

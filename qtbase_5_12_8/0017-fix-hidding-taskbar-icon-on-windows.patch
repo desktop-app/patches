@@ -1,0 +1,49 @@
+diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
+index 7d511bf0d7..da3879cb56 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.cpp
++++ b/src/plugins/platforms/windows/qwindowswindow.cpp
+@@ -1351,7 +1351,8 @@ void QWindowsWindow::destroyWindow()
+         for (QWindow *w : tlw) {
+             if (w->transientParent() == window()) {
+                 if (QWindowsWindow *tw = QWindowsWindow::windowsWindowOf(w))
+-                    tw->updateTransientParent();
++                    // Patch: Fix possibility of add / remove taskbar icon of the window.
++                    tw->clearTransientParent();
+             }
+         }
+         QWindowsContext *context = QWindowsContext::instance();
+@@ -1579,6 +1580,19 @@ void QWindowsWindow::updateTransientParent() const
+     // window is found, which can cause issues with modality. Loop up to top level.
+     while (newTransientParent && (GetWindowLongPtr(newTransientParent, GWL_STYLE) & WS_CHILD) != 0)
+         newTransientParent = GetParent(newTransientParent);
++    // Patch: Fix possibility of add / remove taskbar icon of the window.
++    if (newTransientParent && newTransientParent != oldTransientParent)
++        SetWindowLongPtr(m_data.hwnd, GWL_HWNDPARENT, (LONG_PTR)newTransientParent);
++}
++
++// Patch: Fix possibility of add / remove taskbar icon of the window.
++void QWindowsWindow::clearTransientParent() const
++{
++    if (window()->type() == Qt::Popup)
++        return; // QTBUG-34503, // a popup stays on top, no parent, see also WindowCreationData::fromWindow().
++    // Update transient parent.
++    const HWND oldTransientParent = GetWindow(m_data.hwnd, GW_OWNER);
++    HWND newTransientParent = 0;
+ 
+     if (newTransientParent != oldTransientParent)
+         SetWindowLongPtr(m_data.hwnd, GWL_HWNDPARENT, LONG_PTR(newTransientParent));
+diff --git a/src/plugins/platforms/windows/qwindowswindow.h b/src/plugins/platforms/windows/qwindowswindow.h
+index ce67e46df3..a60edc151f 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.h
++++ b/src/plugins/platforms/windows/qwindowswindow.h
+@@ -353,6 +353,10 @@ private:
+     inline void setWindowState_sys(Qt::WindowStates newState);
+     inline void setParent_sys(const QPlatformWindow *parent);
+     inline void updateTransientParent() const;
++
++    // Patch: Fix possibility of add / remove taskbar icon of the window.
++    inline void clearTransientParent() const;
++
+     void destroyWindow();
+     inline bool isDropSiteEnabled() const { return m_dropTarget != 0; }
+     void setDropSiteEnabled(bool enabled);

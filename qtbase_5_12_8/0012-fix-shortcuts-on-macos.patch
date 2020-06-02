@@ -1,0 +1,87 @@
+diff --git a/src/plugins/platforms/cocoa/qcocoakeymapper.mm b/src/plugins/platforms/cocoa/qcocoakeymapper.mm
+index 350ae4b9be..457bb3408d 100644
+--- a/src/plugins/platforms/cocoa/qcocoakeymapper.mm
++++ b/src/plugins/platforms/cocoa/qcocoakeymapper.mm
+@@ -462,7 +462,8 @@ QList<int> QCocoaKeyMapper::possibleKeys(const QKeyEvent *event) const
+         Qt::KeyboardModifiers neededMods = ModsTbl[i];
+         int key = kbItem->qtKey[i];
+         if (key && key != baseKey && ((keyMods & neededMods) == neededMods)) {
+-            ret << int(key + (keyMods & ~neededMods));
++            // Patch: Fix non-english layout global shortcuts.
++            ret << int(key + neededMods);
+         }
+     }
+     return ret;
+diff --git a/src/plugins/platforms/cocoa/qnsview_keys.mm b/src/plugins/platforms/cocoa/qnsview_keys.mm
+index ad751279bb..9a9d19693e 100644
+--- a/src/plugins/platforms/cocoa/qnsview_keys.mm
++++ b/src/plugins/platforms/cocoa/qnsview_keys.mm
+@@ -86,21 +86,29 @@
+     quint32 nativeVirtualKey = [nsevent keyCode];
+ 
+     QChar ch = QChar::ReplacementCharacter;
+-    int keyCode = Qt::Key_unknown;
+-
+-    // If a dead key occurs as a result of pressing a key combination then
+-    // characters will have 0 length, but charactersIgnoringModifiers will
+-    // have a valid character in it. This enables key combinations such as
+-    // ALT+E to be used as a shortcut with an English keyboard even though
+-    // pressing ALT+E will give a dead key while doing normal text input.
+-    if ([characters length] != 0 || [charactersIgnoringModifiers length] != 0) {
+-        auto ctrlOrMetaModifier = qApp->testAttribute(Qt::AA_MacDontSwapCtrlAndMeta) ? Qt::ControlModifier : Qt::MetaModifier;
+-        if (((modifiers & ctrlOrMetaModifier) || (modifiers & Qt::AltModifier)) && ([charactersIgnoringModifiers length] != 0))
+-            ch = QChar([charactersIgnoringModifiers characterAtIndex:0]);
+-        else if ([characters length] != 0)
+-            ch = QChar([characters characterAtIndex:0]);
+-        keyCode = [self convertKeyCode:ch];
+-    }
++
++    // Patch: Fix Alt+.. shortcuts in OS X. See https://bugreports.qt.io/browse/QTBUG-42584 at the end.
++    if ([characters length] != 0)
++        ch = QChar([characters characterAtIndex:0]);
++    else if ([charactersIgnoringModifiers length] != 0 && ((modifiers & Qt::MetaModifier) || (modifiers & Qt::AltModifier)))
++        ch = QChar([charactersIgnoringModifiers characterAtIndex:0]);
++
++    int keyCode = [self convertKeyCode:ch];
++    // int keyCode = Qt::Key_unknown;
++
++    // // If a dead key occurs as a result of pressing a key combination then
++    // // characters will have 0 length, but charactersIgnoringModifiers will
++    // // have a valid character in it. This enables key combinations such as
++    // // ALT+E to be used as a shortcut with an English keyboard even though
++    // // pressing ALT+E will give a dead key while doing normal text input.
++    // if ([characters length] != 0 || [charactersIgnoringModifiers length] != 0) {
++    //     auto ctrlOrMetaModifier = qApp->testAttribute(Qt::AA_MacDontSwapCtrlAndMeta) ? Qt::ControlModifier : Qt::MetaModifier;
++    //     if (((modifiers & ctrlOrMetaModifier) || (modifiers & Qt::AltModifier)) && ([charactersIgnoringModifiers length] != 0))
++    //         ch = QChar([charactersIgnoringModifiers characterAtIndex:0]);
++    //     else if ([characters length] != 0)
++    //         ch = QChar([characters characterAtIndex:0]);
++    //     keyCode = [self convertKeyCode:ch];
++    // }
+ 
+     // we will send a key event unless the input method sets m_sendKeyEvent to false
+     m_sendKeyEvent = true;
+@@ -196,6 +204,23 @@
+         [super keyUp:nsevent];
+ }
+ 
++// Patch: Enable Ctrl+Tab and Ctrl+Shift+Tab / Ctrl+Backtab handle in-app.
++- (BOOL)performKeyEquivalent:(NSEvent *)nsevent
++{
++    NSString *chars = [nsevent charactersIgnoringModifiers];
++
++    if ([nsevent type] == NSKeyDown && [chars length] > 0) {
++        QChar ch = [chars characterAtIndex:0];
++        Qt::Key qtKey = qt_mac_cocoaKey2QtKey(ch);
++        if ([nsevent modifierFlags] & NSControlKeyMask
++                && (qtKey == Qt::Key_Tab || qtKey == Qt::Key_Backtab)) {
++            [self handleKeyEvent:nsevent eventType:int(QEvent::KeyPress)];
++            return YES;
++        }
++    }
++    return [super performKeyEquivalent:nsevent];
++}
++
+ - (void)cancelOperation:(id)sender
+ {
+     Q_UNUSED(sender);
