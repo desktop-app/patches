@@ -1,0 +1,17 @@
+diff --git a/src/gui/kernel/qstylehints.cpp b/src/gui/kernel/qstylehints.cpp
+index 48060a2c37..fff3271ec9 100644
+--- a/src/gui/kernel/qstylehints.cpp
++++ b/src/gui/kernel/qstylehints.cpp
+@@ -374,7 +374,11 @@ bool QStyleHints::showIsMaximized() const
+ */
+ bool QStyleHints::showShortcutsInContextMenus() const
+ {
+-    return themeableHint(QPlatformTheme::ShowShortcutsInContextMenus, QPlatformIntegration::ShowShortcutsInContextMenus).toBool();
++    // Patch: Always show hotkeys in the standard context menu.
++    // This patch can be removed in 5.13 and later versions.
++    // See: https://bugreports.qt.io/browse/QTBUG-71471
++    return true;
++    // return themeableHint(QPlatformTheme::ShowShortcutsInContextMenus, QPlatformIntegration::ShowShortcutsInContextMenus).toBool();
+ }
+ 
+ /*!

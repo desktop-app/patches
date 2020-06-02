@@ -1,0 +1,35 @@
+diff --git a/src/gui/text/qinputcontrol.cpp b/src/gui/text/qinputcontrol.cpp
+index 3381fdb673..6036f052e9 100644
+--- a/src/gui/text/qinputcontrol.cpp
++++ b/src/gui/text/qinputcontrol.cpp
+@@ -40,6 +40,10 @@
+ #include "qinputcontrol_p.h"
+ #include <QtGui/qevent.h>
+ 
++// Patch: Enable Ctrl+key and Ctrl+Shift+key in all locales except German.
++// See https://github.com/telegramdesktop/tdesktop/pull/1185.
++#include <QtCore/QLocale>
++
+ QT_BEGIN_NAMESPACE
+ 
+ QInputControl::QInputControl(Type type, QObject *parent)
+@@ -67,9 +71,16 @@ bool QInputControl::isAcceptableInput(const QKeyEvent *event) const
+     if (c.category() == QChar::Other_Format)
+         return true;
+ 
+-    // QTBUG-35734: ignore Ctrl/Ctrl+Shift; accept only AltGr (Alt+Ctrl) on German keyboards
+-    if (event->modifiers() == Qt::ControlModifier
+-            || event->modifiers() == (Qt::ShiftModifier | Qt::ControlModifier)) {
++    // Patch: Enable Ctrl+key and Ctrl+Shift+key in all locales except German.
++    // See https://github.com/telegramdesktop/tdesktop/pull/1185.
++    bool skipCtrlAndCtrlShift = false;
++    if (QGuiApplication::inputMethod()->locale().language() == QLocale::German) {
++        if (event->modifiers() == Qt::ControlModifier
++            || event->modifiers() == (Qt::ControlModifier | Qt::ShiftModifier)) {
++            skipCtrlAndCtrlShift = true;
++        }
++    }
++    if (skipCtrlAndCtrlShift) {
+         return false;
+     }
+ 

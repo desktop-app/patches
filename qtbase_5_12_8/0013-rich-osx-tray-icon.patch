@@ -1,0 +1,178 @@
+diff --git a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm b/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
+index 597cfa8318..579d79734d 100644
+--- a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
++++ b/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
+@@ -96,12 +96,17 @@ QT_USE_NAMESPACE
+ 
+ @interface QT_MANGLE_NAMESPACE(QNSStatusItem) : NSObject <NSUserNotificationCenterDelegate>
+ @property (nonatomic, assign) QCocoaMenu *menu;
++// Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++@property (nonatomic, assign) bool menuVisible;
++@property (nonatomic, readonly) bool iconSelected;
+ @property (nonatomic, assign) QIcon icon;
+ @property (nonatomic, readonly) NSStatusItem *item;
+ @property (nonatomic, readonly) QRectF geometry;
+ - (instancetype)initWithSysTray:(QCocoaSystemTrayIcon *)systray;
+ - (void)triggerSelector:(id)sender button:(Qt::MouseButton)mouseButton;
+ - (void)doubleClickSelector:(id)sender;
++- (void)setIconSelected:(bool)selected;
++- (bool)hasMenu;
+ @end
+ 
+ @interface QT_MANGLE_NAMESPACE(QNSImageView) : NSImageView
+@@ -173,7 +178,10 @@ void QCocoaSystemTrayIcon::updateIcon(const QIcon &icon)
+     // (device independent pixels). The menu height on past and
+     // current OS X versions is 22 points. Provide some future-proofing
+     // by deriving the icon height from the menu height.
+-    const int padding = 4;
++
++    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++    const int padding = 0;
++
+     const int menuHeight = [[NSStatusBar systemStatusBar] thickness];
+     const int maxImageHeight = menuHeight - padding;
+ 
+@@ -183,8 +191,12 @@ void QCocoaSystemTrayIcon::updateIcon(const QIcon &icon)
+     // devicePixelRatio for the "best" screen on the system.
+     qreal devicePixelRatio = qApp->devicePixelRatio();
+     const int maxPixmapHeight = maxImageHeight * devicePixelRatio;
++
++    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++    const QIcon::Mode mode = m_sys->item.iconSelected ? QIcon::Selected : QIcon::Normal;
++
+     QSize selectedSize;
+-    Q_FOREACH (const QSize& size, sortByHeight(icon.availableSizes())) {
++    Q_FOREACH (const QSize& size, sortByHeight(icon.availableSizes(mode))) {
+         // Select a pixmap based on the height. We want the largest pixmap
+         // with a height smaller or equal to maxPixmapHeight. The pixmap
+         // may rectangular; assume it has a reasonable size. If there is
+@@ -200,9 +212,9 @@ void QCocoaSystemTrayIcon::updateIcon(const QIcon &icon)
+ 
+     // Handle SVG icons, which do not return anything for availableSizes().
+     if (!selectedSize.isValid())
+-        selectedSize = icon.actualSize(QSize(maxPixmapHeight, maxPixmapHeight));
++        selectedSize = icon.actualSize(QSize(maxPixmapHeight, maxPixmapHeight), mode);
+ 
+-    QPixmap pixmap = icon.pixmap(selectedSize);
++    QPixmap pixmap = icon.pixmap(selectedSize, mode);
+ 
+     // Draw a low-resolution icon if there is not enough pixels for a retina
+     // icon. This prevents showing a small icon on retina displays.
+@@ -301,6 +313,10 @@ QT_END_NAMESPACE
+ {
+     self.down = NO;
+ 
++    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++    [self.parent setIconSelected:false];
++    self.parent.menuVisible = false;
++
+     [self setNeedsDisplay:YES];
+ }
+ 
+@@ -310,6 +326,9 @@ QT_END_NAMESPACE
+     int clickCount = [mouseEvent clickCount];
+     [self setNeedsDisplay:YES];
+ 
++    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++    [self.parent setIconSelected:((clickCount != 2) && [self.parent hasMenu])];
++
+     if (clickCount == 2) {
+         [self menuTrackingDone:nil];
+         [self.parent doubleClickSelector:self];
+@@ -326,6 +345,10 @@ QT_END_NAMESPACE
+ - (void)mouseUp:(NSEvent *)mouseEvent
+ {
+     Q_UNUSED(mouseEvent);
++
++    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++    [self.parent setIconSelected:false];
++
+     [self menuTrackingDone:nil];
+ }
+ 
+@@ -337,6 +360,10 @@ QT_END_NAMESPACE
+ - (void)rightMouseUp:(NSEvent *)mouseEvent
+ {
+     Q_UNUSED(mouseEvent);
++
++    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++    [self.parent setIconSelected:false];
++
+     [self menuTrackingDone:nil];
+ }
+ 
+@@ -352,7 +379,8 @@ QT_END_NAMESPACE
+ }
+ 
+ - (void)drawRect:(NSRect)rect {
+-    [[self.parent item] drawStatusBarBackgroundInRect:rect withHighlight:self.down];
++    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++    [[self.parent item] drawStatusBarBackgroundInRect:rect withHighlight:([self.parent hasMenu] && self.down)];
+     [super drawRect:rect];
+ }
+ @end
+@@ -372,6 +400,10 @@ QT_END_NAMESPACE
+     if (self) {
+         item = [[[NSStatusBar systemStatusBar] statusItemWithLength:NSSquareStatusItemLength] retain];
+         menu = nullptr;
++
++        // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++        self.menuVisible = false;
++
+         systray = sys;
+         imageCell = [[QNSImageView alloc] initWithParent:self];
+         [item setView: imageCell];
+@@ -382,6 +414,11 @@ QT_END_NAMESPACE
+ - (void)dealloc {
+     [[NSStatusBar systemStatusBar] removeStatusItem:item];
+     [[NSNotificationCenter defaultCenter] removeObserver:imageCell];
++
++    // Patch: Fix crash in macOS 10.14.
++    // Somehow item and imageCell are retained and attempt to be drawn if left in view.
++    [item setView: nil];
++
+     imageCell.parent = nil;
+     [imageCell release];
+     [item release];
+@@ -416,6 +453,10 @@ QT_END_NAMESPACE
+          selector:@selector(menuTrackingDone:)
+              name:NSMenuDidEndTrackingNotification
+                  object:m];
++
++        // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++        self.menuVisible = true;
++
+         [item popUpStatusItemMenu: m];
+     }
+ }
+@@ -427,6 +468,15 @@ QT_END_NAMESPACE
+     emit systray->activated(QPlatformSystemTrayIcon::DoubleClick);
+ }
+ 
++- (void)setIconSelected:(bool)selected {
++    _iconSelected = selected;
++    systray->updateIcon(icon);
++}
++
++- (bool)hasMenu {
++    return menu != nil;
++}
++
+ - (BOOL)userNotificationCenter:(NSUserNotificationCenter *)center shouldPresentNotification:(NSUserNotification *)notification {
+     Q_UNUSED(center);
+     Q_UNUSED(notification);
+diff --git a/src/widgets/util/qsystemtrayicon_qpa.cpp b/src/widgets/util/qsystemtrayicon_qpa.cpp
+index c0bf058681..1c8b627d01 100644
+--- a/src/widgets/util/qsystemtrayicon_qpa.cpp
++++ b/src/widgets/util/qsystemtrayicon_qpa.cpp
+@@ -93,6 +93,10 @@ void QSystemTrayIconPrivate::updateMenu_sys()
+     if (qpa_sys && menu) {
+         addPlatformMenu(menu);
+         qpa_sys->updateMenu(menu->platformMenu());
++
++    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
++    } else if (qpa_sys) {
++        qpa_sys->updateMenu(nullptr);
+     }
+ #endif
+ }

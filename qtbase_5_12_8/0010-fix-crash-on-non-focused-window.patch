@@ -1,0 +1,17 @@
+diff --git a/src/plugins/platforminputcontexts/compose/qcomposeplatforminputcontext.cpp b/src/plugins/platforminputcontexts/compose/qcomposeplatforminputcontext.cpp
+index 81a730232c..42bab9aa4b 100644
+--- a/src/plugins/platforminputcontexts/compose/qcomposeplatforminputcontext.cpp
++++ b/src/plugins/platforminputcontexts/compose/qcomposeplatforminputcontext.cpp
+@@ -273,6 +273,12 @@ bool QComposeInputContext::checkComposeTable()
+ 
+ void QComposeInputContext::commitText(uint character) const
+ {
++    // Patch: Crash fix when not focused widget still receives input events.
++    if (!m_focusObject) {
++        qWarning("QComposeInputContext::commitText: m_focusObject == nullptr, cannot commit text");
++        return;
++    }
++
+     QInputMethodEvent event;
+     event.setCommitString(QChar(character));
+     QCoreApplication::sendEvent(m_focusObject, &event);
