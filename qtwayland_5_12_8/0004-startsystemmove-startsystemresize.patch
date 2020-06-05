@@ -1,0 +1,395 @@
+diff --git a/src/client/qwaylandabstractdecoration.cpp b/src/client/qwaylandabstractdecoration.cpp
+index 98a0b17d..03f94f86 100644
+--- a/src/client/qwaylandabstractdecoration.cpp
++++ b/src/client/qwaylandabstractdecoration.cpp
+@@ -151,11 +151,11 @@ void QWaylandAbstractDecoration::setMouseButtons(Qt::MouseButtons mb)
+     d->m_mouseButtons = mb;
+ }
+ 
+-void QWaylandAbstractDecoration::startResize(QWaylandInputDevice *inputDevice, enum wl_shell_surface_resize resize, Qt::MouseButtons buttons)
++void QWaylandAbstractDecoration::startResize(QWaylandInputDevice *inputDevice, Qt::Edges edges, Qt::MouseButtons buttons)
+ {
+     Q_D(QWaylandAbstractDecoration);
+     if (isLeftClicked(buttons) && d->m_wayland_window->shellSurface()) {
+-        d->m_wayland_window->shellSurface()->resize(inputDevice, resize);
++        d->m_wayland_window->shellSurface()->resize(inputDevice, edges);
+         inputDevice->removeMouseButtonFromState(Qt::LeftButton);
+     }
+ }
+diff --git a/src/client/qwaylandabstractdecoration_p.h b/src/client/qwaylandabstractdecoration_p.h
+index 84a6d4dd..d1b11928 100644
+--- a/src/client/qwaylandabstractdecoration_p.h
++++ b/src/client/qwaylandabstractdecoration_p.h
+@@ -105,7 +105,7 @@ protected:
+ 
+     void setMouseButtons(Qt::MouseButtons mb);
+ 
+-    void startResize(QWaylandInputDevice *inputDevice,enum wl_shell_surface_resize resize, Qt::MouseButtons buttons);
++    void startResize(QWaylandInputDevice *inputDevice, Qt::Edges edges, Qt::MouseButtons buttons);
+     void startMove(QWaylandInputDevice *inputDevice, Qt::MouseButtons buttons);
+ 
+     bool isLeftClicked(Qt::MouseButtons newMouseButtonState);
+diff --git a/src/client/qwaylandshellsurface_p.h b/src/client/qwaylandshellsurface_p.h
+index 6bc3258c..c4f5512b 100644
+--- a/src/client/qwaylandshellsurface_p.h
++++ b/src/client/qwaylandshellsurface_p.h
+@@ -75,9 +75,7 @@ class Q_WAYLAND_CLIENT_EXPORT QWaylandShellSurface : public QObject
+ public:
+     explicit QWaylandShellSurface(QWaylandWindow *window);
+     ~QWaylandShellSurface() override {}
+-    virtual void resize(QWaylandInputDevice * /*inputDevice*/, enum wl_shell_surface_resize /*edges*/)
+-    {}
+-
++    virtual bool resize(QWaylandInputDevice *, Qt::Edges) { return false; }
+     virtual bool move(QWaylandInputDevice *) { return false; }
+     virtual void setTitle(const QString & /*title*/) {}
+     virtual void setAppId(const QString & /*appId*/) {}
+diff --git a/src/client/qwaylandwindow.cpp b/src/client/qwaylandwindow.cpp
+index f82898bd..f3762017 100644
+--- a/src/client/qwaylandwindow.cpp
++++ b/src/client/qwaylandwindow.cpp
+@@ -1201,9 +1201,15 @@ void QWaylandWindow::addAttachOffset(const QPoint point)
+     mOffset += point;
+ }
+ 
+-bool QtWaylandClient::QWaylandWindow::startSystemMove(const QPoint &pos)
++bool QWaylandWindow::startSystemResize(Qt::Edges edges)
++{
++    if (auto *seat = display()->lastInputDevice())
++        return mShellSurface && mShellSurface->resize(seat, edges);
++    return false;
++}
++
++bool QtWaylandClient::QWaylandWindow::startSystemMove()
+ {
+-    Q_UNUSED(pos);
+     if (auto seat = display()->lastInputDevice())
+         return mShellSurface && mShellSurface->move(seat);
+     return false;
+diff --git a/src/client/qwaylandwindow_p.h b/src/client/qwaylandwindow_p.h
+index 71770993..64d06d79 100644
+--- a/src/client/qwaylandwindow_p.h
++++ b/src/client/qwaylandwindow_p.h
+@@ -191,7 +191,8 @@ public:
+     void propagateSizeHints() override { }
+     void addAttachOffset(const QPoint point);
+ 
+-    bool startSystemMove(const QPoint &pos) override;
++    bool startSystemResize(Qt::Edges edges) override;
++    bool startSystemMove() override;
+ 
+     void timerEvent(QTimerEvent *event) override;
+     void requestUpdate() override;
+diff --git a/src/plugins/decorations/bradient/main.cpp b/src/plugins/decorations/bradient/main.cpp
+index 3fa72344..83dc8604 100644
+--- a/src/plugins/decorations/bradient/main.cpp
++++ b/src/plugins/decorations/bradient/main.cpp
+@@ -315,19 +315,19 @@ void QWaylandBradientDecoration::processMouseTop(QWaylandInputDevice *inputDevic
+ #if QT_CONFIG(cursor)
+             waylandWindow()->setMouseCursor(inputDevice, Qt::SizeFDiagCursor);
+ #endif
+-            startResize(inputDevice,WL_SHELL_SURFACE_RESIZE_TOP_LEFT,b);
++            startResize(inputDevice, Qt::TopEdge | Qt::LeftEdge, b);
+         } else if (local.x() > window()->width() + margins().left()) {
+             //top right bit
+ #if QT_CONFIG(cursor)
+             waylandWindow()->setMouseCursor(inputDevice, Qt::SizeBDiagCursor);
+ #endif
+-            startResize(inputDevice,WL_SHELL_SURFACE_RESIZE_TOP_RIGHT,b);
++            startResize(inputDevice, Qt::TopEdge | Qt::RightEdge, b);
+         } else {
+             //top resize bit
+ #if QT_CONFIG(cursor)
+             waylandWindow()->setMouseCursor(inputDevice, Qt::SplitVCursor);
+ #endif
+-            startResize(inputDevice,WL_SHELL_SURFACE_RESIZE_TOP,b);
++            startResize(inputDevice, Qt::TopEdge, b);
+         }
+     } else if (local.x() <= margins().left()) {
+         processMouseLeft(inputDevice, local, b, mods);
+@@ -358,19 +358,19 @@ void QWaylandBradientDecoration::processMouseBottom(QWaylandInputDevice *inputDe
+ #if QT_CONFIG(cursor)
+         waylandWindow()->setMouseCursor(inputDevice, Qt::SizeBDiagCursor);
+ #endif
+-        startResize(inputDevice, WL_SHELL_SURFACE_RESIZE_BOTTOM_LEFT,b);
++        startResize(inputDevice, Qt::BottomEdge | Qt::LeftEdge, b);
+     } else if (local.x() > window()->width() + margins().left()) {
+         //bottom right bit
+ #if QT_CONFIG(cursor)
+         waylandWindow()->setMouseCursor(inputDevice, Qt::SizeFDiagCursor);
+ #endif
+-        startResize(inputDevice, WL_SHELL_SURFACE_RESIZE_BOTTOM_RIGHT,b);
++        startResize(inputDevice, Qt::BottomEdge | Qt::RightEdge, b);
+     } else {
+         //bottom bit
+ #if QT_CONFIG(cursor)
+         waylandWindow()->setMouseCursor(inputDevice, Qt::SplitVCursor);
+ #endif
+-        startResize(inputDevice,WL_SHELL_SURFACE_RESIZE_BOTTOM,b);
++        startResize(inputDevice, Qt::BottomEdge, b);
+     }
+ }
+ 
+@@ -381,7 +381,7 @@ void QWaylandBradientDecoration::processMouseLeft(QWaylandInputDevice *inputDevi
+ #if QT_CONFIG(cursor)
+     waylandWindow()->setMouseCursor(inputDevice, Qt::SplitHCursor);
+ #endif
+-    startResize(inputDevice,WL_SHELL_SURFACE_RESIZE_LEFT,b);
++    startResize(inputDevice, Qt::LeftEdge, b);
+ }
+ 
+ void QWaylandBradientDecoration::processMouseRight(QWaylandInputDevice *inputDevice, const QPointF &local, Qt::MouseButtons b, Qt::KeyboardModifiers mods)
+@@ -391,7 +391,7 @@ void QWaylandBradientDecoration::processMouseRight(QWaylandInputDevice *inputDev
+ #if QT_CONFIG(cursor)
+     waylandWindow()->setMouseCursor(inputDevice, Qt::SplitHCursor);
+ #endif
+-    startResize(inputDevice, WL_SHELL_SURFACE_RESIZE_RIGHT,b);
++    startResize(inputDevice, Qt::RightEdge, b);
+ }
+ 
+ class QWaylandBradientDecorationPlugin : public QWaylandDecorationPlugin
+diff --git a/src/plugins/shellintegration/wl-shell/qwaylandwlshellsurface.cpp b/src/plugins/shellintegration/wl-shell/qwaylandwlshellsurface.cpp
+index 88a63655..5eacc678 100644
+--- a/src/plugins/shellintegration/wl-shell/qwaylandwlshellsurface.cpp
++++ b/src/plugins/shellintegration/wl-shell/qwaylandwlshellsurface.cpp
+@@ -76,11 +76,11 @@ QWaylandWlShellSurface::~QWaylandWlShellSurface()
+     delete m_extendedWindow;
+ }
+ 
+-void QWaylandWlShellSurface::resize(QWaylandInputDevice *inputDevice, enum wl_shell_surface_resize edges)
++bool QWaylandWlShellSurface::resize(QWaylandInputDevice *inputDevice, Qt::Edges edges)
+ {
+-    resize(inputDevice->wl_seat(),
+-           inputDevice->serial(),
+-           edges);
++    enum resize resizeEdges = convertToResizeEdges(edges);
++    resize(inputDevice->wl_seat(), inputDevice->serial(), resizeEdges);
++    return true;
+ }
+ 
+ bool QWaylandWlShellSurface::move(QWaylandInputDevice *inputDevice)
+@@ -193,6 +193,14 @@ void QWaylandWlShellSurface::requestWindowStates(Qt::WindowStates states)
+     m_pending.states = states & ~Qt::WindowMinimized;
+ }
+ 
++enum QWaylandWlShellSurface::resize QWaylandWlShellSurface::convertToResizeEdges(Qt::Edges edges)
++{
++    return static_cast<enum resize>(
++                ((edges & Qt::TopEdge) ? resize_top : 0)
++                | ((edges & Qt::BottomEdge) ? resize_bottom : 0)
++                | ((edges & Qt::LeftEdge) ? resize_left : 0)
++                | ((edges & Qt::RightEdge) ? resize_right : 0));
++}
+ 
+ void QWaylandWlShellSurface::setTopLevel()
+ {
+diff --git a/src/plugins/shellintegration/wl-shell/qwaylandwlshellsurface_p.h b/src/plugins/shellintegration/wl-shell/qwaylandwlshellsurface_p.h
+index 57e06525..ef7a3f4e 100644
+--- a/src/plugins/shellintegration/wl-shell/qwaylandwlshellsurface_p.h
++++ b/src/plugins/shellintegration/wl-shell/qwaylandwlshellsurface_p.h
+@@ -78,7 +78,7 @@ public:
+     ~QWaylandWlShellSurface() override;
+ 
+     using QtWayland::wl_shell_surface::resize;
+-    void resize(QWaylandInputDevice *inputDevice, enum wl_shell_surface_resize edges) override;
++    bool resize(QWaylandInputDevice *inputDevice, Qt::Edges edges) override;
+ 
+     using QtWayland::wl_shell_surface::move;
+     bool move(QWaylandInputDevice *inputDevice) override;
+@@ -99,6 +99,7 @@ protected:
+     void requestWindowStates(Qt::WindowStates states) override;
+ 
+ private:
++    static enum resize convertToResizeEdges(Qt::Edges edges);
+     void setTopLevel();
+     void updateTransientParent(QWindow *parent);
+     void setPopup(QWaylandWindow *parent, QWaylandInputDevice *device, uint serial);
+diff --git a/src/plugins/shellintegration/xdg-shell-v5/qwaylandxdgsurfacev5.cpp b/src/plugins/shellintegration/xdg-shell-v5/qwaylandxdgsurfacev5.cpp
+index 61a865cb..5d7b62f4 100644
+--- a/src/plugins/shellintegration/xdg-shell-v5/qwaylandxdgsurfacev5.cpp
++++ b/src/plugins/shellintegration/xdg-shell-v5/qwaylandxdgsurfacev5.cpp
+@@ -73,18 +73,20 @@ QWaylandXdgSurfaceV5::~QWaylandXdgSurfaceV5()
+     delete m_extendedWindow;
+ }
+ 
+-void QWaylandXdgSurfaceV5::resize(QWaylandInputDevice *inputDevice, enum wl_shell_surface_resize edges)
++QtWayland::xdg_surface_v5::resize_edge QWaylandXdgSurfaceV5::convertToResizeEdges(Qt::Edges edges)
+ {
+-    // May need some conversion if types get incompatibles, ATM they're identical
+-    enum resize_edge const * const arg = reinterpret_cast<enum resize_edge const *>(&edges);
+-    resize(inputDevice, *arg);
++    return static_cast<enum resize_edge>(
++                ((edges & Qt::TopEdge) ? resize_edge_top : 0)
++                | ((edges & Qt::BottomEdge) ? resize_edge_bottom : 0)
++                | ((edges & Qt::LeftEdge) ? resize_edge_left : 0)
++                | ((edges & Qt::RightEdge) ? resize_edge_right : 0));
+ }
+ 
+-void QWaylandXdgSurfaceV5::resize(QWaylandInputDevice *inputDevice, enum resize_edge edges)
++bool QWaylandXdgSurfaceV5::resize(QWaylandInputDevice *inputDevice, Qt::Edges edges)
+ {
+-    resize(inputDevice->wl_seat(),
+-           inputDevice->serial(),
+-           edges);
++    resize_edge resizeEdges = convertToResizeEdges(edges);
++    resize(inputDevice->wl_seat(), inputDevice->serial(), resizeEdges);
++    return true;
+ }
+ 
+ bool QWaylandXdgSurfaceV5::move(QWaylandInputDevice *inputDevice)
+diff --git a/src/plugins/shellintegration/xdg-shell-v5/qwaylandxdgsurfacev5_p.h b/src/plugins/shellintegration/xdg-shell-v5/qwaylandxdgsurfacev5_p.h
+index b938047e..c54da2dc 100644
+--- a/src/plugins/shellintegration/xdg-shell-v5/qwaylandxdgsurfacev5_p.h
++++ b/src/plugins/shellintegration/xdg-shell-v5/qwaylandxdgsurfacev5_p.h
+@@ -81,9 +81,8 @@ public:
+     ~QWaylandXdgSurfaceV5() override;
+ 
+     using QtWayland::xdg_surface_v5::resize;
+-    void resize(QWaylandInputDevice *inputDevice, enum resize_edge edges);
+-
+-    void resize(QWaylandInputDevice *inputDevice, enum wl_shell_surface_resize edges) override;
++    static resize_edge convertToResizeEdges(Qt::Edges edges);
++    bool resize(QWaylandInputDevice *inputDevice, Qt::Edges edges) override;
+ 
+     using QtWayland::xdg_surface_v5::move;
+     bool move(QWaylandInputDevice *inputDevice) override;
+diff --git a/src/plugins/shellintegration/xdg-shell-v6/qwaylandxdgshellv6.cpp b/src/plugins/shellintegration/xdg-shell-v6/qwaylandxdgshellv6.cpp
+index 2f729d97..4491b94b 100644
+--- a/src/plugins/shellintegration/xdg-shell-v6/qwaylandxdgshellv6.cpp
++++ b/src/plugins/shellintegration/xdg-shell-v6/qwaylandxdgshellv6.cpp
+@@ -157,6 +157,15 @@ void QWaylandXdgSurfaceV6::Toplevel::requestWindowStates(Qt::WindowStates states
+     }
+ }
+ 
++QtWayland::zxdg_toplevel_v6::resize_edge QWaylandXdgSurfaceV6::Toplevel::convertToResizeEdges(Qt::Edges edges)
++{
++    return static_cast<enum resize_edge>(
++                ((edges & Qt::TopEdge) ? resize_edge_top : 0)
++                | ((edges & Qt::BottomEdge) ? resize_edge_bottom : 0)
++                | ((edges & Qt::LeftEdge) ? resize_edge_left : 0)
++                | ((edges & Qt::RightEdge) ? resize_edge_right : 0));
++}
++
+ QWaylandXdgSurfaceV6::Popup::Popup(QWaylandXdgSurfaceV6 *xdgSurface, QWaylandXdgSurfaceV6 *parent,
+                                    QtWayland::zxdg_positioner_v6 *positioner)
+     : zxdg_popup_v6(xdgSurface->get_popup(parent->object(), positioner->object()))
+@@ -226,19 +235,16 @@ QWaylandXdgSurfaceV6::~QWaylandXdgSurfaceV6()
+     destroy();
+ }
+ 
+-void QWaylandXdgSurfaceV6::resize(QWaylandInputDevice *inputDevice, zxdg_toplevel_v6_resize_edge edges)
++bool QWaylandXdgSurfaceV6::resize(QWaylandInputDevice *inputDevice, Qt::Edges edges)
+ {
+-    Q_ASSERT(m_toplevel && m_toplevel->isInitialized());
+-    m_toplevel->resize(inputDevice->wl_seat(), inputDevice->serial(), edges);
+-}
++    if (!m_toplevel || !m_toplevel->isInitialized())
++        return false;
+ 
+-void QWaylandXdgSurfaceV6::resize(QWaylandInputDevice *inputDevice, enum wl_shell_surface_resize edges)
+-{
+-    auto xdgEdges = reinterpret_cast<enum zxdg_toplevel_v6_resize_edge const *>(&edges);
+-    resize(inputDevice, *xdgEdges);
++    auto resizeEdges = Toplevel::convertToResizeEdges(edges);
++    m_toplevel->resize(inputDevice->wl_seat(), inputDevice->serial(), resizeEdges);
++    return true;
+ }
+ 
+-
+ bool QWaylandXdgSurfaceV6::move(QWaylandInputDevice *inputDevice)
+ {
+     if (m_toplevel && m_toplevel->isInitialized()) {
+diff --git a/src/plugins/shellintegration/xdg-shell-v6/qwaylandxdgshellv6_p.h b/src/plugins/shellintegration/xdg-shell-v6/qwaylandxdgshellv6_p.h
+index 659aad04..eb49119e 100644
+--- a/src/plugins/shellintegration/xdg-shell-v6/qwaylandxdgshellv6_p.h
++++ b/src/plugins/shellintegration/xdg-shell-v6/qwaylandxdgshellv6_p.h
+@@ -79,8 +79,7 @@ public:
+     QWaylandXdgSurfaceV6(QWaylandXdgShellV6 *shell, ::zxdg_surface_v6 *surface, QWaylandWindow *window);
+     ~QWaylandXdgSurfaceV6() override;
+ 
+-    void resize(QWaylandInputDevice *inputDevice, enum zxdg_toplevel_v6_resize_edge edges);
+-    void resize(QWaylandInputDevice *inputDevice, enum wl_shell_surface_resize edges) override;
++    bool resize(QWaylandInputDevice *inputDevice, Qt::Edges edges) override;
+     bool move(QWaylandInputDevice *inputDevice) override;
+     void setTitle(const QString &title) override;
+     void setAppId(const QString &appId) override;
+@@ -108,6 +107,9 @@ private:
+         void zxdg_toplevel_v6_close() override;
+ 
+         void requestWindowStates(Qt::WindowStates states);
++
++        static resize_edge convertToResizeEdges(Qt::Edges edges);
++
+         struct {
+             QSize size = {0, 0};
+             Qt::WindowStates states = Qt::WindowNoState;
+diff --git a/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp b/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
+index d2452aa4..c5ad57ab 100644
+--- a/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
++++ b/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
+@@ -185,6 +185,15 @@ void QWaylandXdgSurface::Toplevel::requestWindowStates(Qt::WindowStates states)
+     }
+ }
+ 
++QtWayland::xdg_toplevel::resize_edge QWaylandXdgSurface::Toplevel::convertToResizeEdges(Qt::Edges edges)
++{
++    return static_cast<enum resize_edge>(
++                ((edges & Qt::TopEdge) ? resize_edge_top : 0)
++                | ((edges & Qt::BottomEdge) ? resize_edge_bottom : 0)
++                | ((edges & Qt::LeftEdge) ? resize_edge_left : 0)
++                | ((edges & Qt::RightEdge) ? resize_edge_right : 0));
++}
++
+ QWaylandXdgSurface::Popup::Popup(QWaylandXdgSurface *xdgSurface, QWaylandXdgSurface *parent,
+                                  QtWayland::xdg_positioner *positioner)
+     : xdg_popup(xdgSurface->get_popup(parent->object(), positioner->object()))
+@@ -254,19 +263,16 @@ QWaylandXdgSurface::~QWaylandXdgSurface()
+     destroy();
+ }
+ 
+-void QWaylandXdgSurface::resize(QWaylandInputDevice *inputDevice, xdg_toplevel_resize_edge edges)
++bool QWaylandXdgSurface::resize(QWaylandInputDevice *inputDevice, Qt::Edges edges)
+ {
+-    Q_ASSERT(m_toplevel && m_toplevel->isInitialized());
+-    m_toplevel->resize(inputDevice->wl_seat(), inputDevice->serial(), edges);
+-}
++    if (!m_toplevel || !m_toplevel->isInitialized())
++        return false;
+ 
+-void QWaylandXdgSurface::resize(QWaylandInputDevice *inputDevice, enum wl_shell_surface_resize edges)
+-{
+-    auto xdgEdges = reinterpret_cast<enum xdg_toplevel_resize_edge const *>(&edges);
+-    resize(inputDevice, *xdgEdges);
++    auto resizeEdges = Toplevel::convertToResizeEdges(edges);
++    m_toplevel->resize(inputDevice->wl_seat(), inputDevice->serial(), resizeEdges);
++    return true;
+ }
+ 
+-
+ bool QWaylandXdgSurface::move(QWaylandInputDevice *inputDevice)
+ {
+     if (m_toplevel && m_toplevel->isInitialized()) {
+diff --git a/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell_p.h b/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell_p.h
+index 741b83cf..a791ce7f 100644
+--- a/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell_p.h
++++ b/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell_p.h
+@@ -82,8 +82,7 @@ public:
+     QWaylandXdgSurface(QWaylandXdgShell *shell, ::xdg_surface *surface, QWaylandWindow *window);
+     ~QWaylandXdgSurface() override;
+ 
+-    void resize(QWaylandInputDevice *inputDevice, enum xdg_toplevel_resize_edge edges);
+-    void resize(QWaylandInputDevice *inputDevice, enum wl_shell_surface_resize edges) override;
++    bool resize(QWaylandInputDevice *inputDevice, Qt::Edges edges) override;
+     bool move(QWaylandInputDevice *inputDevice) override;
+     void setTitle(const QString &title) override;
+     void setAppId(const QString &appId) override;
+@@ -114,6 +113,9 @@ private:
+ 
+         void requestWindowFlags(Qt::WindowFlags flags);
+         void requestWindowStates(Qt::WindowStates states);
++
++        static resize_edge convertToResizeEdges(Qt::Edges edges);
++
+         struct {
+             QSize size = {0, 0};
+             Qt::WindowStates states = Qt::WindowNoState;
