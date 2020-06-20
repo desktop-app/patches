@@ -1,8 +1,8 @@
 diff --git a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
-index 9e6e5d88c7..8e951a2281 100644
+index 9e6e5d88c7..e6c8519a23 100644
 --- a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
 +++ b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
-@@ -1694,50 +1694,85 @@ HFONT QWindowsFontDatabase::systemFont()
+@@ -1694,50 +1694,90 @@ HFONT QWindowsFontDatabase::systemFont()
  
  static const char *other_tryFonts[] = {
      "Arial",
@@ -21,6 +21,7 @@ index 9e6e5d88c7..8e951a2281 100644
 +    "Microsoft JhengHei",
 +    "Nirmala UI",
 +    "Iskoola Pota",
++    "Ebrima",
      "Arial Unicode MS",
      0
  };
@@ -42,6 +43,7 @@ index 9e6e5d88c7..8e951a2281 100644
 +    "Microsoft JhengHei",
 +    "Nirmala UI",
 +    "Iskoola Pota",
++    "Ebrima",
      "Arial Unicode MS",
      0
  };
@@ -63,6 +65,7 @@ index 9e6e5d88c7..8e951a2281 100644
 +    "Meiryo",
 +    "Nirmala UI",
 +    "Iskoola Pota",
++    "Ebrima",
      "Arial Unicode MS",
      0
  };
@@ -84,6 +87,7 @@ index 9e6e5d88c7..8e951a2281 100644
 +    "Meiryo",
 +    "Nirmala UI",
 +    "Iskoola Pota",
++    "Ebrima",
      "Arial Unicode MS",
      0
  };
@@ -105,6 +109,7 @@ index 9e6e5d88c7..8e951a2281 100644
 +    "Meiryo",
 +    "Nirmala UI",
 +    "Iskoola Pota",
++    "Ebrima",
      "Arial Unicode MS",
      0
  };
