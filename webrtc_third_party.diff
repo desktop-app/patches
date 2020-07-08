@@ -12,6 +12,19 @@ index a62632e2c3f..ea2a9325a9c 100644
  }
  
  config("libjpeg_turbo_config") {
+diff --git a/abseil-cpp/absl/types/optional.h b/abseil-cpp/absl/types/optional.h
+index 61540cfdb26..3249d1b90d3 100644
+--- a/abseil-cpp/absl/types/optional.h
++++ b/abseil-cpp/absl/types/optional.h
+@@ -54,6 +54,8 @@ ABSL_NAMESPACE_END
+ 
+ #else  // ABSL_USES_STD_OPTIONAL
+ 
++#error "Build with non-std optional is not supported."
++
+ #include <cassert>
+ #include <functional>
+ #include <initializer_list>
 diff --git a/libjpeg.gni b/libjpeg.gni
 index 049348b79bd..039385c9739 100644
 --- a/libjpeg.gni
