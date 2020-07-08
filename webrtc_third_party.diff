@@ -1,5 +1,33 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index a62632e2c3f..ea2a9325a9c 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -11,6 +11,9 @@ assert(!is_ios, "This is not used on iOS, don't drag it in unintentionally")
+ config("system_libjpeg_config") {
+   libs = [ "jpeg" ]
+   defines = [ "USE_SYSTEM_LIBJPEG" ]
++  if (system_libjpeg_root != "") {
++    include_dirs = [ system_libjpeg_root, system_libjpeg_root + "/src" ]
++  }
+ }
+ 
+ config("libjpeg_turbo_config") {
+diff --git a/libjpeg.gni b/libjpeg.gni
+index 049348b79bd..039385c9739 100644
+--- a/libjpeg.gni
++++ b/libjpeg.gni
+@@ -6,6 +6,9 @@ declare_args() {
+   # Uses system libjpeg. If true, overrides use_libjpeg_turbo.
+   use_system_libjpeg = false
+ 
++  # Used to specify an external libjpeg root path
++  system_libjpeg_root = ""
++
+   # Uses libjpeg_turbo as the jpeg implementation. Has no effect if
+   # use_system_libjpeg is set.
+   use_libjpeg_turbo = true
 diff --git a/usrsctp/BUILD.gn b/usrsctp/BUILD.gn
-index 014a076aec3..2d7daeba03a 100644
+index e8a5b1f9d41..1b52f28141c 100644
 --- a/usrsctp/BUILD.gn
 +++ b/usrsctp/BUILD.gn
 @@ -3,6 +3,7 @@
@@ -10,7 +38,7 @@ index 014a076aec3..2d7daeba03a 100644
  
  config("usrsctp_config") {
    include_dirs = [
-@@ -140,5 +141,9 @@ static_library("usrsctp") {
+@@ -145,5 +146,9 @@ static_library("usrsctp") {
    if (is_fuchsia) {
      defines += [ "__Userspace_os_Fuchsia" ]
    }
