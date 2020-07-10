@@ -12,28 +12,10 @@ index 5ced4596f..db1b27cb2 100644
        (is_linux &&
         (!is_chromeos || default_toolchain != "//build/toolchain/cros:target"))
 diff --git a/config/compiler/BUILD.gn b/config/compiler/BUILD.gn
-index 3d5e4dede..17b3bcfd0 100644
+index 3d5e4dede..9ebc59ee0 100644
 --- a/config/compiler/BUILD.gn
 +++ b/config/compiler/BUILD.gn
-@@ -535,7 +535,7 @@ config("compiler") {
-       # Override Chromium's default for projects that wish to stay on C++11.
-       cflags_cc += [ "-std=${standard_prefix}++11" ]
-     } else {
--      cflags_cc += [ "-std=${standard_prefix}++14" ]
-+      cflags_cc += [ "-std=${standard_prefix}++17" ]
-     }
-   } else if (!is_win && !is_nacl) {
-     if (target_os == "android") {
-@@ -554,6 +554,8 @@ config("compiler") {
-     } else {
-       cflags_cc += [ "-std=c++14" ]
-     }
-+  } else if (is_win) {
-+    cflags_cc += [ "/std:c++17" ]
-   }
- 
-   if (is_mac) {
-@@ -1379,6 +1381,8 @@ config("default_warnings") {
+@@ -1379,6 +1379,8 @@ config("default_warnings") {
  
        "/wd4715",  # 'function' : not all control paths return a value'
                    # MSVC does not analyze switch (enum) for completeness.
@@ -42,7 +24,7 @@ index 3d5e4dede..17b3bcfd0 100644
      ]
  
      cflags_cc += [
-@@ -1488,7 +1492,7 @@ config("default_warnings") {
+@@ -1488,7 +1490,7 @@ config("default_warnings") {
          cflags += [ "-Wno-nonportable-include-path" ]
        }
  
@@ -51,7 +33,7 @@ index 3d5e4dede..17b3bcfd0 100644
          # Flags NaCl (Clang 3.7) and Xcode 9.2 (Clang clang-900.0.39.2) do not
          # recognize.
          cflags += [
-@@ -1528,6 +1532,24 @@ config("default_warnings") {
+@@ -1528,6 +1530,24 @@ config("default_warnings") {
          ]
        }
      }
