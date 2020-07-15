@@ -51,7 +51,7 @@ index 8867a3eed4..4bd36622b3 100644
  #include "rtc_base/checks.h"
  #include "rtc_base/logging.h"
 diff --git a/build_overrides/build.gni b/build_overrides/build.gni
-index 6025cddd04..5d88329998 100644
+index 6025cddd04..2565ba0ec4 100644
 --- a/build_overrides/build.gni
 +++ b/build_overrides/build.gni
 @@ -16,6 +16,8 @@ linux_use_bundled_binutils_override = true
@@ -63,6 +63,15 @@ index 6025cddd04..5d88329998 100644
  # Use our own suppressions files.
  asan_suppressions_file = "//build/sanitizers/asan_suppressions.cc"
  lsan_suppressions_file = "//tools_webrtc/sanitizers/lsan_suppressions_webrtc.cc"
+@@ -35,7 +37,7 @@ lint_suppressions_file = "//tools_webrtc/android/suppressions.xml"
+ # so we just ignore that assert. See https://crbug.com/648948 for more info.
+ ignore_elf32_limitations = true
+ 
+-if (is_win || is_ios || is_android) {
++if (is_win || is_ios || is_android || is_mac) {
+   rtc_use_h265 = true
+ } else {
+   rtc_use_h265 = false
 diff --git a/examples/BUILD.gn b/examples/BUILD.gn
 index 4fd2d702aa..217f52056c 100644
 --- a/examples/BUILD.gn
@@ -283,10 +292,19 @@ index d078482d96..6f0dfb1bc5 100644
          "openssl_adapter_unittest.cc",
          "openssl_session_cache_unittest.cc",
 diff --git a/sdk/BUILD.gn b/sdk/BUILD.gn
-index 7588baa4ea..0309d24ff0 100644
+index 7588baa4ea..81f5ccfe5e 100644
 --- a/sdk/BUILD.gn
 +++ b/sdk/BUILD.gn
-@@ -1399,6 +1399,126 @@ if (is_ios || is_mac) {
+@@ -23,6 +23,8 @@ group("sdk") {
+     }
+     if (is_ios) {
+       public_deps += [ ":framework_objc" ]
++    } else if (is_mac) {
++      public_deps += [ ":mac_framework_objc_static" ]
+     }
+   }
+ }
+@@ -1399,6 +1401,107 @@ if (is_ios || is_mac) {
      }
  
      if (is_mac) {
@@ -382,28 +400,9 @@ index 7588baa4ea..0309d24ff0 100644
 +          ":default_codec_factory_objc",
 +          ":native_api",
 +          ":native_video",
-+          ":peerconnectionfactory_base_objc",
-+          ":ui_objc",
 +          ":videocapture_objc",
 +          ":videocodec_objc",
 +          ":videotoolbox_objc",
-+          "../rtc_base:rtc_base_approved",
-+        ]
-+        if (rtc_use_metal_rendering) {
-+          deps += [ ":metal_objc" ]
-+        }
-+        if (!build_with_chromium) {
-+          deps += [
-+            ":callback_logger_objc",
-+            ":file_logger_objc",
-+          ]
-+        }
-+
-+        libs = [
-+          "AVFoundation.framework",
-+          "CoreGraphics.framework",
-+          "CoreMedia.framework",
-+          "OpenGL.framework",
 +        ]
 +
 +        configs += [ "..:common_objc" ]
