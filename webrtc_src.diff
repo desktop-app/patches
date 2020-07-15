@@ -412,6 +412,58 @@ index 7588baa4ea..81f5ccfe5e 100644
        mac_framework_bundle_with_umbrella_header("mac_framework_objc") {
          info_plist = "objc/Info.plist"
          output_name = "WebRTC"
+diff --git a/sdk/objc/components/video_codec/nalu_rewriter.cc b/sdk/objc/components/video_codec/nalu_rewriter.cc
+index ddf7346051..05d15f5d71 100644
+--- a/sdk/objc/components/video_codec/nalu_rewriter.cc
++++ b/sdk/objc/components/video_codec/nalu_rewriter.cc
+@@ -269,8 +269,14 @@ bool H265CMSampleBufferToAnnexBBuffer(
+   // Get parameter set information.
+   int nalu_header_size = 0;
+   size_t param_set_count = 0;
+-  OSStatus status = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
++  OSStatus status = noErr;
++  if (__builtin_available(macOS 10.13, *)) {
++    status = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+       description, 0, nullptr, nullptr, &param_set_count, &nalu_header_size);
++  } else {
++    RTC_LOG(LS_ERROR) << "H265 is unavailable on this system.";
++    return false;
++  }
+   if (status != noErr) {
+     RTC_LOG(LS_ERROR) << "Failed to get parameter set.";
+     return false;
+@@ -290,8 +296,13 @@ bool H265CMSampleBufferToAnnexBBuffer(
+     size_t param_set_size = 0;
+     const uint8_t* param_set = nullptr;
+     for (size_t i = 0; i < param_set_count; ++i) {
+-      status = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
++      if (__builtin_available(macOS 10.13, *)) {
++        status = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+           description, i, &param_set, &param_set_size, nullptr, nullptr);
++      } else {
++        RTC_LOG(LS_ERROR) << "H265 is unavailable on this system.";
++        return false;
++      }
+       if (status != noErr) {
+         RTC_LOG(LS_ERROR) << "Failed to get parameter set.";
+         return false;
+@@ -527,9 +538,15 @@ CMVideoFormatDescriptionRef CreateH265VideoFormatDescription(
+ 
+   // Parse the SPS and PPS into a CMVideoFormatDescription.
+   CMVideoFormatDescriptionRef description = nullptr;
+-  OSStatus status = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
++  OSStatus status = noErr;
++  if (__builtin_available(macOS 10.13, *)) {
++    status = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+       kCFAllocatorDefault, 3, param_set_ptrs, param_set_sizes, 4, nullptr,
+       &description);
++  } else {
++    RTC_LOG(LS_ERROR) << "H265 is unavailable on this system.";
++    return nullptr;
++  }
+   if (status != noErr) {
+     RTC_LOG(LS_ERROR) << "Failed to create video format description.";
+     return nullptr;
 diff --git a/test/BUILD.gn b/test/BUILD.gn
 index 2e22476c80..7d649577b9 100644
 --- a/test/BUILD.gn
