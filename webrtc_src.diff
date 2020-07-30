@@ -114,6 +114,37 @@ index 4fd2d702aa..217f52056c 100644
        ]
      }
    }
+diff --git a/modules/audio_coding/BUILD.gn b/modules/audio_coding/BUILD.gn
+index ceee0c0f07..8c4f00dbb5 100644
+--- a/modules/audio_coding/BUILD.gn
++++ b/modules/audio_coding/BUILD.gn
+@@ -763,6 +763,8 @@ rtc_library("webrtc_opus") {
+     public_deps += [ rtc_opus_dir ]  # no-presubmit-check TODO(webrtc:8603)
+   } else if (build_with_mozilla) {
+     include_dirs = [ "/media/libopus/include" ]
++  } else {
++    public_configs = [ "../../rtc_base:external_opus_library" ]
+   }
+ }
+ 
+@@ -801,6 +803,8 @@ rtc_library("webrtc_multiopus") {
+     public_deps += [ rtc_opus_dir ]
+   } else if (build_with_mozilla) {
+     include_dirs = [ "/media/libopus/include" ]
++  } else {
++    public_configs = [ "../../rtc_base:external_opus_library" ]
+   }
+ }
+ 
+@@ -818,6 +822,8 @@ rtc_library("webrtc_opus_wrapper") {
+     public_deps = [ rtc_opus_dir ]  # no-presubmit-check TODO(webrtc:8603)
+   } else if (build_with_mozilla) {
+     include_dirs = [ getenv("DIST") + "/include/opus" ]
++  } else {
++    public_configs = [ "../../rtc_base:external_opus_library" ]
+   }
+ 
+   deps = [
 diff --git a/modules/audio_device/audio_device_buffer.cc b/modules/audio_device/audio_device_buffer.cc
 index 336846ed11..f0c388b453 100644
 --- a/modules/audio_device/audio_device_buffer.cc
@@ -252,10 +283,10 @@ index ae49deb264..af192415f7 100644
      visibility = [ "*" ]
      sources = [ "base/fake_port_allocator.h" ]
 diff --git a/rtc_base/BUILD.gn b/rtc_base/BUILD.gn
-index d078482d96..6f0dfb1bc5 100644
+index d078482d96..a1bb711199 100644
 --- a/rtc_base/BUILD.gn
 +++ b/rtc_base/BUILD.gn
-@@ -24,6 +24,26 @@ if (!rtc_build_ssl) {
+@@ -24,6 +24,35 @@ if (!rtc_build_ssl) {
      assert(rtc_ssl_root != "",
             "You must specify rtc_ssl_root when rtc_build_ssl==0.")
      include_dirs = [ rtc_ssl_root ]
@@ -279,10 +310,19 @@ index d078482d96..6f0dfb1bc5 100644
 +           "You must specify rtc_ffmpeg_root when rtc_build_ffmpeg==0.")
 +    include_dirs = [ rtc_ffmpeg_root ]
 +    libs = rtc_ffmpeg_libs
++  }
++}
++
++if (!rtc_build_opus) {
++  config("external_opus_library") {
++    assert(rtc_opus_root != "",
++           "You must specify rtc_opus_root when rtc_build_opus==0.")
++    include_dirs = [ rtc_opus_root ]
++    libs = rtc_opus_libs
    }
  }
  
-@@ -1326,7 +1346,7 @@ if (rtc_include_tests) {
+@@ -1326,7 +1355,7 @@ if (rtc_include_tests) {
          "win32_window_unittest.cc",
        ]
      }
@@ -576,7 +616,7 @@ index 14109c3494..21d768bb01 100644
      sources = [ "test/mock_video_stream_encoder.h" ]
      deps = [
 diff --git a/webrtc.gni b/webrtc.gni
-index 96b654a28c..ef311d244c 100644
+index 96b654a28c..636d1ce00a 100644
 --- a/webrtc.gni
 +++ b/webrtc.gni
 @@ -12,7 +12,7 @@ import("//build/config/sanitizers/sanitizers.gni")
@@ -588,7 +628,7 @@ index 96b654a28c..ef311d244c 100644
  
  if (!build_with_chromium && is_component_build) {
    print("The Gn argument `is_component_build` is currently " +
-@@ -36,6 +36,18 @@ if (is_mac) {
+@@ -36,6 +36,25 @@ if (is_mac) {
    import("//build/config/mac/rules.gni")
  }
  
@@ -602,12 +642,19 @@ index 96b654a28c..ef311d244c 100644
 +
 +  # Used to specify an external ffmpeg libs.
 +  rtc_ffmpeg_libs = []
++
++  # Used to specify and external opus include path when not compiling the
++  # library that comes with WebRTC (i.e. rtc_build_opus == 0).
++  rtc_opus_root = ""
++
++  # Used to specify an external opus libs.
++  rtc_opus_libs = []
 +}
 +
  declare_args() {
    # Setting this to true will make RTC_EXPORT (see rtc_base/system/rtc_export.h)
    # expand to code that will manage symbols visibility.
-@@ -84,7 +96,10 @@ declare_args() {
+@@ -84,7 +103,10 @@ declare_args() {
  
    # Used to specify an external OpenSSL include path when not compiling the
    # library that comes with WebRTC (i.e. rtc_build_ssl == 0).
@@ -619,7 +666,7 @@ index 96b654a28c..ef311d244c 100644
  
    # Selects fixed-point code where possible.
    rtc_prefer_fixed_point = false
-@@ -151,7 +166,7 @@ declare_args() {
+@@ -151,7 +173,7 @@ declare_args() {
    # Enabling H264 when building with MSVC is currently not supported, see
    # bugs.webrtc.org/9213#c13 for more info.
    rtc_use_h264 =
@@ -628,7 +675,7 @@ index 96b654a28c..ef311d244c 100644
  
    # By default, use normal platform audio support or dummy audio, but don't
    # use file-based audio playout and record.
-@@ -213,7 +228,7 @@ declare_args() {
+@@ -213,7 +235,7 @@ declare_args() {
    rtc_build_libvpx = !build_with_mozilla
    rtc_libvpx_build_vp9 = !build_with_mozilla
    rtc_build_opus = !build_with_mozilla
@@ -637,7 +684,7 @@ index 96b654a28c..ef311d244c 100644
    rtc_build_usrsctp = !build_with_mozilla
  
    # Enable libevent task queues on platforms that support it.
-@@ -619,7 +634,8 @@ template("rtc_static_library") {
+@@ -619,7 +641,8 @@ template("rtc_static_library") {
  # For the same reason, testonly targets will always be expanded to
  # source_set in order to be sure that tests are present in the test binary.
  template("rtc_library") {
