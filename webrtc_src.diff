@@ -282,6 +282,19 @@ index ae49deb264..af192415f7 100644
      testonly = true
      visibility = [ "*" ]
      sources = [ "base/fake_port_allocator.h" ]
+diff --git a/p2p/base/basic_ice_controller.cc b/p2p/base/basic_ice_controller.cc
+index aa20025b2c..506bf5cc9b 100644
+--- a/p2p/base/basic_ice_controller.cc
++++ b/p2p/base/basic_ice_controller.cc
+@@ -195,7 +195,7 @@ const Connection* BasicIceController::FindNextPingableConnection() {
+         if (conn1 == conn2) {
+           return false;
+         }
+-        return MorePingable(conn1, conn2) == conn2;
++        return MorePingable(std::min(conn1, conn2), std::max(conn1, conn2)) == conn2;
+       });
+   if (iter != pingable_connections.end()) {
+     return *iter;
 diff --git a/rtc_base/BUILD.gn b/rtc_base/BUILD.gn
 index d078482d96..a1bb711199 100644
 --- a/rtc_base/BUILD.gn
