@@ -13,14 +13,14 @@ index a62632e2c3f..ea2a9325a9c 100644
  
  config("libjpeg_turbo_config") {
 diff --git a/abseil-cpp/absl/meta/type_traits.h b/abseil-cpp/absl/meta/type_traits.h
-index ba87d2f0edf..fb9ffb721e8 100644
+index ba87d2f0edf..b9c5340cd3c 100644
 --- a/abseil-cpp/absl/meta/type_traits.h
 +++ b/abseil-cpp/absl/meta/type_traits.h
 @@ -616,8 +616,19 @@ using common_type_t = typename std::common_type<T...>::type;
  template <typename T>
  using underlying_type_t = typename std::underlying_type<T>::type;
  
-+#if _MSVC_LANG > 201703L
++#if __cplusplus > 201703L || (defined(_MSC_VER) && _MSVC_LANG > 201703L)
 +template <typename T>
 +struct result_of_helper;
 +template <typename F, typename ...Args>
