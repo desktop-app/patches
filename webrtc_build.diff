@@ -12,9 +12,18 @@ index 5ced459..db1b27c 100644
        (is_linux &&
         (!is_chromeos || default_toolchain != "//build/toolchain/cros:target"))
 diff --git a/config/compiler/BUILD.gn b/config/compiler/BUILD.gn
-index 3d5e4de..4832a8b 100644
+index 3d5e4de..1ebe692 100644
 --- a/config/compiler/BUILD.gn
 +++ b/config/compiler/BUILD.gn
+@@ -535,7 +535,7 @@ config("compiler") {
+       # Override Chromium's default for projects that wish to stay on C++11.
+       cflags_cc += [ "-std=${standard_prefix}++11" ]
+     } else {
+-      cflags_cc += [ "-std=${standard_prefix}++14" ]
++      cflags_cc += [ "-std=${standard_prefix}++17" ]
+     }
+   } else if (!is_win && !is_nacl) {
+     if (target_os == "android") {
 @@ -1379,6 +1379,8 @@ config("default_warnings") {
  
        "/wd4715",  # 'function' : not all control paths return a value'

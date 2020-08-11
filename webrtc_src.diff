@@ -1,5 +1,5 @@
 diff --git a/BUILD.gn b/BUILD.gn
-index 5fe6f849f3..719626d516 100644
+index 5fe6f84..719626d 100644
 --- a/BUILD.gn
 +++ b/BUILD.gn
 @@ -335,7 +335,7 @@ config("common_config") {
@@ -25,7 +25,7 @@ index 5fe6f849f3..719626d516 100644
      complete_static_lib = true
      suppressed_configs += [ "//build/config/compiler:thin_archive" ]
 diff --git a/api/test/video/BUILD.gn b/api/test/video/BUILD.gn
-index 4ebb0c9167..a4a0d7b887 100644
+index 4ebb0c9..a4a0d7b 100644
 --- a/api/test/video/BUILD.gn
 +++ b/api/test/video/BUILD.gn
 @@ -8,7 +8,7 @@
@@ -38,7 +38,7 @@ index 4ebb0c9167..a4a0d7b887 100644
    testonly = true
    public = [
 diff --git a/audio/utility/channel_mixer.cc b/audio/utility/channel_mixer.cc
-index 8867a3eed4..4bd36622b3 100644
+index 8867a3e..4bd3662 100644
 --- a/audio/utility/channel_mixer.cc
 +++ b/audio/utility/channel_mixer.cc
 @@ -10,6 +10,8 @@
@@ -51,7 +51,7 @@ index 8867a3eed4..4bd36622b3 100644
  #include "rtc_base/checks.h"
  #include "rtc_base/logging.h"
 diff --git a/build_overrides/build.gni b/build_overrides/build.gni
-index 6025cddd04..2565ba0ec4 100644
+index 6025cdd..a9f63f0 100644
 --- a/build_overrides/build.gni
 +++ b/build_overrides/build.gni
 @@ -16,6 +16,8 @@ linux_use_bundled_binutils_override = true
@@ -68,12 +68,12 @@ index 6025cddd04..2565ba0ec4 100644
  ignore_elf32_limitations = true
  
 -if (is_win || is_ios || is_android) {
-+if (is_win || is_ios || is_android || is_mac) {
++if (is_win || is_ios || is_android || is_mac || is_linux) {
    rtc_use_h265 = true
  } else {
    rtc_use_h265 = false
 diff --git a/examples/BUILD.gn b/examples/BUILD.gn
-index 4fd2d702aa..217f52056c 100644
+index 4fd2d70..217f520 100644
 --- a/examples/BUILD.gn
 +++ b/examples/BUILD.gn
 @@ -232,7 +232,7 @@ if (is_ios || (is_mac && target_cpu != "x86")) {
@@ -115,7 +115,7 @@ index 4fd2d702aa..217f52056c 100644
      }
    }
 diff --git a/modules/audio_coding/BUILD.gn b/modules/audio_coding/BUILD.gn
-index ceee0c0f07..8c4f00dbb5 100644
+index ceee0c0..8c4f00d 100644
 --- a/modules/audio_coding/BUILD.gn
 +++ b/modules/audio_coding/BUILD.gn
 @@ -763,6 +763,8 @@ rtc_library("webrtc_opus") {
@@ -146,7 +146,7 @@ index ceee0c0f07..8c4f00dbb5 100644
  
    deps = [
 diff --git a/modules/audio_device/audio_device_buffer.cc b/modules/audio_device/audio_device_buffer.cc
-index 336846ed11..f0c388b453 100644
+index 336846e..f0c388b 100644
 --- a/modules/audio_device/audio_device_buffer.cc
 +++ b/modules/audio_device/audio_device_buffer.cc
 @@ -456,7 +456,7 @@ void AudioDeviceBuffer::LogStats(LogState state) {
@@ -159,7 +159,7 @@ index 336846ed11..f0c388b453 100644
  
    // Keep posting new (delayed) tasks until state is changed to kLogStop.
 diff --git a/modules/audio_processing/aec3/reverb_model_estimator.h b/modules/audio_processing/aec3/reverb_model_estimator.h
-index 3b9971abae..efc291222e 100644
+index 3b9971a..efc2912 100644
 --- a/modules/audio_processing/aec3/reverb_model_estimator.h
 +++ b/modules/audio_processing/aec3/reverb_model_estimator.h
 @@ -13,6 +13,7 @@
@@ -171,7 +171,7 @@ index 3b9971abae..efc291222e 100644
  #include "absl/types/optional.h"
  #include "api/array_view.h"
 diff --git a/modules/utility/BUILD.gn b/modules/utility/BUILD.gn
-index 8710ed4729..2a8fa4e476 100644
+index 8710ed4..2a8fa4e 100644
 --- a/modules/utility/BUILD.gn
 +++ b/modules/utility/BUILD.gn
 @@ -40,7 +40,7 @@ rtc_library("utility") {
@@ -184,7 +184,7 @@ index 8710ed4729..2a8fa4e476 100644
    visibility = [ "*" ]
    sources = [ "include/mock/mock_process_thread.h" ]
 diff --git a/modules/video_coding/BUILD.gn b/modules/video_coding/BUILD.gn
-index 2f9d257e4a..65130a87ad 100644
+index 2f9d257..65130a8 100644
 --- a/modules/video_coding/BUILD.gn
 +++ b/modules/video_coding/BUILD.gn
 @@ -370,10 +370,13 @@ rtc_library("webrtc_h264") {
@@ -206,7 +206,7 @@ index 2f9d257e4a..65130a87ad 100644
        deps += [ "../../media:rtc_media_base" ]
      }
 diff --git a/modules/video_coding/codecs/h264/h264_color_space.h b/modules/video_coding/codecs/h264/h264_color_space.h
-index aec76efbac..918ea26f8b 100644
+index aec76ef..918ea26 100644
 --- a/modules/video_coding/codecs/h264/h264_color_space.h
 +++ b/modules/video_coding/codecs/h264/h264_color_space.h
 @@ -19,7 +19,7 @@
@@ -219,7 +219,7 @@ index aec76efbac..918ea26f8b 100644
  
  namespace webrtc {
 diff --git a/modules/video_coding/codecs/h264/h264_decoder_impl.cc b/modules/video_coding/codecs/h264/h264_decoder_impl.cc
-index 6725a3b7c7..a7e837ca01 100644
+index 6725a3b..a7e837c 100644
 --- a/modules/video_coding/codecs/h264/h264_decoder_impl.cc
 +++ b/modules/video_coding/codecs/h264/h264_decoder_impl.cc
 @@ -21,9 +21,9 @@
@@ -236,7 +236,7 @@ index 6725a3b7c7..a7e837ca01 100644
  
  #include "api/video/color_space.h"
 diff --git a/modules/video_coding/codecs/h264/h264_decoder_impl.h b/modules/video_coding/codecs/h264/h264_decoder_impl.h
-index 80892de63b..70f34fb039 100644
+index 80892de..70f34fb 100644
 --- a/modules/video_coding/codecs/h264/h264_decoder_impl.h
 +++ b/modules/video_coding/codecs/h264/h264_decoder_impl.h
 @@ -36,7 +36,7 @@
@@ -249,7 +249,7 @@ index 80892de63b..70f34fb039 100644
  
  #include "common_video/h264/h264_bitstream_parser.h"
 diff --git a/modules/video_coding/utility/ivf_file_reader.cc b/modules/video_coding/utility/ivf_file_reader.cc
-index 9667bb7cec..6fe4e88165 100644
+index 9667bb7..6fe4e88 100644
 --- a/modules/video_coding/utility/ivf_file_reader.cc
 +++ b/modules/video_coding/utility/ivf_file_reader.cc
 @@ -12,6 +12,7 @@
@@ -261,7 +261,7 @@ index 9667bb7cec..6fe4e88165 100644
  #include "api/video_codecs/video_codec.h"
  #include "modules/rtp_rtcp/source/byte_io.h"
 diff --git a/p2p/BUILD.gn b/p2p/BUILD.gn
-index ae49deb264..af192415f7 100644
+index ae49deb..af19241 100644
 --- a/p2p/BUILD.gn
 +++ b/p2p/BUILD.gn
 @@ -118,7 +118,7 @@ rtc_library("rtc_p2p") {
@@ -283,7 +283,7 @@ index ae49deb264..af192415f7 100644
      visibility = [ "*" ]
      sources = [ "base/fake_port_allocator.h" ]
 diff --git a/p2p/base/basic_ice_controller.cc b/p2p/base/basic_ice_controller.cc
-index aa20025b2c..506bf5cc9b 100644
+index aa20025..506bf5c 100644
 --- a/p2p/base/basic_ice_controller.cc
 +++ b/p2p/base/basic_ice_controller.cc
 @@ -195,7 +195,7 @@ const Connection* BasicIceController::FindNextPingableConnection() {
@@ -296,7 +296,7 @@ index aa20025b2c..506bf5cc9b 100644
    if (iter != pingable_connections.end()) {
      return *iter;
 diff --git a/rtc_base/BUILD.gn b/rtc_base/BUILD.gn
-index d078482d96..a1bb711199 100644
+index d078482..a1bb711 100644
 --- a/rtc_base/BUILD.gn
 +++ b/rtc_base/BUILD.gn
 @@ -24,6 +24,35 @@ if (!rtc_build_ssl) {
@@ -345,7 +345,7 @@ index d078482d96..a1bb711199 100644
          "openssl_adapter_unittest.cc",
          "openssl_session_cache_unittest.cc",
 diff --git a/sdk/BUILD.gn b/sdk/BUILD.gn
-index 7588baa4ea..81f5ccfe5e 100644
+index 7588baa..81f5ccf 100644
 --- a/sdk/BUILD.gn
 +++ b/sdk/BUILD.gn
 @@ -23,6 +23,8 @@ group("sdk") {
@@ -466,7 +466,7 @@ index 7588baa4ea..81f5ccfe5e 100644
          info_plist = "objc/Info.plist"
          output_name = "WebRTC"
 diff --git a/sdk/objc/components/video_codec/nalu_rewriter.cc b/sdk/objc/components/video_codec/nalu_rewriter.cc
-index ddf7346051..05d15f5d71 100644
+index ddf7346..05d15f5 100644
 --- a/sdk/objc/components/video_codec/nalu_rewriter.cc
 +++ b/sdk/objc/components/video_codec/nalu_rewriter.cc
 @@ -269,8 +269,14 @@ bool H265CMSampleBufferToAnnexBBuffer(
@@ -518,7 +518,7 @@ index ddf7346051..05d15f5d71 100644
      RTC_LOG(LS_ERROR) << "Failed to create video format description.";
      return nullptr;
 diff --git a/test/BUILD.gn b/test/BUILD.gn
-index 2e22476c80..7d649577b9 100644
+index 2e22476..7d64957 100644
 --- a/test/BUILD.gn
 +++ b/test/BUILD.gn
 @@ -768,7 +768,7 @@ rtc_library("encoder_settings") {
@@ -531,7 +531,7 @@ index 2e22476c80..7d649577b9 100644
    sources = [ "testsupport/rtc_expect_death.h" ]
    deps = [ ":test_support" ]
 diff --git a/test/network/BUILD.gn b/test/network/BUILD.gn
-index fc56001479..d3dd0e80fd 100644
+index fc56001..d3dd0e8 100644
 --- a/test/network/BUILD.gn
 +++ b/test/network/BUILD.gn
 @@ -143,7 +143,7 @@ rtc_library("feedback_generator_unittest") {
@@ -544,7 +544,7 @@ index fc56001479..d3dd0e80fd 100644
    deps = [
      ":cross_traffic_unittest",
 diff --git a/test/pc/e2e/BUILD.gn b/test/pc/e2e/BUILD.gn
-index 8a5607a1e1..8b28e64dc8 100644
+index 8a5607a..8b28e64 100644
 --- a/test/pc/e2e/BUILD.gn
 +++ b/test/pc/e2e/BUILD.gn
 @@ -42,7 +42,7 @@ if (rtc_include_tests) {
@@ -566,7 +566,7 @@ index 8a5607a1e1..8b28e64dc8 100644
    testonly = true
    sources = [ "analyzer/video/encoded_image_data_injector.h" ]
 diff --git a/test/pc/e2e/analyzer/audio/default_audio_quality_analyzer.cc b/test/pc/e2e/analyzer/audio/default_audio_quality_analyzer.cc
-index b8f1740e46..4de32d7559 100644
+index b8f1740..4de32d7 100644
 --- a/test/pc/e2e/analyzer/audio/default_audio_quality_analyzer.cc
 +++ b/test/pc/e2e/analyzer/audio/default_audio_quality_analyzer.cc
 @@ -10,6 +10,8 @@
@@ -579,7 +579,7 @@ index b8f1740e46..4de32d7559 100644
  #include "rtc_base/logging.h"
  
 diff --git a/test/pc/e2e/analyzer/video/default_encoded_image_data_injector.cc b/test/pc/e2e/analyzer/video/default_encoded_image_data_injector.cc
-index 2634e6eea4..11d7f4b00e 100644
+index 2634e6e..11d7f4b 100644
 --- a/test/pc/e2e/analyzer/video/default_encoded_image_data_injector.cc
 +++ b/test/pc/e2e/analyzer/video/default_encoded_image_data_injector.cc
 @@ -12,6 +12,7 @@
@@ -591,7 +591,7 @@ index 2634e6eea4..11d7f4b00e 100644
  #include "absl/memory/memory.h"
  #include "api/video/encoded_image.h"
 diff --git a/test/pc/e2e/analyzer/video/single_process_encoded_image_data_injector.cc b/test/pc/e2e/analyzer/video/single_process_encoded_image_data_injector.cc
-index ec0d26b780..f51d57cfc1 100644
+index ec0d26b..f51d57c 100644
 --- a/test/pc/e2e/analyzer/video/single_process_encoded_image_data_injector.cc
 +++ b/test/pc/e2e/analyzer/video/single_process_encoded_image_data_injector.cc
 @@ -12,6 +12,7 @@
@@ -603,7 +603,7 @@ index ec0d26b780..f51d57cfc1 100644
  #include "absl/memory/memory.h"
  #include "api/video/encoded_image.h"
 diff --git a/test/testsupport/jpeg_frame_writer.cc b/test/testsupport/jpeg_frame_writer.cc
-index 8bf1ee4630..6817ee59c2 100644
+index 8bf1ee4..6817ee5 100644
 --- a/test/testsupport/jpeg_frame_writer.cc
 +++ b/test/testsupport/jpeg_frame_writer.cc
 @@ -65,7 +65,7 @@ bool JpegFrameWriter::WriteFrame(const VideoFrame& input_frame, int quality) {
@@ -616,7 +616,7 @@ index 8bf1ee4630..6817ee59c2 100644
    jpeg_set_quality(&cinfo, quality, TRUE);
  
 diff --git a/video/BUILD.gn b/video/BUILD.gn
-index 14109c3494..21d768bb01 100644
+index 14109c3..21d768b 100644
 --- a/video/BUILD.gn
 +++ b/video/BUILD.gn
 @@ -242,7 +242,7 @@ rtc_library("video_stream_encoder_impl") {
@@ -629,7 +629,7 @@ index 14109c3494..21d768bb01 100644
      sources = [ "test/mock_video_stream_encoder.h" ]
      deps = [
 diff --git a/webrtc.gni b/webrtc.gni
-index 96b654a28c..636d1ce00a 100644
+index 96b654a..636d1ce 100644
 --- a/webrtc.gni
 +++ b/webrtc.gni
 @@ -12,7 +12,7 @@ import("//build/config/sanitizers/sanitizers.gni")
@@ -641,11 +641,10 @@ index 96b654a28c..636d1ce00a 100644
  
  if (!build_with_chromium && is_component_build) {
    print("The Gn argument `is_component_build` is currently " +
-@@ -36,6 +36,25 @@ if (is_mac) {
-   import("//build/config/mac/rules.gni")
+@@ -37,6 +37,25 @@ if (is_mac) {
  }
  
-+declare_args() {
+ declare_args() {
 +  # Allow providing external ffmpeg
 +  rtc_build_ffmpeg = true
 +
@@ -664,9 +663,10 @@ index 96b654a28c..636d1ce00a 100644
 +  rtc_opus_libs = []
 +}
 +
- declare_args() {
++declare_args() {
    # Setting this to true will make RTC_EXPORT (see rtc_base/system/rtc_export.h)
    # expand to code that will manage symbols visibility.
+   rtc_enable_symbol_export = false
 @@ -84,7 +103,10 @@ declare_args() {
  
    # Used to specify an external OpenSSL include path when not compiling the
