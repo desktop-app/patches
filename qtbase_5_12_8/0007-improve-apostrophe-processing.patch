@@ -1,29 +1,22 @@
 diff --git a/src/gui/text/qtextcursor.cpp b/src/gui/text/qtextcursor.cpp
-index c88497840f..2b08d13834 100644
+index c88497840f..b08e05cb16 100644
 --- a/src/gui/text/qtextcursor.cpp
 +++ b/src/gui/text/qtextcursor.cpp
-@@ -510,14 +510,16 @@ bool QTextCursorPrivate::movePosition(QTextCursor::MoveOperation op, QTextCursor
+@@ -510,6 +510,9 @@ bool QTextCursorPrivate::movePosition(QTextCursor::MoveOperation op, QTextCursor
          const int len = blockIt.length() - 1;
          if (relativePos >= len)
              return false;
--        if (engine->atWordSeparator(relativePos)) {
--            ++relativePos;
--            while (relativePos < len && engine->atWordSeparator(relativePos))
--                ++relativePos;
--        } else {
--            while (relativePos < len && !attributes[relativePos].whiteSpace && !engine->atWordSeparator(relativePos))
--                ++relativePos;
--        }
 +        // Patch: Improved apostrophe processing.
 +        relativePos = engine->toEdge(relativePos, len, true);
-+        // if (engine->atWordSeparator(relativePos)) {
-+        //     ++relativePos;
-+        //     while (relativePos < len && engine->atWordSeparator(relativePos))
-+        //         ++relativePos;
-+        // } else {
-+        //     while (relativePos < len && !attributes[relativePos].whiteSpace && !engine->atWordSeparator(relativePos))
-+        //         ++relativePos;
-+        // }
++#if 0
+         if (engine->atWordSeparator(relativePos)) {
+             ++relativePos;
+             while (relativePos < len && engine->atWordSeparator(relativePos))
+@@ -518,6 +521,7 @@ bool QTextCursorPrivate::movePosition(QTextCursor::MoveOperation op, QTextCursor
+             while (relativePos < len && !attributes[relativePos].whiteSpace && !engine->atWordSeparator(relativePos))
+                 ++relativePos;
+         }
++#endif
          newPosition = blockIt.position() + relativePos;
          break;
      }
@@ -130,62 +123,45 @@ index e9187ea605..51997ba066 100644
      QString elidedText(Qt::TextElideMode mode, const QFixed &width, int flags = 0, int from = 0, int count = -1) const;
  
 diff --git a/src/gui/text/qtextlayout.cpp b/src/gui/text/qtextlayout.cpp
-index f3f0caa379..081c5f03c0 100644
+index f3f0caa379..a9b34e2b6f 100644
 --- a/src/gui/text/qtextlayout.cpp
 +++ b/src/gui/text/qtextlayout.cpp
-@@ -706,16 +706,22 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
+@@ -706,6 +706,12 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
          while (oldPos < len && !attributes[oldPos].graphemeBoundary)
              oldPos++;
      } else {
--        if (oldPos < len && d->atWordSeparator(oldPos)) {
--            oldPos++;
--            while (oldPos < len && d->atWordSeparator(oldPos))
--                oldPos++;
--        } else {
--            while (oldPos < len && !attributes[oldPos].whiteSpace && !d->atWordSeparator(oldPos))
--                oldPos++;
--        }
 +        // Patch: Skip to the end of the current word, not to the start of the next one.
-         while (oldPos < len && attributes[oldPos].whiteSpace)
-             oldPos++;
++        while (oldPos < len && attributes[oldPos].whiteSpace)
++            oldPos++;
 +        // Patch: Improved apostrophe processing.
 +        oldPos = d->toEdge(oldPos, len, true);
-+        // if (oldPos < len && d->atWordSeparator(oldPos)) {
-+        //     oldPos++;
-+        //     while (oldPos < len && d->atWordSeparator(oldPos))
-+        //         oldPos++;
-+        // } else {
-+        //     while (oldPos < len && !attributes[oldPos].whiteSpace && !d->atWordSeparator(oldPos))
-+        //         oldPos++;
-+        // }
-+        // Patch: Skip to the end of the current word, not to the start of the next one.
-+        //while (oldPos < len && attributes[oldPos].whiteSpace)
-+        //    oldPos++;
++#if 0
+         if (oldPos < len && d->atWordSeparator(oldPos)) {
+             oldPos++;
+             while (oldPos < len && d->atWordSeparator(oldPos))
+@@ -716,6 +722,7 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
+         }
+         while (oldPos < len && attributes[oldPos].whiteSpace)
+             oldPos++;
++#endif
      }
  
      return oldPos;
-@@ -745,14 +751,16 @@ int QTextLayout::previousCursorPosition(int oldPos, CursorMode mode) const
+@@ -745,6 +752,9 @@ int QTextLayout::previousCursorPosition(int oldPos, CursorMode mode) const
          while (oldPos > 0 && attributes[oldPos - 1].whiteSpace)
              oldPos--;
  
--        if (oldPos && d->atWordSeparator(oldPos-1)) {
--            oldPos--;
--            while (oldPos && d->atWordSeparator(oldPos-1))
--                oldPos--;
--        } else {
--            while (oldPos > 0 && !attributes[oldPos - 1].whiteSpace && !d->atWordSeparator(oldPos-1))
--                oldPos--;
--        }
 +        // Patch: Improved apostrophe processing.
 +        oldPos = d->toEdge(oldPos, len, false);
-+        // if (oldPos && d->atWordSeparator(oldPos-1)) {
-+        //     oldPos--;
-+        //     while (oldPos && d->atWordSeparator(oldPos-1))
-+        //         oldPos--;
-+        // } else {
-+        //     while (oldPos > 0 && !attributes[oldPos - 1].whiteSpace && !d->atWordSeparator(oldPos-1))
-+        //         oldPos--;
-+        // }
++#if 0
+         if (oldPos && d->atWordSeparator(oldPos-1)) {
+             oldPos--;
+             while (oldPos && d->atWordSeparator(oldPos-1))
+@@ -753,6 +763,7 @@ int QTextLayout::previousCursorPosition(int oldPos, CursorMode mode) const
+             while (oldPos > 0 && !attributes[oldPos - 1].whiteSpace && !d->atWordSeparator(oldPos-1))
+                 oldPos--;
+         }
++#endif
      }
  
      return oldPos;

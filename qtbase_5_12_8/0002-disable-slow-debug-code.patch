@@ -1,5 +1,5 @@
 diff --git a/src/corelib/kernel/qcore_mac_objc.mm b/src/corelib/kernel/qcore_mac_objc.mm
-index 266faca0ed..cf9dafb6d8 100644
+index 266faca0ed..38a559877e 100644
 --- a/src/corelib/kernel/qcore_mac_objc.mm
 +++ b/src/corelib/kernel/qcore_mac_objc.mm
 @@ -140,7 +140,8 @@ QMacAutoReleasePool::QMacAutoReleasePool()
@@ -8,7 +8,7 @@ index 266faca0ed..cf9dafb6d8 100644
  
 -#ifdef QT_DEBUG
 +// Patch: Disable this debug code because it is very slow.
-+#ifdef QT_DEBUG____REMOVED
++#if 0
      void *poolFrame = nullptr;
      if (__builtin_available(macOS 10.14, iOS 12.0, tvOS 12.0, watchOS 5.0, *)) {
          void *frame;

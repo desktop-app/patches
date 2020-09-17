@@ -13,29 +13,15 @@ index 350ae4b9be..457bb3408d 100644
      }
      return ret;
 diff --git a/src/plugins/platforms/cocoa/qnsview_keys.mm b/src/plugins/platforms/cocoa/qnsview_keys.mm
-index ad751279bb..9a9d19693e 100644
+index ad751279bb..f9b9c29244 100644
 --- a/src/plugins/platforms/cocoa/qnsview_keys.mm
 +++ b/src/plugins/platforms/cocoa/qnsview_keys.mm
-@@ -86,21 +86,29 @@
+@@ -86,8 +86,16 @@
      quint32 nativeVirtualKey = [nsevent keyCode];
  
      QChar ch = QChar::ReplacementCharacter;
 -    int keyCode = Qt::Key_unknown;
--
--    // If a dead key occurs as a result of pressing a key combination then
--    // characters will have 0 length, but charactersIgnoringModifiers will
--    // have a valid character in it. This enables key combinations such as
--    // ALT+E to be used as a shortcut with an English keyboard even though
--    // pressing ALT+E will give a dead key while doing normal text input.
--    if ([characters length] != 0 || [charactersIgnoringModifiers length] != 0) {
--        auto ctrlOrMetaModifier = qApp->testAttribute(Qt::AA_MacDontSwapCtrlAndMeta) ? Qt::ControlModifier : Qt::MetaModifier;
--        if (((modifiers & ctrlOrMetaModifier) || (modifiers & Qt::AltModifier)) && ([charactersIgnoringModifiers length] != 0))
--            ch = QChar([charactersIgnoringModifiers characterAtIndex:0]);
--        else if ([characters length] != 0)
--            ch = QChar([characters characterAtIndex:0]);
--        keyCode = [self convertKeyCode:ch];
--    }
-+
+ 
 +    // Patch: Fix Alt+.. shortcuts in OS X. See https://bugreports.qt.io/browse/QTBUG-42584 at the end.
 +    if ([characters length] != 0)
 +        ch = QChar([characters characterAtIndex:0]);
@@ -43,25 +29,20 @@ index ad751279bb..9a9d19693e 100644
 +        ch = QChar([charactersIgnoringModifiers characterAtIndex:0]);
 +
 +    int keyCode = [self convertKeyCode:ch];
-+    // int keyCode = Qt::Key_unknown;
 +
-+    // // If a dead key occurs as a result of pressing a key combination then
-+    // // characters will have 0 length, but charactersIgnoringModifiers will
-+    // // have a valid character in it. This enables key combinations such as
-+    // // ALT+E to be used as a shortcut with an English keyboard even though
-+    // // pressing ALT+E will give a dead key while doing normal text input.
-+    // if ([characters length] != 0 || [charactersIgnoringModifiers length] != 0) {
-+    //     auto ctrlOrMetaModifier = qApp->testAttribute(Qt::AA_MacDontSwapCtrlAndMeta) ? Qt::ControlModifier : Qt::MetaModifier;
-+    //     if (((modifiers & ctrlOrMetaModifier) || (modifiers & Qt::AltModifier)) && ([charactersIgnoringModifiers length] != 0))
-+    //         ch = QChar([charactersIgnoringModifiers characterAtIndex:0]);
-+    //     else if ([characters length] != 0)
-+    //         ch = QChar([characters characterAtIndex:0]);
-+    //     keyCode = [self convertKeyCode:ch];
-+    // }
++#if 0
+     // If a dead key occurs as a result of pressing a key combination then
+     // characters will have 0 length, but charactersIgnoringModifiers will
+     // have a valid character in it. This enables key combinations such as
+@@ -101,6 +109,7 @@
+             ch = QChar([characters characterAtIndex:0]);
+         keyCode = [self convertKeyCode:ch];
+     }
++#endif
  
      // we will send a key event unless the input method sets m_sendKeyEvent to false
      m_sendKeyEvent = true;
-@@ -196,6 +204,23 @@
+@@ -196,6 +205,23 @@
          [super keyUp:nsevent];
  }
  
