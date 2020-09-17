@@ -1,5 +1,5 @@
 diff --git a/src/widgets/kernel/qwidget.cpp b/src/widgets/kernel/qwidget.cpp
-index bf339ca5c5..4cdf9189ad 100644
+index bf339ca5c5..0981572bd9 100644
 --- a/src/widgets/kernel/qwidget.cpp
 +++ b/src/widgets/kernel/qwidget.cpp
 @@ -5161,6 +5161,17 @@ void QWidget::render(QPainter *painter, const QPoint &targetOffset,
@@ -41,13 +41,3 @@ index bf339ca5c5..4cdf9189ad 100644
  }
  
  static void sendResizeEvents(QWidget *target)
-@@ -8968,7 +8986,8 @@ bool QWidget::event(QEvent *event)
-     case QEvent::KeyPress: {
-         QKeyEvent *k = (QKeyEvent *)event;
-         bool res = false;
--        if (!(k->modifiers() & (Qt::ControlModifier | Qt::AltModifier))) {  //### Add MetaModifier?
-+        // Patch: Enable Ctrl+Tab and Ctrl+Shift+Tab / Ctrl+Backtab handle in-app.
-+        if (!(k->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
-             if (k->key() == Qt::Key_Backtab
-                 || (k->key() == Qt::Key_Tab && (k->modifiers() & Qt::ShiftModifier)))
-                 res = focusNextPrevChild(false);
