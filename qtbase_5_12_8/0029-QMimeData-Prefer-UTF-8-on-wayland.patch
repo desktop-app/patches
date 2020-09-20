@@ -1,0 +1,43 @@
+From 589a01ff6b1eacf81e74a5fc4801572135214f43 Mon Sep 17 00:00:00 2001
+From: Johan Klokkhammer Helsing <johan.helsing@qt.io>
+Date: Thu, 13 Dec 2018 11:25:24 +0100
+Subject: [PATCH] QMimeData: Prefer UTF-8 when multiple charsets are available
+
+This was especially a problem on Wayland where both "text/plain" (us-ascii) and
+"text/plain;charset=utf-8" are typically available. I.e. we would prefer ascii
+over utf-8, losing special characters.
+
+Fixes: QTBUG-54786
+Change-Id: I985f66e16fcd5125e800c86c4d3949d210e939ba
+Reviewed-by: Thiago Macieira <thiago.macieira@intel.com>
+Reviewed-by: Eskil Abrahamsen Blomfeldt <eskil.abrahamsen-blomfeldt@qt.io>
+---
+ src/corelib/kernel/qmimedata.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/corelib/kernel/qmimedata.cpp b/src/corelib/kernel/qmimedata.cpp
+index c8ad1bc43f..9a98db21d3 100644
+--- a/src/corelib/kernel/qmimedata.cpp
++++ b/src/corelib/kernel/qmimedata.cpp
+@@ -51,6 +51,7 @@ QT_BEGIN_NAMESPACE
+ static inline QString textUriListLiteral() { return QStringLiteral("text/uri-list"); }
+ static inline QString textHtmlLiteral() { return QStringLiteral("text/html"); }
+ static inline QString textPlainLiteral() { return QStringLiteral("text/plain"); }
++static inline QString textPlainUtf8Literal() { return QStringLiteral("text/plain;charset=utf-8"); }
+ static inline QString applicationXColorLiteral() { return QStringLiteral("application/x-color"); }
+ static inline QString applicationXQtImageLiteral() { return QStringLiteral("application/x-qt-image"); }
+ 
+@@ -399,6 +400,10 @@ bool QMimeData::hasUrls() const
+ QString QMimeData::text() const
+ {
+     Q_D(const QMimeData);
++    QVariant utf8Text = d->retrieveTypedData(textPlainUtf8Literal(), QVariant::String);
++    if (!utf8Text.isNull())
++        return utf8Text.toString();
++
+     QVariant data = d->retrieveTypedData(textPlainLiteral(), QVariant::String);
+     return data.toString();
+ }
+-- 
+2.28.0
+
