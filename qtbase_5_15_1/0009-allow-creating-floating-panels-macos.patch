@@ -1,0 +1,20 @@
+diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms/cocoa/qcocoawindow.mm
+index 3008a056a2..d98eade4a3 100644
+--- a/src/plugins/platforms/cocoa/qcocoawindow.mm
++++ b/src/plugins/platforms/cocoa/qcocoawindow.mm
+@@ -499,6 +499,15 @@ NSUInteger QCocoaWindow::windowStyleMask(Qt::WindowFlags flags)
+     // Select base window type. Note that the value of NSBorderlessWindowMask is 0.
+     NSUInteger styleMask = (frameless || !resizable) ? NSWindowStyleMaskBorderless : NSWindowStyleMaskResizable;
+ 
++    // Patch: allow creating panels floating on all spaces in macOS.
++    // If you call "setCollectionBehavior:NSWindowCollectionBehaviorFullScreenAuxiliary" before
++    // setting the "NSWindowStyleMaskNonactivatingPanel" bit in the style mask it won't work after that.
++    // So we need a way to set that bit before Qt sets collection behavior the way it does.
++    QVariant nonactivatingPanelMask = window()->property("_td_macNonactivatingPanelMask");
++    if (nonactivatingPanelMask.isValid() && nonactivatingPanelMask.toBool()) {
++        styleMask |= NSWindowStyleMaskNonactivatingPanel;
++    }
++
+     if (frameless) {
+         // No further customizations for frameless since there are no window decorations.
+     } else if (flags & Qt::CustomizeWindowHint) {
