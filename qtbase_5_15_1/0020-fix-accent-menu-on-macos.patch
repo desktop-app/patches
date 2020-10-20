@@ -1,0 +1,107 @@
+This patch file fixes an incorrect work of the macOS accent menu.
+Author: Vladimir Belyavsky.
+Source: https://bugreports.qt.io/browse/QTBUG-71394?focusedCommentId=515035#comment-515035
+
+diff --git a/src/plugins/platforms/cocoa/qnsview.mm b/src/plugins/platforms/cocoa/qnsview.mm
+index a6e5ca5f7b..4cbca7d1c4 100644
+--- a/src/plugins/platforms/cocoa/qnsview.mm
++++ b/src/plugins/platforms/cocoa/qnsview.mm
+@@ -132,6 +132,7 @@ QT_NAMESPACE_ALIAS_OBJC_CLASS(QNSViewMouseMoveHelper);
+     bool m_scrolling;
+     bool m_updatingDrag;
+     NSEvent *m_currentlyInterpretedKeyEvent;
++    bool m_interpretKeyEventsInvokedCallbacks;
+     QSet<quint32> m_acceptedKeyDowns;
+ }
+ 
+@@ -144,6 +145,7 @@ QT_NAMESPACE_ALIAS_OBJC_CLASS(QNSViewMouseMoveHelper);
+         m_resendKeyEvent = false;
+         m_updatingDrag = false;
+         m_currentlyInterpretedKeyEvent = nil;
++        m_interpretKeyEventsInvokedCallbacks = false;
+ 
+         self.focusRingType = NSFocusRingTypeNone;
+ 
+diff --git a/src/plugins/platforms/cocoa/qnsview_complextext.mm b/src/plugins/platforms/cocoa/qnsview_complextext.mm
+index 5926840cf3..9ec36826eb 100644
+--- a/src/plugins/platforms/cocoa/qnsview_complextext.mm
++++ b/src/plugins/platforms/cocoa/qnsview_complextext.mm
+@@ -90,17 +90,13 @@
+ 
+ - (void)doCommandBySelector:(SEL)aSelector
+ {
++    m_interpretKeyEventsInvokedCallbacks = true;
+     [self tryToPerform:aSelector with:self];
+ }
+ 
+ - (void)insertText:(id)aString replacementRange:(NSRange)replacementRange
+ {
+-    Q_UNUSED(replacementRange)
+-
+-    if (m_sendKeyEvent && m_composingText.isEmpty() && [aString isEqualToString:m_inputSource]) {
+-        // don't send input method events for simple text input (let handleKeyEvent send key events instead)
+-        return;
+-    }
++    m_interpretKeyEventsInvokedCallbacks = true;
+ 
+     QString commitString;
+     if ([aString length]) {
+@@ -110,12 +106,25 @@
+             commitString = QString::fromCFString(reinterpret_cast<CFStringRef>(aString));
+         };
+     }
++
++    int replaceFrom = 0;
++    int replaceLength = 0;
++    if (!m_sendKeyEvent && replacementRange.location == 0 && replacementRange.length == 0) {
++        replaceFrom = -1;
++        replaceLength = 1;
++    }
++
++    if (m_sendKeyEvent && m_composingText.isEmpty() && [aString isEqualToString:m_inputSource]) {
++        // don't send input method events for simple text input (let handleKeyEvent send key events instead)
++        return;
++    }
++
+     if (QObject *fo = m_platformWindow->window()->focusObject()) {
+         QInputMethodQueryEvent queryEvent(Qt::ImEnabled);
+         if (QCoreApplication::sendEvent(fo, &queryEvent)) {
+             if (queryEvent.value(Qt::ImEnabled).toBool()) {
+                 QInputMethodEvent e;
+-                e.setCommitString(commitString);
++                e.setCommitString(commitString, replaceFrom, replaceLength);
+                 QCoreApplication::sendEvent(fo, &e);
+                 // prevent handleKeyEvent from sending a key event
+                 m_sendKeyEvent = false;
+@@ -129,7 +138,6 @@
+ 
+ - (void)setMarkedText:(id)aString selectedRange:(NSRange)selectedRange replacementRange:(NSRange)replacementRange
+ {
+-    Q_UNUSED(replacementRange)
+     QString preeditString;
+ 
+     QList<QInputMethodEvent::Attribute> attrs;
+@@ -184,6 +192,8 @@
+         if (QCoreApplication::sendEvent(fo, &queryEvent)) {
+             if (queryEvent.value(Qt::ImEnabled).toBool()) {
+                 QInputMethodEvent e(preeditString, attrs);
++                if (replacementRange.location == 0 && replacementRange.length == 0)
++                    e.setCommitString(QString(), -1, 1);
+                 QCoreApplication::sendEvent(fo, &e);
+                 // prevent handleKeyEvent from sending a key event
+                 m_sendKeyEvent = false;
+diff --git a/src/plugins/platforms/cocoa/qnsview_keys.mm b/src/plugins/platforms/cocoa/qnsview_keys.mm
+index 847adca207..f6da09ee40 100644
+--- a/src/plugins/platforms/cocoa/qnsview_keys.mm
++++ b/src/plugins/platforms/cocoa/qnsview_keys.mm
+@@ -139,7 +139,10 @@
+                 if (imEnabled && !(hints & Qt::ImhDigitsOnly || hints & Qt::ImhFormattedNumbersOnly || hints & Qt::ImhHiddenText)) {
+                     // pass the key event to the input method. note that m_sendKeyEvent may be set to false during this call
+                     m_currentlyInterpretedKeyEvent = nsevent;
++                    m_interpretKeyEventsInvokedCallbacks = false;
+                     [self interpretKeyEvents:@[nsevent]];
++                    if (m_sendKeyEvent && !m_interpretKeyEventsInvokedCallbacks)
++                        m_sendKeyEvent = false;
+                     m_currentlyInterpretedKeyEvent = 0;
+                 }
+             }
