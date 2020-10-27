@@ -1,0 +1,46 @@
+diff --git a/src/gui/rhi/qrhimetal.mm b/src/gui/rhi/qrhimetal.mm
+index 0806c8a052..a2cca7464e 100644
+--- a/src/gui/rhi/qrhimetal.mm
++++ b/src/gui/rhi/qrhimetal.mm
+@@ -37,6 +37,7 @@
+ #include "qrhimetal_p_p.h"
+ #include <QGuiApplication>
+ #include <QWindow>
++#include <QOperatingSystemVersion>
+ #include <qmath.h>
+ 
+ #ifdef Q_OS_MACOS
+@@ -3255,9 +3256,10 @@ static inline MTLCullMode toMetalCullMode(QRhiGraphicsPipeline::CullMode c)
+ id<MTLLibrary> QRhiMetalData::createMetalLib(const QShader &shader, QShader::Variant shaderVariant,
+                                              QString *error, QByteArray *entryPoint, QShaderKey *activeKey)
+ {
++    const auto mtl20supported = (QOperatingSystemVersion::current() >= QOperatingSystemVersion::MacOSHighSierra);
+     QShaderKey key = { QShader::MetalLibShader, 20, shaderVariant };
+     QShaderCode mtllib = shader.shader(key);
+-    if (mtllib.shader().isEmpty()) {
++    if (!mtl20supported || mtllib.shader().isEmpty()) {
+         key.setSourceVersion(12);
+         mtllib = shader.shader(key);
+     }
+@@ -3281,7 +3283,7 @@ id<MTLLibrary> QRhiMetalData::createMetalLib(const QShader &shader, QShader::Var
+ 
+     key = { QShader::MslShader, 20, shaderVariant };
+     QShaderCode mslSource = shader.shader(key);
+-    if (mslSource.shader().isEmpty()) {
++    if (!mtl20supported || mslSource.shader().isEmpty()) {
+         key.setSourceVersion(12);
+         mslSource = shader.shader(key);
+     }
+@@ -3292,7 +3294,11 @@ id<MTLLibrary> QRhiMetalData::createMetalLib(const QShader &shader, QShader::Var
+ 
+     NSString *src = [NSString stringWithUTF8String: mslSource.shader().constData()];
+     MTLCompileOptions *opts = [[MTLCompileOptions alloc] init];
+-    opts.languageVersion = key.sourceVersion() == 20 ? MTLLanguageVersion2_0 : MTLLanguageVersion1_2;
++    if (__builtin_available(macOS 10.13, *)) {
++        opts.languageVersion = key.sourceVersion() == 20 ? MTLLanguageVersion2_0 : MTLLanguageVersion1_2;
++    } else {
++        opts.languageVersion = MTLLanguageVersion1_2;
++    }
+     NSError *err = nil;
+     id<MTLLibrary> lib = [dev newLibraryWithSource: src options: opts error: &err];
+     [opts release];
