@@ -1,41 +1,66 @@
 diff --git a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.h b/src/plugins/platforms/cocoa/qcocoasystemtrayicon.h
-index 141995d1b1..f45f297c80 100644
+index 141995d1b1..1fddc6f03f 100644
 --- a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.h
 +++ b/src/plugins/platforms/cocoa/qcocoasystemtrayicon.h
-@@ -85,6 +85,7 @@ private:
+@@ -80,11 +80,14 @@ public:
+     bool supportsMessages() const override;
+ 
+     void statusItemClicked();
++    void updateItemIcon();
+ 
+ private:
      NSStatusItem *m_statusItem = nullptr;
      QStatusItemDelegate *m_delegate = nullptr;
      QCocoaMenu *m_menu = nullptr;
++    QIcon m_icon;
 +    bool m_handledOnPress = false;
  };
  
  QT_END_NAMESPACE
 diff --git a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm b/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
-index 704498acb1..3863ad0577 100644
+index 704498acb1..4a318d1637 100644
 --- a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
 +++ b/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
-@@ -101,7 +101,7 @@ void QCocoaSystemTrayIcon::init()
+@@ -101,7 +101,9 @@ void QCocoaSystemTrayIcon::init()
  
      m_statusItem.button.target = m_delegate;
      m_statusItem.button.action = @selector(statusItemClicked);
 -    [m_statusItem.button sendActionOn:NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp | NSEventMaskOtherMouseUp];
 +    [m_statusItem.button sendActionOn:NSEventMaskLeftMouseDown | NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp | NSEventMaskOtherMouseUp];
++
++    [m_statusItem addObserver:m_delegate forKeyPath:@"button.effectiveAppearance" options:NSKeyValueObservingOptionNew|NSKeyValueObservingOptionInitial context:nil];
  }
  
  void QCocoaSystemTrayIcon::cleanup()
-@@ -150,7 +150,10 @@ void QCocoaSystemTrayIcon::updateIcon(const QIcon &icon)
+@@ -142,15 +144,26 @@ static QList<QSize> sortByHeight(const QList<QSize> &sizes)
+ }
+ 
+ void QCocoaSystemTrayIcon::updateIcon(const QIcon &icon)
++{
++    m_icon = icon;
++    updateItemIcon();
++}
++
++void QCocoaSystemTrayIcon::updateItemIcon()
+ {
+     if (!m_statusItem)
+         return;
+ 
++    NSAppearance *appearance = m_statusItem.button.effectiveAppearance;
++    NSString *appearanceName = (NSString*)(appearance.name);
++    const auto darkMode = [[appearanceName lowercaseString] containsString:@"dark"];
++    const auto state = darkMode ? QIcon::On : QIcon::Off;
++
+     // The recommended maximum title bar icon height is 18 points
      // (device independent pixels). The menu height on past and
      // current OS X versions is 22 points. Provide some future-proofing
      // by deriving the icon height from the menu height.
 -    const int padding = 4;
-+
-+    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
 +    const int padding = 0;
-+
      const int menuHeight = NSStatusBar.systemStatusBar.thickness;
      const int maxImageHeight = menuHeight - padding;
  
-@@ -160,53 +163,60 @@ void QCocoaSystemTrayIcon::updateIcon(const QIcon &icon)
+@@ -160,53 +173,59 @@ void QCocoaSystemTrayIcon::updateIcon(const QIcon &icon)
      // devicePixelRatio for the "best" screen on the system.
      qreal devicePixelRatio = qApp->devicePixelRatio();
      const int maxPixmapHeight = maxImageHeight * devicePixelRatio;
@@ -50,10 +75,9 @@ index 704498acb1..3863ad0577 100644
 -        } else {
 -            if (!selectedSize.isValid())
 +
-+    // Patch: Create a rich os x tray icon (pixel-perfect, theme switching).
 +    const auto imageByMode = [&](QIcon::Mode mode) {
 +        QSize selectedSize;
-+        for (const QSize& size : sortByHeight(icon.availableSizes(mode))) {
++        for (const QSize& size : sortByHeight(m_icon.availableSizes(mode, state))) {
 +            // Select a pixmap based on the height. We want the largest pixmap
 +            // with a height smaller or equal to maxPixmapHeight. The pixmap
 +            // may rectangular; assume it has a reasonable size. If there is
@@ -97,11 +121,15 @@ index 704498acb1..3863ad0577 100644
 -        r.moveCenter(fullHeightPixmap.rect().center());
 -        p.drawPixmap(r, pixmap);
 -    }
+-
+-    auto *nsimage = [NSImage imageFromQImage:fullHeightPixmap.toImage()];
+-    [nsimage setTemplate:icon.isMask()];
+-    m_statusItem.button.image = nsimage;
 +        // Handle SVG icons, which do not return anything for availableSizes().
 +        if (!selectedSize.isValid())
-+            selectedSize = icon.actualSize(QSize(maxPixmapHeight, maxPixmapHeight), mode);
++            selectedSize = m_icon.actualSize(QSize(maxPixmapHeight, maxPixmapHeight), mode, state);
 +
-+        QPixmap pixmap = icon.pixmap(selectedSize, mode);
++        QPixmap pixmap = m_icon.pixmap(selectedSize, mode, state);
 +
 +        // Draw a low-resolution icon if there is not enough pixels for a retina
 +        // icon. This prevents showing a small icon on retina displays.
@@ -114,32 +142,29 @@ index 704498acb1..3863ad0577 100644
 +
 +        // The icon will be stretched over the full height of the menu bar
 +        // therefore we create a second pixmap which has the full height
-+        QSize fullHeightSize(!pixmap.isNull() ? pixmap.width():
-+                                                menuHeight * devicePixelRatio,
-+                             menuHeight * devicePixelRatio);
-+        QPixmap fullHeightPixmap(fullHeightSize);
-+        fullHeightPixmap.fill(Qt::transparent);
-+        if (!pixmap.isNull()) {
-+            QPainter p(&fullHeightPixmap);
-+            QRect r = pixmap.rect();
-+            r.moveCenter(fullHeightPixmap.rect().center());
-+            p.drawPixmap(r, pixmap);
-+        }
- 
--    auto *nsimage = [NSImage imageFromQImage:fullHeightPixmap.toImage()];
--    [nsimage setTemplate:icon.isMask()];
--    m_statusItem.button.image = nsimage;
-+        auto *nsimage = [NSImage imageFromQImage:fullHeightPixmap.toImage()];
-+        [nsimage setTemplate:icon.isMask()];
++        // QSize fullHeightSize(!pixmap.isNull() ? pixmap.width():
++        //                                         menuHeight * devicePixelRatio,
++        //                      menuHeight * devicePixelRatio);
++        // QPixmap fullHeightPixmap(fullHeightSize);
++        // fullHeightPixmap.fill(Qt::transparent);
++        // if (!pixmap.isNull()) {
++        //     QPainter p(&fullHeightPixmap);
++        //     QRect r = pixmap.rect();
++        //     r.moveCenter(fullHeightPixmap.rect().center());
++        //     p.drawPixmap(r, pixmap);
++        // }
++
++        auto *nsimage = [NSImage imageFromQImage:pixmap.toImage()];
++        [nsimage setTemplate:m_icon.isMask()];
 +
 +        return nsimage;
 +    };
 +    m_statusItem.button.image = imageByMode(QIcon::Normal);
-+    m_statusItem.button.alternateImage = imageByMode(QIcon::Selected);
++    m_statusItem.button.alternateImage = imageByMode(QIcon::Active);
      m_statusItem.button.imageScaling = NSImageScaleProportionallyDown;
  }
  
-@@ -264,6 +274,19 @@ void QCocoaSystemTrayIcon::statusItemClicked()
+@@ -264,6 +283,18 @@ void QCocoaSystemTrayIcon::statusItemClicked()
  {
      auto *mouseEvent = NSApp.currentEvent;
  
@@ -148,7 +173,6 @@ index 704498acb1..3863ad0577 100644
 +		if (!m_handledOnPress) {
 +			return;
 +		}
-+		const auto highlighted = m_statusItem.button.highlighted;
 +		[m_statusItem.button highlight:NO];
 +	} else if (mouseEvent.type == NSEventTypeLeftMouseUp) {
 +		if (m_handledOnPress) {
@@ -159,6 +183,21 @@ index 704498acb1..3863ad0577 100644
      auto activationReason = QPlatformSystemTrayIcon::Unknown;
  
      if (mouseEvent.clickCount == 2) {
+@@ -320,6 +351,14 @@ QT_END_NAMESPACE
+     emit self.platformSystemTray->messageClicked();
+ }
+ 
++// Thanks https://stackoverflow.com/a/64525038
++-(void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context
++{
++    if ([keyPath isEqualToString:@"button.effectiveAppearance"]) {
++        self.platformSystemTray->updateItemIcon();
++    }
++}
++
+ @end
+ 
+ #endif // QT_NO_SYSTEMTRAYICON
 diff --git a/src/widgets/util/qsystemtrayicon_qpa.cpp b/src/widgets/util/qsystemtrayicon_qpa.cpp
 index f2b0819132..b33451b1d5 100644
 --- a/src/widgets/util/qsystemtrayicon_qpa.cpp
