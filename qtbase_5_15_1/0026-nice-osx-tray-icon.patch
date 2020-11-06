@@ -18,7 +18,7 @@ index 141995d1b1..1fddc6f03f 100644
  
  QT_END_NAMESPACE
 diff --git a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm b/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
-index 704498acb1..4a318d1637 100644
+index 704498acb1..efa0893758 100644
 --- a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
 +++ b/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
 @@ -101,7 +101,9 @@ void QCocoaSystemTrayIcon::init()
@@ -32,7 +32,16 @@ index 704498acb1..4a318d1637 100644
  }
  
  void QCocoaSystemTrayIcon::cleanup()
-@@ -142,15 +144,26 @@ static QList<QSize> sortByHeight(const QList<QSize> &sizes)
+@@ -110,6 +112,8 @@ void QCocoaSystemTrayIcon::cleanup()
+     if (center.delegate == m_delegate)
+         center.delegate = nil;
+ 
++    [m_statusItem removeObserver:m_delegate forKeyPath:@"button.effectiveAppearance"];
++
+     [NSStatusBar.systemStatusBar removeStatusItem:m_statusItem];
+     [m_statusItem release];
+     m_statusItem = nil;
+@@ -142,15 +146,26 @@ static QList<QSize> sortByHeight(const QList<QSize> &sizes)
  }
  
  void QCocoaSystemTrayIcon::updateIcon(const QIcon &icon)
@@ -60,7 +69,7 @@ index 704498acb1..4a318d1637 100644
      const int menuHeight = NSStatusBar.systemStatusBar.thickness;
      const int maxImageHeight = menuHeight - padding;
  
-@@ -160,53 +173,59 @@ void QCocoaSystemTrayIcon::updateIcon(const QIcon &icon)
+@@ -160,53 +175,59 @@ void QCocoaSystemTrayIcon::updateIcon(const QIcon &icon)
      // devicePixelRatio for the "best" screen on the system.
      qreal devicePixelRatio = qApp->devicePixelRatio();
      const int maxPixmapHeight = maxImageHeight * devicePixelRatio;
@@ -164,7 +173,7 @@ index 704498acb1..4a318d1637 100644
      m_statusItem.button.imageScaling = NSImageScaleProportionallyDown;
  }
  
-@@ -264,6 +283,18 @@ void QCocoaSystemTrayIcon::statusItemClicked()
+@@ -264,6 +285,18 @@ void QCocoaSystemTrayIcon::statusItemClicked()
  {
      auto *mouseEvent = NSApp.currentEvent;
  
@@ -183,7 +192,7 @@ index 704498acb1..4a318d1637 100644
      auto activationReason = QPlatformSystemTrayIcon::Unknown;
  
      if (mouseEvent.clickCount == 2) {
-@@ -320,6 +351,14 @@ QT_END_NAMESPACE
+@@ -320,6 +353,14 @@ QT_END_NAMESPACE
      emit self.platformSystemTray->messageClicked();
  }
  
