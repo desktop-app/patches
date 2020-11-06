@@ -12,10 +12,17 @@ pacman --noconfirm -S pkg-config
 
 PKG_CONFIG_PATH="/mingw64/lib/pkgconfig:$PKG_CONFIG_PATH"
 
+VersionIs64=`cl 2>&1 | grep x64 | wc -l`
+if [ "$VersionIs64" == "0" ]; then
+    OpusFolder=Win32
+else
+    OpusFolder=x64
+fi
+
 ./configure --toolchain=msvc \
 --extra-cflags="-DCONFIG_SAFE_BITSTREAM_READER=1" \
 --extra-cxxflags="-DCONFIG_SAFE_BITSTREAM_READER=1" \
---extra-ldflags="-libpath:$FullExecPath/../opus/win32/VS2015/Win32/Release" \
+--extra-ldflags="-libpath:$FullExecPath/../opus/win32/VS2015/$OpusFolder/Release" \
 --disable-programs \
 --disable-doc \
 --disable-network \
@@ -29,7 +36,8 @@ PKG_CONFIG_PATH="/mingw64/lib/pkgconfig:$PKG_CONFIG_PATH"
 --enable-hwaccel=mpeg2_d3d11va \
 --enable-hwaccel=mpeg2_d3d11va2 \
 --enable-hwaccel=mpeg2_dxva2 \
---enable-protocol=file --enable-libopus \
+--enable-protocol=file \
+--enable-libopus \
 --enable-decoder=aac \
 --enable-decoder=aac_at \
 --enable-decoder=aac_fixed \
