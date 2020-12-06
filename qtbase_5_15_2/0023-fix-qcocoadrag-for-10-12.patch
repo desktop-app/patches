@@ -1,10 +1,10 @@
 diff --git a/src/plugins/platforms/cocoa/qcocoadrag.mm b/src/plugins/platforms/cocoa/qcocoadrag.mm
-index ab6863a432..37fefc8481 100644
+index 4bd1b129bd..6f4fab9210 100644
 --- a/src/plugins/platforms/cocoa/qcocoadrag.mm
 +++ b/src/plugins/platforms/cocoa/qcocoadrag.mm
-@@ -139,7 +139,7 @@ Qt::DropAction QCocoaDrag::drag(QDrag *o)
-     NSImage *dragImage = [NSImage imageFromQImage:pm.toImage()];
-     Q_ASSERT(dragImage);
+@@ -131,7 +131,7 @@ Qt::DropAction QCocoaDrag::drag(QDrag *o)
+     m_drag = o;
+     m_executed_drop_action = Qt::IgnoreAction;
  
 -    QMacPasteboard dragBoard(CFStringRef(NSPasteboardNameDrag), QMacInternalPasteboardMime::MIME_DND);
 +    QMacPasteboard dragBoard(CFStringRef(NSDragPboard), QMacInternalPasteboardMime::MIME_DND);
@@ -27,5 +27,5 @@ index ab6863a432..37fefc8481 100644
 -    NSPasteboard *dragBoard = [NSPasteboard pasteboardWithName:NSPasteboardNameDrag];
 +    NSPasteboard *dragBoard = [NSPasteboard pasteboardWithName:NSDragPboard];
  
-     if (int(dragBoard.pasteboardItems.count) == 1 && qtUrls.size() <= 1) {
+     if (qtUrls.size() <= 1) {
          // Good old -dragImage: works perfectly for this ...
