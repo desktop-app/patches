@@ -1,0 +1,15 @@
+diff --git a/src/tools/bootstrap/CMakeLists.txt b/src/tools/bootstrap/CMakeLists.txt
+index 3cbeae6dc1..d79775d85c 100644
+--- a/src/tools/bootstrap/CMakeLists.txt
++++ b/src/tools/bootstrap/CMakeLists.txt
+@@ -9,6 +9,10 @@
+ # libraries.
+ add_library(Bootstrap STATIC)
+ # special case end
++
++# Fix building Bootstrap library with -static-runtime option.
++qt_set_common_target_properties(Bootstrap)
++
+ qt_internal_extend_target(Bootstrap
+     SOURCES
+         ../../3rdparty/pcre2/src/config.h

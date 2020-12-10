@@ -1,0 +1,25 @@
+diff --git a/cmake/QtFlagHandlingHelpers.cmake b/cmake/QtFlagHandlingHelpers.cmake
+index 250df5de2d..25425d1286 100644
+--- a/cmake/QtFlagHandlingHelpers.cmake
++++ b/cmake/QtFlagHandlingHelpers.cmake
+@@ -836,6 +836,20 @@ function(qt_internal_set_up_config_optimizations_like_in_qmake)
+                 CONFIGS RELEASE RELWITHDEBINFO MINSIZEREL
+                 TYPES EXE SHARED # when linking static libraries, link.exe can't recognize this parameter, clang-cl will error out.
+                 IN_CACHE)
++
++        # Try to fix MT link of uic.exe
++        set(flag_value "/NODEFAULTLIB:MSVCRT")
++        qt_internal_add_linker_flags(
++                FLAGS "${flag_value}"
++                CONFIGS RELEASE RELWITHDEBINFO MINSIZEREL
++                TYPES EXE SHARED # when linking static libraries, link.exe can't recognize this parameter, clang-cl will error out.
++                IN_CACHE)
++        set(flag_value "/NODEFAULTLIB:MSVCRTD")
++        qt_internal_add_linker_flags(
++                FLAGS "${flag_value}"
++                CONFIGS DEBUG
++                TYPES EXE SHARED # when linking static libraries, link.exe can't recognize this parameter, clang-cl will error out.
++                IN_CACHE)
+     endif()
+ 
+     # Allow opting into generating debug info in object files with a fake feature.

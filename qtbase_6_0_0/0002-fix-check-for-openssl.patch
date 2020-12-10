@@ -1,0 +1,12 @@
+diff --git a/src/network/configure.cmake b/src/network/configure.cmake
+index ea71cd1ff8..12cc5712b2 100644
+--- a/src/network/configure.cmake
++++ b/src/network/configure.cmake
+@@ -38,6 +38,7 @@ qt_find_package(WrapOpenSSL PROVIDED_TARGETS WrapOpenSSL::WrapOpenSSL MODULE_NAM
+ qt_config_compile_test(openssl
+     LIBRARIES
+         WrapOpenSSL::WrapOpenSSL
++        Ws2_32.lib Gdi32.lib Advapi32.lib Crypt32.lib User32.lib
+     CODE
+ "
+ #include <openssl/ssl.h>
