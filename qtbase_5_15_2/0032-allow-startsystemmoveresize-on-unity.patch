@@ -1,0 +1,30 @@
+diff --git a/src/plugins/platforms/xcb/qxcbwindow.cpp b/src/plugins/platforms/xcb/qxcbwindow.cpp
+index 9e7e1a5572..b946453d3b 100644
+--- a/src/plugins/platforms/xcb/qxcbwindow.cpp
++++ b/src/plugins/platforms/xcb/qxcbwindow.cpp
+@@ -2360,22 +2360,11 @@ bool QXcbWindow::startSystemMoveResize(const QPoint &pos, int edges)
+     if (!connection()->wmSupport()->isSupportedByWM(moveResize))
+         return false;
+ 
+-    // ### FIXME QTBUG-53389
+-    bool startedByTouch = connection()->startSystemMoveResizeForTouch(m_window, edges);
+-    if (startedByTouch) {
+-        if (connection()->isUnity()) {
+-            // Unity fails to move/resize via _NET_WM_MOVERESIZE (WM bug?).
+-            connection()->abortSystemMoveResizeForTouch();
+-            return false;
+-        }
+-        // KWin, Openbox, AwesomeWM and Gnome have been tested to work with _NET_WM_MOVERESIZE.
+-    } else { // Started by mouse press.
+-        if (connection()->isUnity())
+-            return false; // _NET_WM_MOVERESIZE on this WM is bouncy (WM bug?).
+-
+-        doStartSystemMoveResize(mapToGlobal(pos), edges);
++    if (connection()->startSystemMoveResizeForTouch(m_window, edges)) {
++        return true;
+     }
+ 
++    doStartSystemMoveResize(mapToGlobal(pos), edges);
+     return true;
+ }
+ 
