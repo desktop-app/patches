@@ -1,8 +1,8 @@
 diff --git a/src/client/qwaylandwindow.cpp b/src/client/qwaylandwindow.cpp
-index bc031ed5..b3985897 100644
+index d22fcd54..f602ebfb 100644
 --- a/src/client/qwaylandwindow.cpp
 +++ b/src/client/qwaylandwindow.cpp
-@@ -371,10 +371,9 @@ void QWaylandWindow::setGeometry(const QRect &rect)
+@@ -372,10 +372,9 @@ void QWaylandWindow::setGeometry(const QRect &rect)
  
  void QWaylandWindow::resizeFromApplyConfigure(const QSize &sizeWithMargins, const QPoint &offset)
  {
@@ -16,7 +16,7 @@ index bc031ed5..b3985897 100644
  
      mOffset += offset;
      mInResizeFromApplyConfigure = true;
-@@ -667,6 +666,14 @@ QMargins QWaylandWindow::frameMargins() const
+@@ -668,6 +667,14 @@ QMargins QWaylandWindow::frameMargins() const
      return QPlatformWindow::frameMargins();
  }
  
@@ -31,7 +31,7 @@ index bc031ed5..b3985897 100644
  /*!
   * Size, with decorations (including including eventual shadows) in wl_surface coordinates
   */
-@@ -681,7 +688,7 @@ QSize QWaylandWindow::surfaceSize() const
+@@ -682,7 +689,7 @@ QSize QWaylandWindow::surfaceSize() const
   */
  QRect QWaylandWindow::windowContentGeometry() const
  {
@@ -60,28 +60,28 @@ index 6cc1664b..af0dd4c2 100644
 +
  #endif // QWAYLANDWINDOW_H
 diff --git a/src/plugins/shellintegration/wl-shell/qwaylandwlshellsurface.cpp b/src/plugins/shellintegration/wl-shell/qwaylandwlshellsurface.cpp
-index 245fec19..f755060c 100644
+index 8f41118d..af02db4d 100644
 --- a/src/plugins/shellintegration/wl-shell/qwaylandwlshellsurface.cpp
 +++ b/src/plugins/shellintegration/wl-shell/qwaylandwlshellsurface.cpp
 @@ -134,7 +134,7 @@ void QWaylandWlShellSurface::applyConfigure()
  {
      if ((m_pending.states & (Qt::WindowMaximized|Qt::WindowFullScreen))
              && !(m_applied.states & (Qt::WindowMaximized|Qt::WindowFullScreen))) {
--        m_normalSize = m_window->window()->frameGeometry().size();
-+        m_normalSize = m_window->window()->frameGeometry().size().shrunkBy(m_window->customMargins());
+-        m_normalSize = m_window->windowFrameGeometry().size();
++        m_normalSize = m_window->windowContentGeometry().size();
      }
  
      if (m_pending.states != m_applied.states)
 diff --git a/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp b/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
-index b6d23ac1..09e36d1d 100644
+index 1c762944..882079c7 100644
 --- a/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
 +++ b/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
 @@ -83,7 +83,7 @@ QWaylandXdgSurface::Toplevel::~Toplevel()
  void QWaylandXdgSurface::Toplevel::applyConfigure()
  {
      if (!(m_applied.states & (Qt::WindowMaximized|Qt::WindowFullScreen)))
--        m_normalSize = m_xdgSurface->m_window->window()->frameGeometry().size();
-+        m_normalSize = m_xdgSurface->m_window->window()->frameGeometry().size().shrunkBy(m_xdgSurface->m_window->customMargins());
+-        m_normalSize = m_xdgSurface->m_window->windowFrameGeometry().size();
++        m_normalSize = m_xdgSurface->m_window->windowContentGeometry().size();
  
      if ((m_pending.states & Qt::WindowActive) && !(m_applied.states & Qt::WindowActive))
          m_xdgSurface->m_window->display()->handleWindowActivated(m_xdgSurface->m_window);
