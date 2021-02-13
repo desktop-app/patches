@@ -1,0 +1,26 @@
+Idea taken from https://codereview.qt-project.org/c/qt/qtwayland/+/323107
+---
+
+diff --git a/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp b/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
+index b6d23ac1..06f211d0 100644
+--- a/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
++++ b/src/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
+@@ -178,10 +178,15 @@ void QWaylandXdgSurface::Toplevel::requestWindowStates(Qt::WindowStates states)
+     }
+ 
+     if (changedStates & Qt::WindowFullScreen) {
+-        if (states & Qt::WindowFullScreen)
+-            set_fullscreen(nullptr);
+-        else
++        if (states & Qt::WindowFullScreen) {
++            const auto screen = m_xdgSurface->window()->waylandScreen();
++            if (screen)
++                set_fullscreen(screen->output());
++            else
++                set_fullscreen(nullptr);
++        } else {
+             unset_fullscreen();
++        }
+     }
+ 
+     // Minimized state is not reported by the protocol, so always send it
