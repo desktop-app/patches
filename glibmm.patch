@@ -1,0 +1,158 @@
+diff --git a/gio/src/dbusconnection.ccg b/gio/src/dbusconnection.ccg
+index f2f60355..d6bb2652 100644
+--- a/gio/src/dbusconnection.ccg
++++ b/gio/src/dbusconnection.ccg
+@@ -807,8 +807,12 @@ guint Connection::signal_subscribe(
+ {
+   SlotSignal* slot_copy = new SlotSignal(slot);
+ 
+-  return g_dbus_connection_signal_subscribe(gobj(), sender.c_str(),
+-    interface_name.c_str(), member.c_str(), object_path.c_str(), arg0.c_str(),
++  return g_dbus_connection_signal_subscribe(gobj(),
++    (sender.empty() ? nullptr : sender.c_str()),
++    (interface_name.empty() ? nullptr : interface_name.c_str()),
++    (member.empty() ? nullptr : member.c_str()),
++    (object_path.empty() ? nullptr : object_path.c_str()),
++    (arg0.empty() ? nullptr : arg0.c_str()),
+     static_cast<GDBusSignalFlags>(flags),
+     &DBusConnection_Signal_giomm_callback, slot_copy,
+     &DBusConnection_Signal_giomm_callback_destroy);
+diff --git a/glib/glibmm/objectbase.cc b/glib/glibmm/objectbase.cc
+index 140816a4..c7add7fe 100644
+--- a/glib/glibmm/objectbase.cc
++++ b/glib/glibmm/objectbase.cc
+@@ -1,6 +1,3 @@
+-// -*- c++ -*-
+-/* $Id$ */
+-
+ /* Copyright 2002 The gtkmm Development Team
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -46,7 +43,7 @@ namespace Glib
+ 
+ // static data members
+ ObjectBase::extra_object_base_data_type ObjectBase::extra_object_base_data;
+-std::auto_ptr<Threads::Mutex> ObjectBase::extra_object_base_data_mutex(new Threads::Mutex());
++Threads::Mutex* ObjectBase::extra_object_base_data_mutex = new Threads::Mutex();
+ 
+ ObjectBase::ObjectBase()
+ :
+diff --git a/glib/glibmm/objectbase.h b/glib/glibmm/objectbase.h
+index 9c4c4e8e..2b81680e 100644
+--- a/glib/glibmm/objectbase.h
++++ b/glib/glibmm/objectbase.h
+@@ -30,7 +30,7 @@
+ #include <sigc++/trackable.h>
+ #include <typeinfo>
+ #include <map> // Needed until the next ABI break.
+-#include <memory> // auto_ptr, needed until the next ABI break.
++#include <memory> // Not used by ObjectBase any more, but user code may rely on it being here.
+ 
+ #ifndef DOXYGEN_SHOULD_SKIP_THIS
+ extern "C" { typedef struct _GObject GObject; }
+@@ -208,10 +208,10 @@ typedef std::map<const ObjectBase*, ExtraObjectBaseData> extra_object_base_data_
+ static extra_object_base_data_type extra_object_base_data;
+ // ObjectBase instances may be used in different threads.
+ // Accesses to extra_object_base_data must be thread-safe.
+-// auto_ptr, because we don't want to include glibmm/threads.h in objectbase.h.
++// Threads::Mutex*, because we don't want to include glibmm/threads.h in objectbase.h.
+ // threads.h must be the first included file that includes glib.h. That could cause
+ // problems in files that directly or indirectly include objectbase.h.
+-static std::auto_ptr<Threads::Mutex> extra_object_base_data_mutex;
++static Threads::Mutex* extra_object_base_data_mutex;
+ 
+ public: //  is_derived_() must be public, so that overridden vfuncs and signal handlers can call it via ObjectBase.
+ 
+diff --git a/glib/src/threads.hg b/glib/src/threads.hg
+index 52bb4b41..fc035c0a 100644
+--- a/glib/src/threads.hg
++++ b/glib/src/threads.hg
+@@ -583,7 +583,7 @@ public:
+    */
+   inline void replace(T* data);
+ 
+-  GPrivate* gobj() { return gobject_; }
++  GPrivate* gobj() { return &gobject_; }
+ 
+ private:
+   GPrivate gobject_;
+diff --git a/glib/src/variant.ccg b/glib/src/variant.ccg
+index a7c53524..05eba90e 100644
+--- a/glib/src/variant.ccg
++++ b/glib/src/variant.ccg
+@@ -149,7 +149,7 @@ void VariantContainerBase::get_child(VariantBase& child, gsize index) const
+ // VariantContainerBase has no method variant_type()
+ template<>
+ VariantContainerBase VariantBase::cast_dynamic<VariantContainerBase>(const VariantBase& v)
+-throw(std::bad_cast)
++noexcept(false)
+ {
+   if(!v.gobj())
+   {
+@@ -260,7 +260,7 @@ Glib::ustring Variant<Glib::ustring>::get() const
+ // See http://library.gnome.org/devel/glib/unstable/glib-GVariant.html#g-variant-get-string
+ template<>
+ Variant<Glib::ustring> VariantBase::cast_dynamic< Variant<Glib::ustring> >(const VariantBase& v)
+-throw(std::bad_cast)
++noexcept(false)
+ {
+   if(!v.gobj())
+   {
+@@ -309,7 +309,7 @@ Variant<std::string>::create(const std::string& data)
+ // See http://library.gnome.org/devel/glib/unstable/glib-GVariant.html#g-variant-get-string
+ template<>
+ Variant<std::string> VariantBase::cast_dynamic< Variant<std::string> >(const VariantBase& v)
+-throw(std::bad_cast)
++noexcept(false)
+ {
+   if(!v.gobj())
+   {
+diff --git a/glib/src/variant.hg b/glib/src/variant.hg
+index 0cb1a827..bda46856 100644
+--- a/glib/src/variant.hg
++++ b/glib/src/variant.hg
+@@ -208,7 +208,7 @@ public:
+     * @throws std::bad_cast if the Variant was not of the expected type.
+     */
+    template<class V_CastTo>
+-   static V_CastTo cast_dynamic(const VariantBase& v) throw(std::bad_cast);
++   static V_CastTo cast_dynamic(const VariantBase& v) noexcept(false);
+ 
+    _IGNORE(g_variant_dict_new)
+ 
+@@ -236,7 +236,7 @@ private:
+ 
+ template<class V_CastTo>
+ V_CastTo VariantBase::cast_dynamic(const VariantBase& v)
+-throw(std::bad_cast)
++noexcept(false)
+ {
+   if(!(v.gobj()))
+   {
+@@ -391,7 +391,7 @@ public:
+ 
+ template<>
+ VariantContainerBase VariantBase::cast_dynamic<VariantContainerBase>(const VariantBase& v)
+-throw(std::bad_cast);
++noexcept(false);
+ 
+ /** Template class used for the specialization of the Variant<> classes.
+  * @newin{2,28}
+@@ -554,7 +554,7 @@ public:
+ 
+ template<>
+ Variant<Glib::ustring> VariantBase::cast_dynamic< Variant<Glib::ustring> >(const VariantBase& v)
+-throw(std::bad_cast);
++noexcept(false);
+ 
+ /** Specialization of Variant containing a std::string, for variants of type
+  * bytestring, object path, or signature.
+@@ -603,7 +603,7 @@ public:
+ 
+ template<>
+ Variant<std::string> VariantBase::cast_dynamic< Variant<std::string> >(const VariantBase& v)
+-throw(std::bad_cast);
++noexcept(false);
+ 
+ /** Specialization of Variant containing a dictionary entry.  See also
+  * Variant< std::map<K, V> >.
