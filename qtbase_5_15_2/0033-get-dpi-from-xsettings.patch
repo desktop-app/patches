@@ -1,0 +1,17 @@
+diff --git a/src/plugins/platforms/xcb/qxcbscreen.cpp b/src/plugins/platforms/xcb/qxcbscreen.cpp
+index e637ed827c..616a2961cf 100644
+--- a/src/plugins/platforms/xcb/qxcbscreen.cpp
++++ b/src/plugins/platforms/xcb/qxcbscreen.cpp
+@@ -113,6 +113,12 @@ QXcbVirtualDesktop::QXcbVirtualDesktop(QXcbConnection *connection, xcb_screen_t
+         xcb_depth_next(&depth_iterator);
+     }
+ 
++    bool xSettingsDpiOk;
++    int xSettingsDpiTimes1k = xSettings()->setting("Xft/DPI").toInt(&xSettingsDpiOk);
++    if (xSettingsDpiOk) {
++        m_forcedDpi = xSettingsDpiTimes1k / 1024;
++    }
++
+     auto dpiChangedCallback = [](QXcbVirtualDesktop *desktop, const QByteArray &, const QVariant &property, void *) {
+         bool ok;
+         int dpiTimes1k = property.toInt(&ok);
