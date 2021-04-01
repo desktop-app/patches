@@ -1,0 +1,20 @@
+diff --git a/src/platformsupport/fontdatabases/fontconfig/qfontconfigdatabase.cpp b/src/platformsupport/fontdatabases/fontconfig/qfontconfigdatabase.cpp
+index 0d4bc288ea..a3dfb8b015 100644
+--- a/src/platformsupport/fontdatabases/fontconfig/qfontconfigdatabase.cpp
++++ b/src/platformsupport/fontdatabases/fontconfig/qfontconfigdatabase.cpp
+@@ -925,14 +925,7 @@ void QFontconfigDatabase::setupFontEngine(QFontEngineFT *engine, const QFontDef
+ {
+     bool antialias = !(fontDef.styleStrategy & QFont::NoAntialias);
+     bool forcedAntialiasSetting = !antialias || QHighDpiScaling::isActive();
+-
+-    const QPlatformServices *services = QGuiApplicationPrivate::platformIntegration()->services();
+-    bool useXftConf = false;
+-
+-    if (services) {
+-        const QList<QByteArray> desktopEnv = services->desktopEnvironment().split(':');
+-        useXftConf = desktopEnv.contains("GNOME") || desktopEnv.contains("UNITY") || desktopEnv.contains("XFCE");
+-    }
++    bool useXftConf = true;
+ 
+     if (useXftConf && !forcedAntialiasSetting) {
+         void *antialiasResource =
