@@ -104,7 +104,7 @@ index b4424e6..56c83ce 100644
 -
 -		if (pxgconf)
 -			cmd = string (pxgconf);
-+		string cmd = [&] {
++		string cmd = [&]() -> string {
 +			const char *pxgconf = getenv("PX_GSETTINGS");
 +			if (pxgconf) {
 +				return pxgconf;
