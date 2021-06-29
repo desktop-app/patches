@@ -1,0 +1,13 @@
+diff --git a/src/gui/configure.json b/src/gui/configure.json
+index c8c4864eca..6ea6c81e5c 100644
+--- a/src/gui/configure.json
++++ b/src/gui/configure.json
+@@ -1358,7 +1358,7 @@
+         },
+         "opengl-dynamic": {
+             "label": "Dynamic OpenGL",
+-            "disable": "input.angle == 'yes' || input.opengl == 'no' || input.opengl == 'desktop'",
++            "disable": "input.angle == 'yes' || input.opengl == 'no' || input.opengl == 'desktop' || input.opengl == 'es2'",
+             "condition": "config.win32 && !config.winrt",
+             "output": [
+                 { "type": "publicFeature", "name": "dynamicgl" },

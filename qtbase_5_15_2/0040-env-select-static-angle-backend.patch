@@ -1,0 +1,64 @@
+diff --git a/src/plugins/platforms/windows/qwindowseglcontext.cpp b/src/plugins/platforms/windows/qwindowseglcontext.cpp
+index 4ae087dfaa..4c1fc9734c 100644
+--- a/src/plugins/platforms/windows/qwindowseglcontext.cpp
++++ b/src/plugins/platforms/windows/qwindowseglcontext.cpp
+@@ -44,7 +44,7 @@
+ #include <QtCore/qdebug.h>
+ #include <QtGui/qopenglcontext.h>
+ 
+-#if defined(QT_OPENGL_ES_2_ANGLE) || defined(QT_OPENGL_DYNAMIC)
++#if defined(QT_OPENGL_ES_2_ANGLE) || defined(QT_OPENGL_DYNAMIC) || defined(DESKTOP_APP_QT_STATIC_ANGLE)
+ #  include <EGL/eglext.h>
+ #endif
+ 
+@@ -203,6 +203,40 @@ QWindowsEGLStaticContext::QWindowsEGLStaticContext(EGLDisplay display)
+ bool QWindowsEGLStaticContext::initializeAngle(QWindowsOpenGLTester::Renderers preferredType, HDC dc,
+                                                EGLDisplay *display, EGLint *major, EGLint *minor)
+ {
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++    const EGLint anglePlatformAttributes[][5] = {
++        { EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE, EGL_NONE },
++        { EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE, EGL_NONE },
++        { EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_D3D9_ANGLE, EGL_NONE },
++        { EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,
++            EGL_PLATFORM_ANGLE_D3D11ON12_ANGLE, EGL_TRUE, EGL_NONE }
++    };
++    const EGLint *attributes = nullptr;
++    const char platformVar[] = "DESKTOP_APP_QT_ANGLE_PLATFORM";
++    if (qEnvironmentVariableIsSet(platformVar)) {
++        const QByteArray anglePlatform = qgetenv(platformVar);
++        if (anglePlatform == "gl")
++            attributes = anglePlatformAttributes[0];
++        else if (anglePlatform == "d3d11")
++            attributes = anglePlatformAttributes[1];
++        else if (anglePlatform == "d3d9")
++            attributes = anglePlatformAttributes[2];
++        else if (anglePlatform == "d3d11on12")
++            attributes = anglePlatformAttributes[3];
++        else
++            qCWarning(lcQpaGl) << "Invalid value set for " << platformVar << ": " << anglePlatform;
++        if (attributes) {
++            *display = libEGL.eglGetPlatformDisplayEXT(EGL_PLATFORM_ANGLE_ANGLE, dc, attributes);
++            if (!libEGL.eglInitialize(*display, major, minor)) {
++                libEGL.eglTerminate(*display);
++                *display = EGL_NO_DISPLAY;
++                *major = *minor = 0;
++                return false;
++            }
++        }
++    }
++#else // DESKTOP_APP_QT_STATIC_ANGLE
++
+ #ifdef EGL_ANGLE_platform_angle
+     if (libEGL.eglGetPlatformDisplayEXT
+         && (preferredType & QWindowsOpenGLTester::AngleBackendMask)) {
+@@ -236,6 +270,9 @@ bool QWindowsEGLStaticContext::initializeAngle(QWindowsOpenGLTester::Renderers p
+     Q_UNUSED(major);
+     Q_UNUSED(minor);
+ #endif
++
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
++
+     return true;
+ }
+ 
