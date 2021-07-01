@@ -69,7 +69,7 @@ index 11d2d43..c4f7e54 100644
  px_module(wpad_dns_alias           1                 1)
  message("")
 diff --git a/libproxy/modules/config_gnome3.cpp b/libproxy/modules/config_gnome3.cpp
-index b4424e6..56c83ce 100644
+index b4424e6..1f2dd2a 100644
 --- a/libproxy/modules/config_gnome3.cpp
 +++ b/libproxy/modules/config_gnome3.cpp
 @@ -27,12 +27,22 @@
@@ -118,7 +118,7 @@ index b4424e6..56c83ce 100644
 +			namespace fs = std::filesystem;
 +			for (const auto &p : fs::recursive_directory_iterator(PXGSETTINGS_DEBIAN_DIR)) {
 +				if (p.path().filename() == "pxgsettings") {
-+					return p.path().c_str();
++					return p.path();
 +				}
 +			}
 +			return LIBEXECDIR "/pxgsettings";
