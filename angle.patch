@@ -1,0 +1,31 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index c4b555594..ea6aacf64 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -1343,3 +1343,26 @@ group("angle") {
+     ":libGLESv2",
+   ]
+ }
++
++# Thanks https://groups.google.com/g/angleproject/c/f7i0kucc5xM
++#
++# EXPERIMENTAL
++#NOTE it would be nice if libs like d3d9.lib could be
++#included but I'm pretty sure there's no way to make
++#that automatic with static libraries, so consumers
++#must link against them (this is OBJ only)
++angle_static_library("libANGLE_static") {
++
++  #https://groups.google.com/a/chromium.org/g/gn-dev/c/tlckKRJ9uSE
++  complete_static_lib = true
++
++  public_deps = [ ":libANGLE" ]
++}
++
++angle_static_library("libANGLE_with_capture_static") {
++
++  #https://groups.google.com/a/chromium.org/g/gn-dev/c/tlckKRJ9uSE
++  complete_static_lib = true
++
++  public_deps = [ ":libANGLE_with_capture" ]
++}
