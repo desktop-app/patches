@@ -1,0 +1,15 @@
+diff --git a/src/libANGLE/Display.cpp b/src/libANGLE/Display.cpp
+index 7b1cdd234..c6f3b911a 100644
+--- a/src/libANGLE/Display.cpp
++++ b/src/libANGLE/Display.cpp
+@@ -189,7 +189,9 @@ EGLAttrib GetDisplayTypeFromEnvironment()
+     }
+ #endif
+ 
+-#if defined(ANGLE_ENABLE_D3D11)
++#if defined(ANGLE_DEFAULT_D3D11) && defined(ANGLE_ENABLE_D3D9) && !ANGLE_DEFAULT_D3D11
++    return EGL_PLATFORM_ANGLE_TYPE_D3D9_ANGLE;
++#elif defined(ANGLE_ENABLE_D3D11)
+     return EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE;
+ #elif defined(ANGLE_ENABLE_D3D9)
+     return EGL_PLATFORM_ANGLE_TYPE_D3D9_ANGLE;
