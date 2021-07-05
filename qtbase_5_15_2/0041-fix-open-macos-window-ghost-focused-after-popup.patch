@@ -1,0 +1,24 @@
+diff --git a/src/widgets/kernel/qapplication.cpp b/src/widgets/kernel/qapplication.cpp
+index 03e68217dd..6f72766c9e 100644
+--- a/src/widgets/kernel/qapplication.cpp
++++ b/src/widgets/kernel/qapplication.cpp
+@@ -2924,6 +2924,19 @@ bool QApplication::notify(QObject *receiver, QEvent *e)
+         // Close all popups (triggers when switching applications
+         // by pressing ALT-TAB on Windows, which is not receive as key event.
+         closeAllPopups();
++
++        // In case of macOS popup menu activating another app,
++        // we first get windowDidResignKey() for the main window,
++        // that clears focusWindow(), but notifyActiveWindowChange()
++        // is cancelled by inPopupMode() check (popup is still alive).
++        // After that all popups are destroyed here and the window
++        // gets back its (non real) active / focused state.
++        // We try to workaround it here by checking for inconsistency
++        // between focusWindow() and activeWindow() properties.
++        if (!focusWindow() && activeWindow()) {
++            d->notifyActiveWindowChange(activeWindow()->windowHandle());
++        }
++
+         break;
+     case QEvent::Wheel: // User input and window activation makes tooltips sleep
+     case QEvent::ActivationChange:
