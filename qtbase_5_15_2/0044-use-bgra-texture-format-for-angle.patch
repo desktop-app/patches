@@ -1,5 +1,5 @@
 diff --git a/src/gui/painting/qplatformbackingstore.cpp b/src/gui/painting/qplatformbackingstore.cpp
-index c092a7153f..33723474cd 100644
+index c092a7153f..55fce94abc 100644
 --- a/src/gui/painting/qplatformbackingstore.cpp
 +++ b/src/gui/painting/qplatformbackingstore.cpp
 @@ -529,8 +529,14 @@ GLuint QPlatformBackingStore::toTexture(const QRegion &dirtyRegion, QSize *textu
@@ -8,9 +8,9 @@ index c092a7153f..33723474cd 100644
  
 +#ifdef DESKTOP_APP_QT_STATIC_ANGLE
 +    GLenum basicFormat = GL_BGRA_EXT;
-+#else DESKTOP_APP_QT_STATIC_ANGLE
++#else // DESKTOP_APP_QT_STATIC_ANGLE
 +    GLenum basicFormat = GL_RGBA;
-+#endif DESKTOP_APP_QT_STATIC_ANGLE
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
 +
      QOpenGLContext *ctx = QOpenGLContext::currentContext();
 -    GLenum internalFormat = GL_RGBA;
