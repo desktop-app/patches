@@ -1,5 +1,5 @@
 diff --git a/src/platformsupport/fontdatabases/freetype/qfontengine_ft.cpp b/src/platformsupport/fontdatabases/freetype/qfontengine_ft.cpp
-index c9fe129d4e..83b922d5ad 100644
+index c9fe129d4e..aadfd2ea4b 100644
 --- a/src/platformsupport/fontdatabases/freetype/qfontengine_ft.cpp
 +++ b/src/platformsupport/fontdatabases/freetype/qfontengine_ft.cpp
 @@ -58,6 +58,7 @@
@@ -34,7 +34,7 @@ index c9fe129d4e..83b922d5ad 100644
      stemDarkeningDriver = false;
 +    ptrFT_Get_Font_Format = reinterpret_cast<decltype(ptrFT_Get_Font_Format)>(dlsym(
 +        RTLD_DEFAULT,
-+        "FT_Get_Font_Format"))
++        "FT_Get_Font_Format"));
  }
  
  QFontEngineFT::~QFontEngineFT()
