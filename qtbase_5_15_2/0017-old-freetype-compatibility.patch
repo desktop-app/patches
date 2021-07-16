@@ -1,5 +1,5 @@
 diff --git a/src/platformsupport/fontdatabases/freetype/qfontengine_ft.cpp b/src/platformsupport/fontdatabases/freetype/qfontengine_ft.cpp
-index c9fe129d4e..aadfd2ea4b 100644
+index c9fe129d4e..acbe386cf0 100644
 --- a/src/platformsupport/fontdatabases/freetype/qfontengine_ft.cpp
 +++ b/src/platformsupport/fontdatabases/freetype/qfontengine_ft.cpp
 @@ -58,6 +58,7 @@
@@ -19,26 +19,25 @@ index c9fe129d4e..aadfd2ea4b 100644
  static bool ft_getSfntTable(void *user_data, uint tag, uchar *buffer, uint *length)
  {
      FT_Face face = (FT_Face)user_data;
-@@ -146,7 +149,7 @@ QtFreetypeData *qt_getFreetypeData()
-     QtFreetypeData *&freetypeData = theFreetypeData()->localData();
-     if (!freetypeData)
-         freetypeData = new QtFreetypeData;
--    if (!freetypeData->library) {
-+    if (!freetypeData->library && ptrFT_Get_Font_Format) {
+@@ -149,9 +152,14 @@ QtFreetypeData *qt_getFreetypeData()
+     if (!freetypeData->library) {
          FT_Init_FreeType(&freetypeData->library);
  #if defined(FT_FONT_FORMATS_H)
-         // Freetype defaults to disabling stem-darkening on CFF, we re-enable it.
-@@ -695,6 +698,9 @@ QFontEngineFT::QFontEngineFT(const QFontDef &fd)
-     m_subPixelPositionCount = 4;
-     forceAutoHint = false;
-     stemDarkeningDriver = false;
-+    ptrFT_Get_Font_Format = reinterpret_cast<decltype(ptrFT_Get_Font_Format)>(dlsym(
-+        RTLD_DEFAULT,
-+        "FT_Get_Font_Format"));
- }
- 
- QFontEngineFT::~QFontEngineFT()
-@@ -807,7 +813,7 @@ bool QFontEngineFT::init(FaceId faceId, bool antialias, GlyphFormat format,
+-        // Freetype defaults to disabling stem-darkening on CFF, we re-enable it.
+-        FT_Bool no_darkening = false;
+-        FT_Property_Set(freetypeData->library, "cff", "no-stem-darkening", &no_darkening);
++        ptrFT_Get_Font_Format = reinterpret_cast<decltype(ptrFT_Get_Font_Format)>(dlsym(
++            RTLD_DEFAULT,
++            "FT_Get_Font_Format"));
++        if (ptrFT_Get_Font_Format) {
++            // Freetype defaults to disabling stem-darkening on CFF, we re-enable it.
++            FT_Bool no_darkening = false;
++            FT_Property_Set(freetypeData->library, "cff", "no-stem-darkening", &no_darkening);
++        }
+ #endif
+     }
+     return freetypeData;
+@@ -807,7 +815,7 @@ bool QFontEngineFT::init(FaceId faceId, bool antialias, GlyphFormat format,
          }
      }
  #if defined(FT_FONT_FORMATS_H)
