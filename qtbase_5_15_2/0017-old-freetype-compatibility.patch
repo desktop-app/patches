@@ -1,16 +1,28 @@
+diff --git a/src/platformsupport/fontdatabases/freetype/freetype.pri b/src/platformsupport/fontdatabases/freetype/freetype.pri
+index 7bda687ef4..e76ecd2081 100644
+--- a/src/platformsupport/fontdatabases/freetype/freetype.pri
++++ b/src/platformsupport/fontdatabases/freetype/freetype.pri
+@@ -7,3 +7,4 @@ SOURCES += \
+         $$PWD/qfontengine_ft.cpp
+ 
+ QMAKE_USE_PRIVATE += freetype
++qtConfig(dlopen): QMAKE_USE_PRIVATE += libdl
 diff --git a/src/platformsupport/fontdatabases/freetype/qfontengine_ft.cpp b/src/platformsupport/fontdatabases/freetype/qfontengine_ft.cpp
-index c9fe129d4e..acbe386cf0 100644
+index c9fe129d4e..d26cc49562 100644
 --- a/src/platformsupport/fontdatabases/freetype/qfontengine_ft.cpp
 +++ b/src/platformsupport/fontdatabases/freetype/qfontengine_ft.cpp
-@@ -58,6 +58,7 @@
- #include "qthreadstorage.h"
+@@ -59,6 +59,10 @@
  #include <qmath.h>
  #include <qendian.h>
-+#include <dlfcn.h>
  
++#if QT_CONFIG(dlopen)
++#include <dlfcn.h>
++#endif
++
  #include <ft2build.h>
  #include FT_FREETYPE_H
-@@ -92,6 +93,8 @@ QT_BEGIN_NAMESPACE
+ #include FT_OUTLINE_H
+@@ -92,6 +96,8 @@ QT_BEGIN_NAMESPACE
  #define TRUNC(x)    ((x) >> 6)
  #define ROUND(x)    (((x)+32) & -64)
  
@@ -19,16 +31,20 @@ index c9fe129d4e..acbe386cf0 100644
  static bool ft_getSfntTable(void *user_data, uint tag, uchar *buffer, uint *length)
  {
      FT_Face face = (FT_Face)user_data;
-@@ -149,9 +152,14 @@ QtFreetypeData *qt_getFreetypeData()
+@@ -149,9 +155,18 @@ QtFreetypeData *qt_getFreetypeData()
      if (!freetypeData->library) {
          FT_Init_FreeType(&freetypeData->library);
  #if defined(FT_FONT_FORMATS_H)
 -        // Freetype defaults to disabling stem-darkening on CFF, we re-enable it.
 -        FT_Bool no_darkening = false;
 -        FT_Property_Set(freetypeData->library, "cff", "no-stem-darkening", &no_darkening);
++#if QT_CONFIG(dlopen)
 +        ptrFT_Get_Font_Format = reinterpret_cast<decltype(ptrFT_Get_Font_Format)>(dlsym(
 +            RTLD_DEFAULT,
 +            "FT_Get_Font_Format"));
++#else
++        ptrFT_Get_Font_Format = FT_Get_Font_Format;
++#endif
 +        if (ptrFT_Get_Font_Format) {
 +            // Freetype defaults to disabling stem-darkening on CFF, we re-enable it.
 +            FT_Bool no_darkening = false;
@@ -37,7 +53,7 @@ index c9fe129d4e..acbe386cf0 100644
  #endif
      }
      return freetypeData;
-@@ -807,7 +815,7 @@ bool QFontEngineFT::init(FaceId faceId, bool antialias, GlyphFormat format,
+@@ -807,7 +822,7 @@ bool QFontEngineFT::init(FaceId faceId, bool antialias, GlyphFormat format,
          }
      }
  #if defined(FT_FONT_FORMATS_H)
