@@ -1,0 +1,53 @@
+diff --git a/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp b/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
+index cb1b39db64..3159c726e9 100644
+--- a/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
++++ b/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
+@@ -72,6 +72,7 @@
+ #endif
+ 
+ #include <algorithm>
++#include <dlfcn.h>
+ 
+ QT_BEGIN_NAMESPACE
+ 
+@@ -851,24 +852,12 @@ QStringList QGenericUnixTheme::themeNames()
+     QStringList result;
+     if (QGuiApplication::desktopSettingsAware()) {
+         const QByteArray desktopEnvironment = QGuiApplicationPrivate::platformIntegration()->services()->desktopEnvironment();
+-        QList<QByteArray> gtkBasedEnvironments;
+-        gtkBasedEnvironments << "GNOME"
+-                             << "X-CINNAMON"
+-                             << "UNITY"
+-                             << "MATE"
+-                             << "XFCE"
+-                             << "LXDE";
+         const QList<QByteArray> desktopNames = desktopEnvironment.split(':');
+         for (const QByteArray &desktopName : desktopNames) {
+             if (desktopEnvironment == "KDE") {
+ #if QT_CONFIG(settings)
+                 result.push_back(QLatin1String(QKdeTheme::name));
+ #endif
+-            } else if (gtkBasedEnvironments.contains(desktopName)) {
+-                // prefer the GTK3 theme implementation with native dialogs etc.
+-                result.push_back(QStringLiteral("gtk3"));
+-                // fallback to the generic Gnome theme if loading the GTK3 theme fails
+-                result.push_back(QLatin1String(QGnomeTheme::name));
+             } else {
+                 // unknown, but lowercase the name (our standard practice) and
+                 // remove any "x-" prefix
+@@ -876,6 +865,15 @@ QStringList QGenericUnixTheme::themeNames()
+                 result.push_back(s.startsWith(QLatin1String("x-")) ? s.mid(2) : s);
+             }
+         }
++        if (!result.contains(QLatin1String(QKdeTheme::name))) {
++            if (const auto handle = dlopen("libgtk-3.so.0", RTLD_LAZY)) {
++                // prefer the GTK3 theme implementation with native dialogs etc.
++                result.push_back(QStringLiteral("gtk3"));
++                dlclose(handle);
++            }
++            // fallback to the generic Gnome theme if loading the GTK3 theme fails
++            result.push_back(QLatin1String(QGnomeTheme::name));
++        }
+     } // desktopSettingsAware
+     result.append(QLatin1String(QGenericUnixTheme::name));
+     return result;
