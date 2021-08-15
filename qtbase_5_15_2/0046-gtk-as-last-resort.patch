@@ -1,16 +1,32 @@
+diff --git a/src/platformsupport/themes/genericunix/genericunix.pri b/src/platformsupport/themes/genericunix/genericunix.pri
+index 11da533bc4..09a31b3ac4 100644
+--- a/src/platformsupport/themes/genericunix/genericunix.pri
++++ b/src/platformsupport/themes/genericunix/genericunix.pri
+@@ -1,6 +1,8 @@
+ HEADERS += $$PWD/qgenericunixthemes_p.h
+ SOURCES += $$PWD/qgenericunixthemes.cpp
+ 
++qtConfig(dlopen): QMAKE_USE_PRIVATE += libdl
++
+ qtConfig(dbus) {
+     include(dbusmenu/dbusmenu.pri)
+ 
 diff --git a/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp b/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
-index cb1b39db64..3159c726e9 100644
+index cb1b39db64..797685e9b4 100644
 --- a/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
 +++ b/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
-@@ -72,6 +72,7 @@
- #endif
+@@ -73,6 +73,10 @@
  
  #include <algorithm>
-+#include <dlfcn.h>
  
++#if QT_CONFIG(dlopen)
++#include <dlfcn.h>
++#endif
++
  QT_BEGIN_NAMESPACE
  
-@@ -851,24 +852,12 @@ QStringList QGenericUnixTheme::themeNames()
+ Q_DECLARE_LOGGING_CATEGORY(qLcTray)
+@@ -851,24 +855,12 @@ QStringList QGenericUnixTheme::themeNames()
      QStringList result;
      if (QGuiApplication::desktopSettingsAware()) {
          const QByteArray desktopEnvironment = QGuiApplicationPrivate::platformIntegration()->services()->desktopEnvironment();
@@ -35,16 +51,21 @@ index cb1b39db64..3159c726e9 100644
              } else {
                  // unknown, but lowercase the name (our standard practice) and
                  // remove any "x-" prefix
-@@ -876,6 +865,15 @@ QStringList QGenericUnixTheme::themeNames()
+@@ -876,6 +868,20 @@ QStringList QGenericUnixTheme::themeNames()
                  result.push_back(s.startsWith(QLatin1String("x-")) ? s.mid(2) : s);
              }
          }
 +        if (!result.contains(QLatin1String(QKdeTheme::name))) {
++#if QT_CONFIG(dlopen)
 +            if (const auto handle = dlopen("libgtk-3.so.0", RTLD_LAZY)) {
 +                // prefer the GTK3 theme implementation with native dialogs etc.
 +                result.push_back(QStringLiteral("gtk3"));
 +                dlclose(handle);
 +            }
++#else
++            // prefer the GTK3 theme implementation with native dialogs etc.
++            result.push_back(QStringLiteral("gtk3"));
++#endif
 +            // fallback to the generic Gnome theme if loading the GTK3 theme fails
 +            result.push_back(QLatin1String(QGnomeTheme::name));
 +        }
