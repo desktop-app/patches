@@ -1,0 +1,23 @@
+diff --git a/src/gui/kernel/qopenglcontext.cpp b/src/gui/kernel/qopenglcontext.cpp
+index 927e9cb94a..e102189fcc 100644
+--- a/src/gui/kernel/qopenglcontext.cpp
++++ b/src/gui/kernel/qopenglcontext.cpp
+@@ -989,8 +989,17 @@ bool QOpenGLContext::makeCurrent(QSurface *surface)
+         return false;
+     }
+ 
+-    if (!d->platformGLContext->makeCurrent(surface->surfaceHandle()))
++    if (!d->platformGLContext->makeCurrent(surface->surfaceHandle())) {
++        // In this place the context could switch from isValid to !isValid.
++        // It may still be current (from the previous successful calls),
++        // so we need to make everything look as if it was not set current.
++        if (QOpenGLContext::currentContext() == this) {
++            // resources?..
++            QOpenGLContextPrivate::setCurrentContext(nullptr);
++            d->surface = nullptr;
++        }
+         return false;
++    }
+ 
+     QOpenGLContextPrivate::setCurrentContext(this);
+ #ifndef QT_NO_DEBUG
