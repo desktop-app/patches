@@ -1,7 +1,16 @@
 diff --git a/pylib/gyp/MSVSVersion.py b/pylib/gyp/MSVSVersion.py
-index 71582ccd..6c873b62 100644
+index 71582ccd..dcbbb69b 100644
 --- a/pylib/gyp/MSVSVersion.py
 +++ b/pylib/gyp/MSVSVersion.py
+@@ -162,7 +162,7 @@ def _RegistryQueryBase(sysdir, key, value):
+   p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+   # Obtain the stdout from reg.exe, reading to the end so p.returncode is valid
+   # Note that the error text may be in [1] in some cases
+-  text = p.communicate()[0]
++  text = p.communicate()[0].decode('utf-8', 'ignore')
+   # Check return code from reg.exe; officially 0==success and 1==error
+   if p.returncode:
+     return None
 @@ -268,7 +268,7 @@ def _CreateVersion(name, path, sdk_based=False):
                                    uses_vcxproj=True,
                                    path=path,
@@ -11,6 +20,15 @@ index 71582ccd..6c873b62 100644
                                    compatible_sdks=['v8.1', 'v10.0']),
        '2017': VisualStudioVersion('2017',
                                    'Visual Studio 2017',
+@@ -381,7 +381,7 @@ def _ConvertToCygpath(path):
+   """Convert to cygwin path if we are using cygwin."""
+   if sys.platform == 'cygwin':
+     p = subprocess.Popen(['cygpath', path], stdout=subprocess.PIPE)
+-    path = p.communicate()[0].strip()
++    path = p.communicate()[0].decode('utf-8', 'ignore').strip()
+   return path
+ 
+ 
 @@ -409,10 +409,18 @@ def _DetectVisualStudioVersions(versions_to_check, force_express):
        '11.0': '2012',
        '12.0': '2013',
@@ -113,6 +131,19 @@ index 4a2041cf..e5333926 100644
    if cc:
      SetVariable(output, 'CMAKE_C_COMPILER', cc)
    if cxx:
+diff --git a/pylib/gyp/generator/msvs.py b/pylib/gyp/generator/msvs.py
+index 843e7067..c5c43737 100644
+--- a/pylib/gyp/generator/msvs.py
++++ b/pylib/gyp/generator/msvs.py
+@@ -116,7 +116,7 @@ def _GetDomainAndUserName():
+     if not domain or not username:
+       call = subprocess.Popen(['net', 'config', 'Workstation'],
+                               stdout=subprocess.PIPE)
+-      config = call.communicate()[0]
++      config = call.communicate()[0].decode('utf-8', 'ignore')
+       username_re = re.compile(r'^User name\s+(\S+)', re.MULTILINE)
+       username_match = username_re.search(config)
+       if username_match:
 diff --git a/pylib/gyp/generator/xcode.py b/pylib/gyp/generator/xcode.py
 index 8bc22bed..24bee427 100644
 --- a/pylib/gyp/generator/xcode.py
@@ -180,3 +211,118 @@ index 8bc22bed..24bee427 100644
  
      # Add "sources".
      for source in spec.get('sources', []):
+diff --git a/pylib/gyp/input.py b/pylib/gyp/input.py
+index 4c128916..2bea3341 100644
+--- a/pylib/gyp/input.py
++++ b/pylib/gyp/input.py
+@@ -1183,7 +1183,7 @@ def LoadVariablesFromVariablesDict(variables, the_dict, the_dict_key):
+       if variable_name in variables:
+         # If the variable is already set, don't set it.
+         continue
+-      if the_dict_key is 'variables' and variable_name in the_dict:
++      if the_dict_key == 'variables' and variable_name in the_dict:
+         # If the variable is set without a % in the_dict, and the_dict is a
+         # variables dict (making |variables| a varaibles sub-dict of a
+         # variables dict), use the_dict's definition.
+diff --git a/pylib/gyp/msvs_emulation.py b/pylib/gyp/msvs_emulation.py
+index 63d40e63..fab4890d 100644
+--- a/pylib/gyp/msvs_emulation.py
++++ b/pylib/gyp/msvs_emulation.py
+@@ -139,7 +139,7 @@ def _FindDirectXInstallation():
+     # Setup params to pass to and attempt to launch reg.exe.
+     cmd = ['reg.exe', 'query', r'HKLM\Software\Microsoft\DirectX', '/s']
+     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+-    for line in p.communicate()[0].splitlines():
++    for line in p.communicate()[0].decode('utf-8', 'ignore').splitlines():
+       if 'InstallPath' in line:
+         dxsdk_dir = line.split('    ')[3] + "\\"
+ 
+@@ -321,7 +321,7 @@ class MsvsSettings(object):
+     # first level is globally for the configuration (this is what we consider
+     # "the" config at the gyp level, which will be something like 'Debug' or
+     # 'Release'), VS2015 and later only use this level
+-    if self.vs_version.short_name >= 2015:
++    if int(self.vs_version.short_name) >= 2015:
+       return config
+     # and a second target-specific configuration, which is an
+     # override for the global one. |config| is remapped here to take into
+@@ -485,7 +485,7 @@ class MsvsSettings(object):
+         prefix='/arch:')
+     cflags.extend(['/FI' + f for f in self._Setting(
+         ('VCCLCompilerTool', 'ForcedIncludeFiles'), config, default=[])])
+-    if self.vs_version.project_version >= 12.0:
++    if float(self.vs_version.project_version) >= 12.0:
+       # New flag introduced in VS2013 (project version 12.0) Forces writes to
+       # the program database (PDB) to be serialized through MSPDBSRV.EXE.
+       # https://msdn.microsoft.com/en-us/library/dn502518.aspx
+@@ -1054,6 +1054,7 @@ def GenerateEnvironmentFiles(toplevel_build_dir, generator_flags,
+     variables, _ = popen.communicate()
+     if popen.returncode != 0:
+       raise Exception('"%s" failed with error %d' % (args, popen.returncode))
++    variables = variables.decode('utf-8', 'ignore')
+     env = _ExtractImportantEnvironment(variables)
+ 
+     # Inject system includes from gyp files into INCLUDE.
+@@ -1073,6 +1074,7 @@ def GenerateEnvironmentFiles(toplevel_build_dir, generator_flags,
+       'for', '%i', 'in', '(cl.exe)', 'do', '@echo', 'LOC:%~$PATH:i'))
+     popen = subprocess.Popen(args, shell=True, stdout=subprocess.PIPE)
+     output, _ = popen.communicate()
++    output = output.decode('utf-8', 'ignore')
+     cl_paths[arch] = _ExtractCLPath(output)
+   return cl_paths
+ 
+diff --git a/pylib/gyp/win_tool.py b/pylib/gyp/win_tool.py
+index 89734846..09f258eb 100755
+--- a/pylib/gyp/win_tool.py
++++ b/pylib/gyp/win_tool.py
+@@ -132,6 +132,7 @@ class WinTool(object):
+     link = subprocess.Popen(args, shell=sys.platform == 'win32', env=env,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+     out, _ = link.communicate()
++    out = out.decode('utf-8', 'ignore')
+     for line in out.splitlines():
+       if (not line.startswith('   Creating library ') and
+           not line.startswith('Generating code') and
+@@ -197,8 +198,8 @@ class WinTool(object):
+       # and sometimes doesn't unfortunately.
+       with open(our_manifest, 'r') as our_f:
+         with open(assert_manifest, 'r') as assert_f:
+-          our_data = our_f.read().translate(None, string.whitespace)
+-          assert_data = assert_f.read().translate(None, string.whitespace)
++          our_data = our_f.read().translate(str.maketrans('', '', string.whitespace))
++          assert_data = assert_f.read().translate(str.maketrans('', '', string.whitespace))
+       if our_data != assert_data:
+         os.unlink(out)
+         def dump(filename):
+@@ -225,6 +226,7 @@ class WinTool(object):
+     popen = subprocess.Popen(args, shell=True, env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+     out, _ = popen.communicate()
++    out = out.decode('utf-8', 'ignore')
+     for line in out.splitlines():
+       if line and 'manifest authoring warning 81010002' not in line:
+         print(line)
+@@ -257,6 +259,7 @@ class WinTool(object):
+     popen = subprocess.Popen(args, shell=True, env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+     out, _ = popen.communicate()
++    out = out.decode('utf-8', 'ignore')
+     # Filter junk out of stdout, and write filtered versions. Output we want
+     # to filter is pairs of lines that look like this:
+     # Processing C:\Program Files (x86)\Microsoft SDKs\...\include\objidl.idl
+@@ -276,6 +279,7 @@ class WinTool(object):
+     popen = subprocess.Popen(args, shell=True, env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+     out, _ = popen.communicate()
++    out = out.decode('utf-8', 'ignore')
+     for line in out.splitlines():
+       if (not line.startswith('Copyright (C) Microsoft Corporation') and
+           not line.startswith('Microsoft (R) Macro Assembler') and
+@@ -291,6 +295,7 @@ class WinTool(object):
+     popen = subprocess.Popen(args, shell=True, env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+     out, _ = popen.communicate()
++    out = out.decode('utf-8', 'ignore')
+     for line in out.splitlines():
+       if (not line.startswith('Microsoft (R) Windows (R) Resource Compiler') and
+           not line.startswith('Copyright (C) Microsoft Corporation') and
