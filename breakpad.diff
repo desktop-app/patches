@@ -633,6 +633,25 @@ index 562875e1..43678510 100644
  #endif
        module->AddExtern(ext);
      }
+diff --git a/src/common/windows/pdb_source_line_writer.cc b/src/common/windows/pdb_source_line_writer.cc
+index 31920ba7..94eeb60d 100644
+--- a/src/common/windows/pdb_source_line_writer.cc
++++ b/src/common/windows/pdb_source_line_writer.cc
+@@ -57,9 +57,13 @@
+  */
+ typedef unsigned char UBYTE;
+ 
+-#if !defined(_WIN64)
++#ifndef UNW_FLAG_EHANDLER
+ #define UNW_FLAG_EHANDLER  0x01
++#endif
++#ifndef UNW_FLAG_UHANDLER
+ #define UNW_FLAG_UHANDLER  0x02
++#endif
++#ifndef UNW_FLAG_CHAININFO
+ #define UNW_FLAG_CHAININFO 0x04
+ #endif
+ 
 diff --git a/src/tools/linux/tools_linux.gypi b/src/tools/linux/tools_linux.gypi
 index 1c15992e..020e4c1c 100644
 --- a/src/tools/linux/tools_linux.gypi
