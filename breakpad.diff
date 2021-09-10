@@ -1,7 +1,18 @@
 diff --git a/src/build/common.gypi b/src/build/common.gypi
-index 29990c65..01199037 100644
+index 29990c65..4929c6a5 100644
 --- a/src/build/common.gypi
 +++ b/src/build/common.gypi
+@@ -123,8 +123,8 @@
+     # Chrome normally builds with the Mac OS X 10.5 SDK and sets the
+     # deployment target to 10.5.  Other projects, such as O3D, may override
+     # these defaults.
+-    'mac_sdk%': '10.5',
+-    'mac_deployment_target%': '10.5',
++    'mac_sdk%': '10.12',
++    'mac_deployment_target%': '10.12',
+ 
+     # Set to 1 to enable code coverage.  In addition to build changes
+     # (e.g. extra CFLAGS), also creates a new target in the src/chrome
 @@ -330,6 +330,7 @@
            'VCCLCompilerTool': {
              'WarnAsError': 'true',
@@ -10,7 +21,18 @@ index 29990c65..01199037 100644
            },
          },
        }],
-@@ -973,6 +974,9 @@
+@@ -850,8 +851,9 @@
+           'GCC_SYMBOLS_PRIVATE_EXTERN': 'YES',      # -fvisibility=hidden
+           'GCC_THREADSAFE_STATICS': 'NO',           # -fno-threadsafe-statics
+           'GCC_TREAT_WARNINGS_AS_ERRORS': 'YES',    # -Werror
+-          'GCC_VERSION': '4.2',
++          'GCC_VERSION': '',
+           'GCC_WARN_ABOUT_MISSING_NEWLINE': 'YES',  # -Wnewline-eof
++          'CLANG_CXX_LANGUAGE_STANDARD': 'gnu++14',
+           # MACOSX_DEPLOYMENT_TARGET maps to -mmacosx-version-min
+           'MACOSX_DEPLOYMENT_TARGET': '<(mac_deployment_target)',
+           'PREBINDING': 'NO',                       # No -Wl,-prebind
+@@ -973,6 +975,9 @@
                'dwmapi.dll',
                'uxtheme.dll',
              ],
@@ -20,6 +42,15 @@ index 29990c65..01199037 100644
            },
          },
          'configurations': {
+@@ -1027,7 +1032,7 @@
+     # setting sets the SDK on a project-wide basis.  In order to get the
+     # configured SDK to show properly in the Xcode UI, SDKROOT must be set
+     # here at the project level.
+-    'SDKROOT': 'macosx<(mac_sdk)',  # -isysroot
++    'SDKROOT': 'macosx',  # -isysroot
+ 
+     # The Xcode generator will look for an xcode_settings section at the root
+     # of each dict and use it to apply settings on a file-wide basis.  Most
 diff --git a/src/client/mac/Breakpad.xcodeproj/project.pbxproj b/src/client/mac/Breakpad.xcodeproj/project.pbxproj
 index 1a93ce6d..b5986e33 100644
 --- a/src/client/mac/Breakpad.xcodeproj/project.pbxproj
@@ -499,7 +530,7 @@ index 1d2e519b..943310fa 100644
  }
  
 diff --git a/src/common/language.cc b/src/common/language.cc
-index 978fb855..a95ae5f7 100644
+index 978fb855..2cd8edba 100644
 --- a/src/common/language.cc
 +++ b/src/common/language.cc
 @@ -46,8 +46,27 @@
@@ -519,7 +550,7 @@ index 978fb855..a95ae5f7 100644
 +    std::array<char, 128> buffer;
 +    std::string result;
 +    std::shared_ptr<FILE> pipe(popen(cmd.c_str(), "r"), pclose);
-+    if (!pipe) throw std::runtime_error("popen() failed!");
++    if (!pipe) std::abort();
 +    while (!feof(pipe.get())) {
 +        if (fgets(buffer.data(), 128, pipe.get()) != nullptr)
 +            result += buffer.data();
