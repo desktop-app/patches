@@ -12,7 +12,7 @@ index 11da533bc4..09a31b3ac4 100644
      include(dbusmenu/dbusmenu.pri)
  
 diff --git a/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp b/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
-index cb1b39db64..797685e9b4 100644
+index cb1b39db64..fea7708218 100644
 --- a/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
 +++ b/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
 @@ -73,6 +73,10 @@
@@ -51,7 +51,7 @@ index cb1b39db64..797685e9b4 100644
              } else {
                  // unknown, but lowercase the name (our standard practice) and
                  // remove any "x-" prefix
-@@ -876,6 +868,20 @@ QStringList QGenericUnixTheme::themeNames()
+@@ -876,6 +868,22 @@ QStringList QGenericUnixTheme::themeNames()
                  result.push_back(s.startsWith(QLatin1String("x-")) ? s.mid(2) : s);
              }
          }
@@ -61,6 +61,8 @@ index cb1b39db64..797685e9b4 100644
 +                // prefer the GTK3 theme implementation with native dialogs etc.
 +                result.push_back(QStringLiteral("gtk3"));
 +                dlclose(handle);
++            } else {
++                Q_UNUSED(dlerror());
 +            }
 +#else
 +            // prefer the GTK3 theme implementation with native dialogs etc.
