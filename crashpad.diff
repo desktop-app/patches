@@ -118,3 +118,16 @@ index 3cd573a8..c7a07392 100644
      scoped_ptr<FileReaderInterface> file_reader;
  
      bool is_stdin = false;
+diff --git a/build/gyp_crashpad.py b/build/gyp_crashpad.py
+index 741c8126..c9814149 100755
+--- a/build/gyp_crashpad.py
++++ b/build/gyp_crashpad.py
+@@ -57,7 +57,7 @@ def main(args):
+   if 'GYP_GENERATORS' not in os.environ:
+     os.environ['GYP_GENERATORS'] = 'ninja'
+ 
+-  crashpad_dir_or_dot = crashpad_dir if crashpad_dir is not '' else os.curdir
++  crashpad_dir_or_dot = crashpad_dir if crashpad_dir != '' else os.curdir
+ 
+   (dependencies, mini_chromium_dir) = (ChooseDependencyPath(
+       os.path.join(crashpad_dir, 'third_party', 'mini_chromium',
