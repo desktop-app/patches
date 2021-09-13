@@ -1,5 +1,5 @@
 diff --git a/src/gui/painting/qplatformbackingstore.cpp b/src/gui/painting/qplatformbackingstore.cpp
-index 55fce94abc..f77c3330bd 100644
+index c092a7153f..5400f66ecc 100644
 --- a/src/gui/painting/qplatformbackingstore.cpp
 +++ b/src/gui/painting/qplatformbackingstore.cpp
 @@ -102,11 +102,13 @@ public:
@@ -22,7 +22,7 @@ index 55fce94abc..f77c3330bd 100644
          delete blitter;
  #endif
 diff --git a/src/widgets/kernel/qopenglwidget.cpp b/src/widgets/kernel/qopenglwidget.cpp
-index 24e0c46032..a8e9937e55 100644
+index 24e0c46032..3cd75a00ab 100644
 --- a/src/widgets/kernel/qopenglwidget.cpp
 +++ b/src/widgets/kernel/qopenglwidget.cpp
 @@ -647,9 +647,11 @@ void QOpenGLWidgetPaintDevice::ensureActiveTarget()
@@ -119,7 +119,7 @@ index 24e0c46032..a8e9937e55 100644
      }
  
      const bool hasAlpha = q->format().hasAlpha();
-@@ -1158,7 +1181,11 @@ void QOpenGLWidget::makeCurrent()
+@@ -1158,7 +1181,12 @@ void QOpenGLWidget::makeCurrent()
      if (!d->initialized)
          return;
  
@@ -127,6 +127,7 @@ index 24e0c46032..a8e9937e55 100644
 +    if (!d->context->makeCurrent(d->surface)) {
 +        // Trying to fix a crash on context loss.
 +        // If makeCurrent() failed, that means we're not initialized any more.
++        d->initialized = false; // This prevents infinite recursion to makeCurrent().
 +        d->reset();
 +    }
  
