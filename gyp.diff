@@ -302,7 +302,7 @@ index 63d40e63..fab4890d 100644
    return cl_paths
  
 diff --git a/pylib/gyp/win_tool.py b/pylib/gyp/win_tool.py
-index 89734846..09f258eb 100755
+index 89734846..957f00f5 100755
 --- a/pylib/gyp/win_tool.py
 +++ b/pylib/gyp/win_tool.py
 @@ -132,6 +132,7 @@ class WinTool(object):
@@ -328,7 +328,7 @@ index 89734846..09f258eb 100755
      popen = subprocess.Popen(args, shell=True, env=env,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
      out, _ = popen.communicate()
-+    out = out.decode('utf-8', 'ignore')
++    out = out.decode(sys.stdout.encoding, 'ignore')
      for line in out.splitlines():
        if line and 'manifest authoring warning 81010002' not in line:
          print(line)
