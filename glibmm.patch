@@ -108,7 +108,7 @@ index a7c53524..05eba90e 100644
    if(!v.gobj())
    {
 diff --git a/glib/src/variant.hg b/glib/src/variant.hg
-index 0cb1a827..0facd858 100644
+index 0cb1a827..7ce77ed4 100644
 --- a/glib/src/variant.hg
 +++ b/glib/src/variant.hg
 @@ -25,6 +25,7 @@ _DEFS(glibmm,glib)
@@ -236,7 +236,7 @@ index 0cb1a827..0facd858 100644
  } // namespace Glib
  
  
-@@ -1250,4 +1316,124 @@ VariantIter Variant< std::map<K, V> >::get_iter() const
+@@ -1250,4 +1316,135 @@ VariantIter Variant< std::map<K, V> >::get_iter() const
    return VariantIter(g_iter);
  }
  
@@ -356,8 +356,19 @@ index 0cb1a827..0facd858 100644
 +template< class... Types>
 +VariantIter Variant<std::tuple<Types...>>::get_iter() const
 +{
-+  const auto type = variant_type();
-+  return VariantContainerBase::get_iter(type);
++  // Get the variant type of the elements.
++  VariantType element_variant_type =
++    Variant< std::tuple<Types...> >::variant_type();
++
++  // Get the variant type of the array.
++  VariantType array_variant_type = Variant< std::tuple<Types...> >::variant_type();
++
++  // Get the GVariantIter.
++  GVariantIter* g_iter = 0;
++  g_variant_get(const_cast<GVariant*>(gobj()),
++    reinterpret_cast<gchar*>(array_variant_type.gobj()), &g_iter);
++
++  return VariantIter(g_iter);
 +}
 +
  } // namespace Glib
