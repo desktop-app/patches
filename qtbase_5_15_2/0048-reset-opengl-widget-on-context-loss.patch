@@ -22,7 +22,7 @@ index c092a7153f..5400f66ecc 100644
          delete blitter;
  #endif
 diff --git a/src/widgets/kernel/qopenglwidget.cpp b/src/widgets/kernel/qopenglwidget.cpp
-index 24e0c46032..3cd75a00ab 100644
+index 24e0c46032..74a05ad7e4 100644
 --- a/src/widgets/kernel/qopenglwidget.cpp
 +++ b/src/widgets/kernel/qopenglwidget.cpp
 @@ -647,9 +647,11 @@ void QOpenGLWidgetPaintDevice::ensureActiveTarget()
@@ -133,3 +133,13 @@ index 24e0c46032..3cd75a00ab 100644
  
      if (d->fbo) // there may not be one if we are in reset()
          d->fbo->bind();
+@@ -1288,6 +1316,9 @@ void QOpenGLWidget::resizeEvent(QResizeEvent *e)
+         return;
+ 
+     d->recreateFbo();
++    if (!d->fbo)
++        return; // Trying to fix a crash on context loss.
++
+     resizeGL(width(), height());
+     d->sendPaintEvent(QRect(QPoint(0, 0), size()));
+ }
