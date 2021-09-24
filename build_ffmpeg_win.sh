@@ -6,23 +6,14 @@ popd > /dev/null
 
 pacman --noconfirm -Sy
 pacman --noconfirm -S msys/make
-pacman --noconfirm -S mingw64/mingw-w64-x86_64-opus
 pacman --noconfirm -S diffutils
 pacman --noconfirm -S pkg-config
 
-PKG_CONFIG_PATH="/mingw64/lib/pkgconfig:$PKG_CONFIG_PATH"
-
-VersionIs64=`cl 2>&1 | grep x64 | wc -l`
-if [ "$VersionIs64" == "0" ]; then
-    OpusFolder=Win32
-else
-    OpusFolder=x64
-fi
+export PKG_CONFIG_PATH="$FullExecPath/../local/opus/lib/pkgconfig:$PKG_CONFIG_PATH"
 
 ./configure --toolchain=msvc \
 --extra-cflags="-DCONFIG_SAFE_BITSTREAM_READER=1" \
 --extra-cxxflags="-DCONFIG_SAFE_BITSTREAM_READER=1" \
---extra-ldflags="-libpath:$FullExecPath/../opus/win32/VS2015/$OpusFolder/Release" \
 --disable-programs \
 --disable-doc \
 --disable-network \
