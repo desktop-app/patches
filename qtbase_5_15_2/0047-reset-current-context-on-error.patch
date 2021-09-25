@@ -1,5 +1,5 @@
 diff --git a/src/gui/kernel/qopenglcontext.cpp b/src/gui/kernel/qopenglcontext.cpp
-index 927e9cb94a..e102189fcc 100644
+index 927e9cb94a..cab2740a4b 100644
 --- a/src/gui/kernel/qopenglcontext.cpp
 +++ b/src/gui/kernel/qopenglcontext.cpp
 @@ -989,8 +989,17 @@ bool QOpenGLContext::makeCurrent(QSurface *surface)
@@ -21,3 +21,37 @@ index 927e9cb94a..e102189fcc 100644
  
      QOpenGLContextPrivate::setCurrentContext(this);
  #ifndef QT_NO_DEBUG
+@@ -1054,8 +1063,14 @@ bool QOpenGLContext::makeCurrent(QSurface *surface)
+ void QOpenGLContext::doneCurrent()
+ {
+     Q_D(QOpenGLContext);
+-    if (!isValid())
++    if (!isValid()) {
++        if (QOpenGLContext::currentContext() == this) {
++            // resources?..
++            QOpenGLContextPrivate::setCurrentContext(nullptr);
++            d->surface = nullptr;
++        }
+         return;
++    }
+ 
+     if (QOpenGLContext::currentContext() == this)
+         d->shareGroup->d_func()->deletePendingResources(this);
+@@ -1118,6 +1133,17 @@ void QOpenGLContext::swapBuffers(QSurface *surface)
+     if (surface->format().swapBehavior() == QSurfaceFormat::SingleBuffer)
+         functions()->glFlush();
+     d->platformGLContext->swapBuffers(surfaceHandle);
++
++    if (!isValid()) {
++        // The swapBuffers call could switch the context from isValid to !isValid.
++        // It may still be current (from the previous successful calls),
++        // so we need to make everything look as if it was not set current.
++        if (QOpenGLContext::currentContext() == this) {
++            // resources?..
++            QOpenGLContextPrivate::setCurrentContext(nullptr);
++            d->surface = nullptr;
++        }
++    }
+ }
+ 
+ /*!
