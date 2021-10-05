@@ -1,30 +1,23 @@
 diff --git a/src/widgets/widgets/qabstractscrollarea.cpp b/src/widgets/widgets/qabstractscrollarea.cpp
-index 598d173144..fd2e636563 100644
+index 720a9f908a..e7b4d3a068 100644
 --- a/src/widgets/widgets/qabstractscrollarea.cpp
 +++ b/src/widgets/widgets/qabstractscrollarea.cpp
-@@ -655,15 +655,21 @@ scrolling range.
+@@ -564,15 +564,14 @@ scrolling range.
  QSize QAbstractScrollArea::maximumViewportSize() const
  {
      Q_D(const QAbstractScrollArea);
 -    int hsbExt = d->hbar->sizeHint().height();
 -    int vsbExt = d->vbar->sizeHint().width();
-+    // Patch: Count the sizeHint of the bar only if it is displayed.
-+    //int hsbExt = d->hbar->sizeHint().height();
-+    //int vsbExt = d->vbar->sizeHint().width();
  
      int f = 2 * d->frameWidth;
      QSize max = size() - QSize(f + d->left + d->right, f + d->top + d->bottom);
--    if (d->vbarpolicy == Qt::ScrollBarAlwaysOn)
 +    // Patch: Count the sizeHint of the bar only if it is displayed.
-+    if (d->vbarpolicy == Qt::ScrollBarAlwaysOn) {
-+        int vsbExt = d->vbar->sizeHint().width();
-         max.rwidth() -= vsbExt;
--    if (d->hbarpolicy == Qt::ScrollBarAlwaysOn)
-+    }
-+    if (d->hbarpolicy == Qt::ScrollBarAlwaysOn) {
-+        int hsbExt = d->hbar->sizeHint().height();
-         max.rheight() -= hsbExt;
-+    }
+     if (d->vbarpolicy == Qt::ScrollBarAlwaysOn)
+-        max.rwidth() -= vsbExt;
++        max.rwidth() -= d->vbar->sizeHint().width();
+     if (d->hbarpolicy == Qt::ScrollBarAlwaysOn)
+-        max.rheight() -= hsbExt;
++        max.rheight() -= d->hbar->sizeHint().height();
      return max;
  }
  
