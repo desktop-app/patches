@@ -1,0 +1,13 @@
+diff --git a/src/corelib/global/qglobal.h b/src/corelib/global/qglobal.h
+index ccab228804..e4313a2f14 100644
+--- a/src/corelib/global/qglobal.h
++++ b/src/corelib/global/qglobal.h
+@@ -51,6 +51,8 @@
+ #  include <stddef.h>
+ #endif
+ 
++#define DESKTOP_APP_QT_PATCHED
++
+ /*
+    QT_VERSION is (major << 16) + (minor << 8) + patch.
+ */

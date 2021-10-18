@@ -1,0 +1,32 @@
+diff --git a/src/network/access/qnetworkreplyhttpimpl.cpp b/src/network/access/qnetworkreplyhttpimpl.cpp
+index e82184ff95..c17f0aa53b 100644
+--- a/src/network/access/qnetworkreplyhttpimpl.cpp
++++ b/src/network/access/qnetworkreplyhttpimpl.cpp
+@@ -1994,6 +1994,9 @@ void QNetworkReplyHttpImplPrivate::_q_finished()
+ void QNetworkReplyHttpImplPrivate::finished()
+ {
+     Q_Q(QNetworkReplyHttpImpl);
++
++    QPointer<QNetworkReplyHttpImpl> guard = q;
++
+     if (transferTimeout)
+       transferTimeout->stop();
+     if (state == Finished || state == Aborted)
+@@ -2001,6 +2004,8 @@ void QNetworkReplyHttpImplPrivate::finished()
+ 
+     QVariant totalSize = cookedHeaders.value(QNetworkRequest::ContentLengthHeader);
+ 
++    if (!guard) return;
++
+     // if we don't know the total size of or we received everything save the cache
+     if (totalSize.isNull() || totalSize == -1 || bytesDownloaded == totalSize)
+         completeCacheSave();
+@@ -2010,6 +2015,8 @@ void QNetworkReplyHttpImplPrivate::finished()
+     if (isHttpRedirectResponse() && errorCode == QNetworkReply::NoError)
+         return;
+ 
++    if (!guard) return;
++
+     state = Finished;
+     q->setFinished(true);
+ 
