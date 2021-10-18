@@ -1,0 +1,28 @@
+diff --git a/src/plugins/platforms/xcb/gl_integrations/xcb_glx/qxcbglxwindow.cpp b/src/plugins/platforms/xcb/gl_integrations/xcb_glx/qxcbglxwindow.cpp
+index 5e406017ca..0adf030b63 100644
+--- a/src/plugins/platforms/xcb/gl_integrations/xcb_glx/qxcbglxwindow.cpp
++++ b/src/plugins/platforms/xcb/gl_integrations/xcb_glx/qxcbglxwindow.cpp
+@@ -58,7 +58,7 @@ const xcb_visualtype_t *QXcbGlxWindow::createVisual()
+ {
+     QXcbScreen *scr = xcbScreen();
+     if (!scr)
+-        return nullptr;
++        return QXcbWindow::createVisual();
+ 
+     qCDebug(lcQpaGl) << "Requested format before FBConfig/Visual selection:" << m_format;
+ 
+@@ -71,10 +71,12 @@ const xcb_visualtype_t *QXcbGlxWindow::createVisual()
+             flags |= QGLX_SUPPORTS_SRGB;
+     }
+ 
++    const auto formatBackup = m_format;
+     XVisualInfo *visualInfo = qglx_findVisualInfo(dpy, scr->screenNumber(), &m_format, GLX_WINDOW_BIT, flags);
+     if (!visualInfo) {
+-        qWarning() << "No XVisualInfo for format" << m_format;
+-        return nullptr;
++        // restore initial format before requesting it again
++        m_format = formatBackup;
++        return QXcbWindow::createVisual();
+     }
+     const xcb_visualtype_t *xcb_visualtype = scr->visualForId(visualInfo->visualid);
+     XFree(visualInfo);

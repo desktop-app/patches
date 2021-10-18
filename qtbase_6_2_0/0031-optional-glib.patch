@@ -1,0 +1,31 @@
+diff --git a/src/corelib/kernel/qeventdispatcher_glib.cpp b/src/corelib/kernel/qeventdispatcher_glib.cpp
+index 3964c1ceac..9a19006f0f 100644
+--- a/src/corelib/kernel/qeventdispatcher_glib.cpp
++++ b/src/corelib/kernel/qeventdispatcher_glib.cpp
+@@ -50,6 +50,10 @@
+ 
+ #include <glib.h>
+ 
++#if QT_CONFIG(dlopen)
++#include <dlfcn.h>
++#endif
++
+ QT_BEGIN_NAMESPACE
+ 
+ struct GPollFDWithQSocketNotifier
+@@ -598,6 +602,15 @@ void QEventDispatcherGlib::wakeUp()
+ 
+ bool QEventDispatcherGlib::versionSupported()
+ {
++#if QT_CONFIG(dlopen)
++    const auto handle = dlopen("libglib-2.0.so.0", RTLD_LAZY);
++    if (!handle) {
++        Q_UNUSED(dlerror());
++        return false;
++    }
++    dlclose(handle);
++#endif
++
+ #if !defined(GLIB_MAJOR_VERSION) || !defined(GLIB_MINOR_VERSION) || !defined(GLIB_MICRO_VERSION)
+     return false;
+ #else

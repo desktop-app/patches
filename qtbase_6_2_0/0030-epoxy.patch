@@ -1,0 +1,56 @@
+diff --git a/src/plugins/platforms/xcb/gl_integrations/xcb_egl/qxcbeglmain.cpp b/src/plugins/platforms/xcb/gl_integrations/xcb_egl/qxcbeglmain.cpp
+index 8979c0371b..1a65eeca25 100644
+--- a/src/plugins/platforms/xcb/gl_integrations/xcb_egl/qxcbeglmain.cpp
++++ b/src/plugins/platforms/xcb/gl_integrations/xcb_egl/qxcbeglmain.cpp
+@@ -41,6 +41,10 @@
+ 
+ #include "qxcbeglintegration.h"
+ 
++#ifdef QT_STATICPLUGIN
++extern "C" bool epoxy_load_egl(bool exit_if_fails, bool load);
++#endif
++
+ QT_BEGIN_NAMESPACE
+ 
+ class QXcbEglIntegrationPlugin : public QXcbGlIntegrationPlugin
+@@ -50,6 +54,12 @@ class QXcbEglIntegrationPlugin : public QXcbGlIntegrationPlugin
+ public:
+     QXcbGlIntegration *create() override
+     {
++#ifdef QT_STATICPLUGIN
++        if (!epoxy_load_egl(false, true)) {
++            return nullptr;
++        }
++#endif
++
+         return new QXcbEglIntegration();
+     }
+ 
+diff --git a/src/plugins/platforms/xcb/gl_integrations/xcb_glx/qxcbglxmain.cpp b/src/plugins/platforms/xcb/gl_integrations/xcb_glx/qxcbglxmain.cpp
+index 898ee3dcf8..79b85d6790 100644
+--- a/src/plugins/platforms/xcb/gl_integrations/xcb_glx/qxcbglxmain.cpp
++++ b/src/plugins/platforms/xcb/gl_integrations/xcb_glx/qxcbglxmain.cpp
+@@ -41,6 +41,10 @@
+ 
+ #include "qxcbglxintegration.h"
+ 
++#ifdef QT_STATICPLUGIN
++extern "C" bool epoxy_load_glx(bool exit_if_fails, bool load);
++#endif
++
+ QT_BEGIN_NAMESPACE
+ 
+ class QXcbGlxIntegrationPlugin : public QXcbGlIntegrationPlugin
+@@ -50,6 +54,12 @@ class QXcbGlxIntegrationPlugin : public QXcbGlIntegrationPlugin
+ public:
+     QXcbGlIntegration *create() override
+     {
++#ifdef QT_STATICPLUGIN
++        if (!epoxy_load_glx(false, true)) {
++            return nullptr;
++        }
++#endif
++
+         return new QXcbGlxIntegration();
+     }
+ 
