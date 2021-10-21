@@ -1,0 +1,18 @@
+diff --git a/src/plugins/platforms/cocoa/qnsview_keys.mm b/src/plugins/platforms/cocoa/qnsview_keys.mm
+index dbcab6c6d1..52d4ce8299 100644
+--- a/src/plugins/platforms/cocoa/qnsview_keys.mm
++++ b/src/plugins/platforms/cocoa/qnsview_keys.mm
+@@ -171,8 +171,12 @@
+ 
+     // Handling the key event may recurse back here through interpretKeyEvents
+     // (when IM is enabled), so we need to guard against that.
+-    if (currentEvent == m_currentlyInterpretedKeyEvent)
++    if (currentEvent == m_currentlyInterpretedKeyEvent) {
++        // Patch: When we get here through interpretKeyEvents still
++        // send the event through Qt so that Escape is received.
++        m_sendKeyEvent = true;
+         return;
++    }
+ 
+     // Send Command+Key_Period and Escape as normal keypresses so that
+     // the key sequence is delivered through Qt. That way clients can
