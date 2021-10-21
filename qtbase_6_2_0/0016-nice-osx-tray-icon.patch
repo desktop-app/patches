@@ -18,10 +18,20 @@ index ddc76f6b72..fe72340e20 100644
  
  QT_END_NAMESPACE
 diff --git a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm b/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
-index 962d1e34b3..e6b1344b60 100644
+index 962d1e34b3..86e20c3696 100644
 --- a/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
 +++ b/src/plugins/platforms/cocoa/qcocoasystemtrayicon.mm
-@@ -111,6 +111,8 @@ void QCocoaSystemTrayIcon::cleanup()
+@@ -102,7 +102,8 @@ void QCocoaSystemTrayIcon::init()
+ 
+     m_statusItem.button.target = m_delegate;
+     m_statusItem.button.action = @selector(statusItemClicked);
+-    [m_statusItem.button sendActionOn:NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown];
++    [m_statusItem.button sendActionOn:NSEventMaskLeftMouseDown | NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp | NSEventMaskOtherMouseUp];
++    [m_statusItem addObserver:m_delegate forKeyPath:@"button.effectiveAppearance" options:NSKeyValueObservingOptionNew|NSKeyValueObservingOptionInitial context:nil];
+ }
+ 
+ void QCocoaSystemTrayIcon::cleanup()
+@@ -111,6 +112,8 @@ void QCocoaSystemTrayIcon::cleanup()
      if (center.delegate == m_delegate)
          center.delegate = nil;
  
@@ -30,7 +40,7 @@ index 962d1e34b3..e6b1344b60 100644
      [NSStatusBar.systemStatusBar removeStatusItem:m_statusItem];
      [m_statusItem release];
      m_statusItem = nil;
-@@ -143,15 +145,26 @@ static QList<QSize> sortByHeight(const QList<QSize> &sizes)
+@@ -143,15 +146,26 @@ static QList<QSize> sortByHeight(const QList<QSize> &sizes)
  }
  
  void QCocoaSystemTrayIcon::updateIcon(const QIcon &icon)
@@ -58,7 +68,7 @@ index 962d1e34b3..e6b1344b60 100644
      const int menuHeight = NSStatusBar.systemStatusBar.thickness;
      const int maxImageHeight = menuHeight - padding;
  
-@@ -161,54 +174,60 @@ void QCocoaSystemTrayIcon::updateIcon(const QIcon &icon)
+@@ -161,54 +175,60 @@ void QCocoaSystemTrayIcon::updateIcon(const QIcon &icon)
      // devicePixelRatio for the "best" screen on the system.
      qreal devicePixelRatio = qApp->devicePixelRatio();
      const int maxPixmapHeight = maxImageHeight * devicePixelRatio;
@@ -164,7 +174,7 @@ index 962d1e34b3..e6b1344b60 100644
      m_statusItem.button.imageScaling = NSImageScaleProportionallyDown;
  }
  
-@@ -266,6 +285,18 @@ void QCocoaSystemTrayIcon::statusItemClicked()
+@@ -266,6 +286,18 @@ void QCocoaSystemTrayIcon::statusItemClicked()
  {
      auto *mouseEvent = NSApp.currentEvent;
  
@@ -183,7 +193,7 @@ index 962d1e34b3..e6b1344b60 100644
      auto activationReason = QPlatformSystemTrayIcon::Unknown;
  
      if (mouseEvent.clickCount == 2) {
-@@ -322,6 +353,14 @@ QT_END_NAMESPACE
+@@ -322,6 +354,14 @@ QT_END_NAMESPACE
      emit self.platformSystemTray->messageClicked();
  }
  
