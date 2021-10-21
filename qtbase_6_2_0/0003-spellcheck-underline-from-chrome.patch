@@ -1,8 +1,8 @@
 diff --git a/src/gui/painting/qpainter.cpp b/src/gui/painting/qpainter.cpp
-index 01400a0bc8..a0a6df372c 100644
+index 01400a0bc8..274695c0c6 100644
 --- a/src/gui/painting/qpainter.cpp
 +++ b/src/gui/painting/qpainter.cpp
-@@ -5990,6 +5990,91 @@ static QPixmap generateWavyPixmap(qreal maxRadius, const QPen &pen)
+@@ -5990,6 +5990,92 @@ static QPixmap generateWavyPixmap(qreal maxRadius, const QPen &pen)
      return pixmap;
  }
  
@@ -21,6 +21,7 @@ index 01400a0bc8..a0a6df372c 100644
 +    // https://chromium.googlesource.com/chromium/src/+/refs/heads/master/third_party/blink/renderer/core/paint/document_marker_painter.cc
 +
 +#ifdef Q_OS_MAC
++    Q_UNUSED(descent);
 +
 +    constexpr qreal kMarkerHeight = 3;
 +
@@ -94,7 +95,7 @@ index 01400a0bc8..a0a6df372c 100644
  static void drawTextItemDecoration(QPainter *painter, const QPointF &pos, const QFontEngine *fe, QTextEngine *textEngine,
                                     QTextCharFormat::UnderlineStyle underlineStyle,
                                     QTextItem::RenderFlags flags, qreal width,
-@@ -6007,18 +6092,36 @@ static void drawTextItemDecoration(QPainter *painter, const QPointF &pos, const
+@@ -6007,18 +6093,36 @@ static void drawTextItemDecoration(QPainter *painter, const QPointF &pos, const
      pen.setWidthF(fe->lineThickness().toReal());
      pen.setCapStyle(Qt::FlatCap);
  
