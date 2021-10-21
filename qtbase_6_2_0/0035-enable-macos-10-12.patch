@@ -11,6 +11,25 @@ index 5c6cba89ae..ee7c1bd1ff 100644
              elseif(CMAKE_SYSTEM_NAME STREQUAL iOS)
                  set(version "13.0")
              elseif(CMAKE_SYSTEM_NAME STREQUAL watchOS)
+diff --git a/cmake/QtCompilerFlags.cmake b/cmake/QtCompilerFlags.cmake
+index a376ac0097..617f4c8984 100644
+--- a/cmake/QtCompilerFlags.cmake
++++ b/cmake/QtCompilerFlags.cmake
+@@ -11,6 +11,14 @@ if (MSVC)
+ else()
+     list(APPEND _qt_compiler_warning_flags_on -Wall -Wextra)
+     list(APPEND _qt_compiler_warning_flags_off -w)
++
++    if (APPLE)
++        list(APPEND _qt_compiler_warning_flags_on
++            -Werror=unguarded-availability
++            -Werror=unguarded-availability-new
++            -Werror=unsupported-availability-guard
++        )
++    endif()
+ endif()
+ 
+ set(_qt_compiler_warning_flags_condition
 diff --git a/mkspecs/common/macx.conf b/mkspecs/common/macx.conf
 index 4edf26406d..7c0405632d 100644
 --- a/mkspecs/common/macx.conf
