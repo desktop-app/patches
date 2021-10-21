@@ -1,22 +1,20 @@
 diff --git a/src/gui/platform/darwin/qapplekeymapper.mm b/src/gui/platform/darwin/qapplekeymapper.mm
-index bdf741573d..e2b0c30595 100644
+index bdf741573d..ae3e24fbbc 100644
 --- a/src/gui/platform/darwin/qapplekeymapper.mm
 +++ b/src/gui/platform/darwin/qapplekeymapper.mm
-@@ -606,10 +606,8 @@ QList<int> QAppleKeyMapper::possibleKeys(const QKeyEvent *event) const
-         // or are a superset of the current candidate modifiers.
-         auto candidateModifiers = modifierCombinations[i];
+@@ -608,8 +608,8 @@ QList<int> QAppleKeyMapper::possibleKeys(const QKeyEvent *event) const
          if ((eventModifiers & candidateModifiers) == candidateModifiers) {
--            // If the event includes more modifiers than the candidate they
--            // will need to be included in the resulting key combination.
+             // If the event includes more modifiers than the candidate they
+             // will need to be included in the resulting key combination.
 -            auto additionalModifiers = eventModifiers & ~candidateModifiers;
 -            ret << int(additionalModifiers) + int(keyAfterApplyingModifiers);
 +            // Patch: Fix non-english layout global shortcuts.
-+            ret << int(additionalModifiers) + int(candidateModifiers);
++            ret << int(candidateModifiers) + int(keyAfterApplyingModifiers);
          }
      }
  
 diff --git a/src/plugins/platforms/cocoa/qnsview_keys.mm b/src/plugins/platforms/cocoa/qnsview_keys.mm
-index dbcab6c6d1..ead83f31cc 100644
+index dbcab6c6d1..fd9988301a 100644
 --- a/src/plugins/platforms/cocoa/qnsview_keys.mm
 +++ b/src/plugins/platforms/cocoa/qnsview_keys.mm
 @@ -161,6 +161,23 @@
@@ -28,12 +26,12 @@ index dbcab6c6d1..ead83f31cc 100644
 +{
 +    NSString *chars = [nsevent charactersIgnoringModifiers];
 +
-+    if ([nsevent type] == NSKeyDown && [chars length] > 0) {
++    if ([nsevent type] == NSEventTypeKeyDown && [chars length] > 0) {
 +        QChar ch = [chars characterAtIndex:0];
-+        Qt::Key qtKey = qt_mac_cocoaKey2QtKey(ch);
-+        if ([nsevent modifierFlags] & NSControlKeyMask
++        Qt::Key qtKey = QAppleKeyMapper::fromCocoaKey(ch);
++        if ([nsevent modifierFlags] & NSEventModifierFlagControl
 +                && (qtKey == Qt::Key_Tab || qtKey == Qt::Key_Backtab)) {
-+            [self handleKeyEvent:nsevent eventType:int(QEvent::KeyPress)];
++            [self handleKeyEvent:nsevent];
 +            return YES;
 +        }
 +    }
