@@ -1,0 +1,166 @@
+diff --git a/src/gui/rhi/qrhimetal.mm b/src/gui/rhi/qrhimetal.mm
+index e169550ee4..4c97dd15b7 100644
+--- a/src/gui/rhi/qrhimetal.mm
++++ b/src/gui/rhi/qrhimetal.mm
+@@ -40,6 +40,7 @@
+ #include "qrhimetal_p_p.h"
+ #include <QGuiApplication>
+ #include <QWindow>
++#include <QOperatingSystemVersion>
+ #include <qmath.h>
+ 
+ #ifdef Q_OS_MACOS
+@@ -211,8 +212,8 @@ struct QRhiMetalData
+     };
+     QVarLengthArray<TextureReadback, 2> activeTextureReadbacks;
+ 
+-    MTLCaptureManager *captureMgr;
+-    id<MTLCaptureScope> captureScope = nil;
++    API_AVAILABLE(macos(10.13), ios(11.0)) MTLCaptureManager *captureMgr;
++    API_AVAILABLE(macos(10.13), ios(11.0)) id<MTLCaptureScope> captureScope = nil;
+ 
+     static const int TEXBUF_ALIGN = 256; // probably not accurate
+ 
+@@ -377,7 +378,8 @@ bool QRhiMetal::create(QRhi::Flags flags)
+     const QString deviceName = QString::fromNSString([d->dev name]);
+     qCDebug(QRHI_LOG_INFO, "Metal device: %s", qPrintable(deviceName));
+     driverInfoStruct.deviceName = deviceName.toUtf8();
+-    driverInfoStruct.deviceId = [d->dev registryID];
++    if (@available(macOS 10.13, *))
++        driverInfoStruct.deviceId = [d->dev registryID];
+ #ifdef Q_OS_IOS
+     driverInfoStruct.deviceType = QRhiDriverInfo::IntegratedDevice;
+ #else
+@@ -404,14 +406,15 @@ bool QRhiMetal::create(QRhi::Flags flags)
+     else
+         d->cmdQueue = [d->dev newCommandQueue];
+ 
+-    d->captureMgr = [MTLCaptureManager sharedCaptureManager];
+-    // Have a custom capture scope as well which then shows up in XCode as
+-    // an option when capturing, and becomes especially useful when having
+-    // multiple windows with multiple QRhis.
+-    d->captureScope = [d->captureMgr newCaptureScopeWithCommandQueue: d->cmdQueue];
+-    const QString label = QString::asprintf("Qt capture scope for QRhi %p", this);
+-    d->captureScope.label = label.toNSString();
+-
++    if (@available(macOS 10.13, iOS 11.0, *)) {
++        d->captureMgr = [MTLCaptureManager sharedCaptureManager];
++        // Have a custom capture scope as well which then shows up in XCode as
++        // an option when capturing, and becomes especially useful when having
++        // multiple windows with multiple QRhis.
++        d->captureScope = [d->captureMgr newCaptureScopeWithCommandQueue: d->cmdQueue];
++        const QString label = QString::asprintf("Qt capture scope for QRhi %p", this);
++        d->captureScope.label = label.toNSString();
++    }
+ #if defined(Q_OS_MACOS)
+     caps.maxTextureSize = 16384;
+     caps.baseVertexAndInstance = true;
+@@ -455,8 +458,10 @@ void QRhiMetal::destroy()
+         s.destroy();
+     d->shaderCache.clear();
+ 
+-    [d->captureScope release];
+-    d->captureScope = nil;
++    if (@available(macOS 10.13, iOS 11.0, *)) {
++        [d->captureScope release];
++        d->captureScope = nil;
++    }
+ 
+     [d->cmdQueue release];
+     if (!importedCmdQueue)
+@@ -1367,7 +1372,8 @@ void QRhiMetal::debugMarkBegin(QRhiCommandBuffer *cb, const QByteArray &name)
+     if (cbD->recordingPass != QMetalCommandBuffer::NoPass)
+         [cbD->d->currentRenderPassEncoder pushDebugGroup: str];
+     else
+-        [cbD->d->cb pushDebugGroup: str];
++        if (@available(macOS 10.13, iOS 11.0, *))
++            [cbD->d->cb pushDebugGroup: str];
+ }
+ 
+ void QRhiMetal::debugMarkEnd(QRhiCommandBuffer *cb)
+@@ -1379,7 +1385,8 @@ void QRhiMetal::debugMarkEnd(QRhiCommandBuffer *cb)
+     if (cbD->recordingPass != QMetalCommandBuffer::NoPass)
+         [cbD->d->currentRenderPassEncoder popDebugGroup];
+     else
+-        [cbD->d->cb popDebugGroup];
++        if (@available(macOS 10.13, iOS 11.0, *))
++            [cbD->d->cb popDebugGroup];
+ }
+ 
+ void QRhiMetal::debugMarkMsg(QRhiCommandBuffer *cb, const QByteArray &msg)
+@@ -1430,7 +1437,8 @@ QRhi::FrameOpResult QRhiMetal::beginFrame(QRhiSwapChain *swapChain, QRhi::BeginF
+     if (swapChainD->ds)
+         swapChainD->ds->lastActiveFrameSlot = currentFrameSlot;
+ 
+-    [d->captureScope beginScope];
++    if (@available(macOS 10.13, iOS 11.0, *))
++        [d->captureScope beginScope];
+ 
+     // Do not let the command buffer mess with the refcount of objects. We do
+     // have a proper render loop and will manage lifetimes similarly to other
+@@ -1487,7 +1495,8 @@ QRhi::FrameOpResult QRhiMetal::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
+     QRhiProfilerPrivate *rhiP = profilerPrivateOrNull();
+     QRHI_PROF_F(endSwapChainFrame(swapChain, swapChainD->frameCount + 1));
+ 
+-    [d->captureScope endScope];
++    if (@available(macOS 10.13, iOS 11.0, *))
++        [d->captureScope endScope];
+ 
+     if (needsPresent)
+         swapChainD->currentFrameSlot = (swapChainD->currentFrameSlot + 1) % QMTL_FRAMES_IN_FLIGHT;
+@@ -3244,7 +3253,10 @@ static inline MTLVertexFormat toMetalAttributeFormat(QRhiVertexInputAttribute::F
+     case QRhiVertexInputAttribute::UNormByte2:
+         return MTLVertexFormatUChar2Normalized;
+     case QRhiVertexInputAttribute::UNormByte:
+-        return MTLVertexFormatUCharNormalized;
++        if (@available(macOS 10.13, iOS 11.0, *))
++            return MTLVertexFormatUCharNormalized;
++        else
++            Q_UNREACHABLE();
+     case QRhiVertexInputAttribute::UInt4:
+         return MTLVertexFormatUInt4;
+     case QRhiVertexInputAttribute::UInt3:
+@@ -3434,9 +3446,10 @@ static inline MTLCullMode toMetalCullMode(QRhiGraphicsPipeline::CullMode c)
+ id<MTLLibrary> QRhiMetalData::createMetalLib(const QShader &shader, QShader::Variant shaderVariant,
+                                              QString *error, QByteArray *entryPoint, QShaderKey *activeKey)
+ {
++    const auto mtl20supported = (QOperatingSystemVersion::current() >= QOperatingSystemVersion::MacOSHighSierra);
+     QShaderKey key = { QShader::MetalLibShader, 20, shaderVariant };
+     QShaderCode mtllib = shader.shader(key);
+-    if (mtllib.shader().isEmpty()) {
++    if (!mtl20supported || mtllib.shader().isEmpty()) {
+         key.setSourceVersion(12);
+         mtllib = shader.shader(key);
+     }
+@@ -3460,7 +3473,7 @@ id<MTLLibrary> QRhiMetalData::createMetalLib(const QShader &shader, QShader::Var
+ 
+     key = { QShader::MslShader, 20, shaderVariant };
+     QShaderCode mslSource = shader.shader(key);
+-    if (mslSource.shader().isEmpty()) {
++    if (!mtl20supported || mslSource.shader().isEmpty()) {
+         key.setSourceVersion(12);
+         mslSource = shader.shader(key);
+     }
+@@ -3471,7 +3484,11 @@ id<MTLLibrary> QRhiMetalData::createMetalLib(const QShader &shader, QShader::Var
+ 
+     NSString *src = [NSString stringWithUTF8String: mslSource.shader().constData()];
+     MTLCompileOptions *opts = [[MTLCompileOptions alloc] init];
+-    opts.languageVersion = key.sourceVersion() == 20 ? MTLLanguageVersion2_0 : MTLLanguageVersion1_2;
++    if (@available(macOS 10.13, *)) {
++        opts.languageVersion = key.sourceVersion() == 20 ? MTLLanguageVersion2_0 : MTLLanguageVersion1_2;
++    } else {
++        opts.languageVersion = MTLLanguageVersion1_2;
++    }
+     NSError *err = nil;
+     id<MTLLibrary> lib = [dev newLibraryWithSource: src options: opts error: &err];
+     [opts release];
+@@ -3998,7 +4015,8 @@ bool QMetalSwapChain::createOrResize()
+ 
+ #ifdef Q_OS_MACOS
+     if (m_flags.testFlag(NoVSync))
+-        d->layer.displaySyncEnabled = NO;
++        if (@available(macOS 10.13, *))
++            d->layer.displaySyncEnabled = NO;
+ #endif
+ 
+     if (m_flags.testFlag(SurfaceHasPreMulAlpha)) {

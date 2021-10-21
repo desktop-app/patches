@@ -1,0 +1,29 @@
+diff --git a/src/plugins/platforms/cocoa/qnsview_dragging.mm b/src/plugins/platforms/cocoa/qnsview_dragging.mm
+index 6ea96ac956..d0611fd1cd 100644
+--- a/src/plugins/platforms/cocoa/qnsview_dragging.mm
++++ b/src/plugins/platforms/cocoa/qnsview_dragging.mm
+@@ -46,13 +46,22 @@
+     QMacAutoReleasePool pool;
+ 
+     NSString * const mimeTypeGeneric = @"com.trolltech.qt.MimeTypeName";
++    NSString * urlType = nullptr;
++    NSString * fileUrlType = nullptr;
++    if (@available(macOS 10.13, *)) {
++        urlType = NSPasteboardTypeURL;
++        fileUrlType = NSPasteboardTypeFileURL;
++    } else {
++        urlType = NSURLPboardType;
++        fileUrlType = NSFilenamesPboardType;
++    }
+     NSMutableArray<NSString *> *supportedTypes = [NSMutableArray<NSString *> arrayWithArray:@[
+                    NSPasteboardTypeColor, NSPasteboardTypeString,
+-                   NSPasteboardTypeFileURL, @"com.adobe.encapsulated-postscript", NSPasteboardTypeTIFF,
++                   fileUrlType, @"com.adobe.encapsulated-postscript", NSPasteboardTypeTIFF,
+                    NSPasteboardTypeRTF, NSPasteboardTypeTabularText, NSPasteboardTypeFont,
+                    NSPasteboardTypeRuler, NSFileContentsPboardType,
+                    NSPasteboardTypeRTFD , NSPasteboardTypeHTML,
+-                   NSPasteboardTypeURL, NSPasteboardTypePDF, (NSString *)kUTTypeVCard,
++                   urlType, NSPasteboardTypePDF, (NSString *)kUTTypeVCard,
+                    (NSString *)kPasteboardTypeFileURLPromise, (NSString *)kUTTypeInkText,
+                    NSPasteboardTypeMultipleTextSelection, mimeTypeGeneric]];
+ 
