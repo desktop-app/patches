@@ -1,0 +1,25 @@
+diff --git a/src/corelib/time/qdatetime.cpp b/src/corelib/time/qdatetime.cpp
+index 94ea0112d4..8a1e25fd0a 100644
+--- a/src/corelib/time/qdatetime.cpp
++++ b/src/corelib/time/qdatetime.cpp
+@@ -3308,6 +3308,12 @@ inline qint64 QDateTimePrivate::zoneMSecsToEpochMSecs(qint64 zoneMSecs, const QT
+             *zoneTime = QTime();
+     } else {
+         Q_ASSERT(zone.d->offsetFromUtc(data.atMSecsSinceEpoch) == data.offsetFromUtc);
++// Patch: This crashes for me on macOS with this code:
++// QDateTime::fromString(QString::fromLatin1("200507065922Z"), QStringLiteral("yyMMddHHmmsst"))
++//
++// It shows zoneMSecs = -1577923200000, data.atMSecsSinceEpoch = -1577937600000,
++// data.offsetFromUtc = 13272, data.standardTimeOffset = 13272, data.daylightTimeOffset = 0.
++#if 0
+         Q_ASSERT(([data](qint64 offset) {
+                     return offset == data.offsetFromUtc
+                         // When zoneMSecs falls in a spring-forward's gap:
+@@ -3317,6 +3323,7 @@ inline qint64 QDateTimePrivate::zoneMSecsToEpochMSecs(qint64 zoneMSecs, const QT
+                         // When it falls in a skipped day (Pacific date-line crossings):
+                         || (data.offsetFromUtc - offset) % SECS_PER_DAY == 0;
+                 })((zoneMSecs - data.atMSecsSinceEpoch) / MSECS_PER_SEC));
++#endif
+         msecsToTime(data.atMSecsSinceEpoch + data.offsetFromUtc * MSECS_PER_SEC,
+                     zoneDate, zoneTime);
+         if (hint) {
