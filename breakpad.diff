@@ -117,3 +117,27 @@ index a6f05af6..35041500 100644
                            uint32_t dir_num, uint64_t mod_time, uint64_t length);
  
  
+diff --git a/src/common/windows/guid_string.h b/src/common/windows/guid_string.h
+index 48a5c1d3..0cc274c0 100644
+--- a/src/common/windows/guid_string.h
++++ b/src/common/windows/guid_string.h
+@@ -35,6 +35,7 @@
+ #include <guiddef.h>
+ 
+ #include <string>
++#include <memory>
+ 
+ namespace google_breakpad {
+ 
+diff --git a/src/tools/windows/dump_syms/dump_syms.cc b/src/tools/windows/dump_syms/dump_syms.cc
+index 1b1797dc..0211ae6e 100644
+--- a/src/tools/windows/dump_syms/dump_syms.cc
++++ b/src/tools/windows/dump_syms/dump_syms.cc
+@@ -34,6 +34,7 @@
+ #include <wchar.h>
+ 
+ #include <string>
++#include <memory>
+ 
+ #include "common/windows/pdb_source_line_writer.h"
+ #include "common/windows/pe_source_line_writer.h"
