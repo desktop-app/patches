@@ -140,14 +140,26 @@ index a6f05af6..35041500 100644
  
  
 diff --git a/src/common/windows/guid_string.h b/src/common/windows/guid_string.h
-index 48a5c1d3..0cc274c0 100644
+index 48a5c1d3..fbd84d48 100644
 --- a/src/common/windows/guid_string.h
 +++ b/src/common/windows/guid_string.h
-@@ -35,6 +35,7 @@
+@@ -35,6 +35,19 @@
  #include <guiddef.h>
  
  #include <string>
 +#include <memory>
++
++#if !defined(_WIN64)
++#ifdef UNW_FLAG_EHANDLER
++#undef UNW_FLAG_EHANDLER
++#endif // UNW_FLAG_EHANDLER
++#ifdef UNW_FLAG_UHANDLER
++#undef UNW_FLAG_UHANDLER
++#endif // UNW_FLAG_UHANDLER
++#ifdef UNW_FLAG_CHAININFO
++#undef UNW_FLAG_CHAININFO
++#endif // UNW_FLAG_CHAININFO
++#endif
  
  namespace google_breakpad {
  
