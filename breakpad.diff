@@ -51,6 +51,28 @@ index 29990c65..4929c6a5 100644
  
      # The Xcode generator will look for an xcode_settings section at the root
      # of each dict and use it to apply settings on a file-wide basis.  Most
+diff --git a/src/build/gyp_breakpad b/src/build/gyp_breakpad
+index 0b8077d2..8397d366 100755
+--- a/src/build/gyp_breakpad
++++ b/src/build/gyp_breakpad
+@@ -41,7 +41,7 @@ import gyp
+ def run_gyp(args):
+   rc = gyp.main(args)
+   if rc != 0:
+-    print 'Error running GYP'
++    print('Error running GYP')
+     sys.exit(rc)
+ 
+ 
+@@ -57,7 +57,7 @@ def main():
+   # Set the GYP DEPTH variable to the root of the project.
+   args.append('--depth=' + os.path.relpath(breakpad_root))
+ 
+-  print 'Updating projects from gyp files...'
++  print('Updating projects from gyp files...')
+   sys.stdout.flush()
+ 
+   run_gyp(args)
 diff --git a/src/common/common.gyp b/src/common/common.gyp
 index c1dbb0fe..fcec1514 100644
 --- a/src/common/common.gyp
