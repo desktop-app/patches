@@ -74,7 +74,7 @@ index 0b8077d2..8397d366 100755
  
    run_gyp(args)
 diff --git a/src/client/mac/Breakpad.xcodeproj/project.pbxproj b/src/client/mac/Breakpad.xcodeproj/project.pbxproj
-index ed782c91..fcb0f4d7 100644
+index ed782c91..0145e20e 100644
 --- a/src/client/mac/Breakpad.xcodeproj/project.pbxproj
 +++ b/src/client/mac/Breakpad.xcodeproj/project.pbxproj
 @@ -2198,6 +2198,7 @@
@@ -101,13 +101,6 @@ index ed782c91..fcb0f4d7 100644
  			};
  			name = "Debug With Code Coverage";
  		};
-@@ -2852,4 +2855,4 @@
- /* End XCConfigurationList section */
- 	};
- 	rootObject = 0867D690FE84028FC02AAC07 /* Project object */;
--}
-\ No newline at end of file
-+}
 diff --git a/src/common/common.gyp b/src/common/common.gyp
 index c1dbb0fe..fcec1514 100644
 --- a/src/common/common.gyp
