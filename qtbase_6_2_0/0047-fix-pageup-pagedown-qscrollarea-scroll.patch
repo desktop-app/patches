@@ -1,0 +1,25 @@
+diff --git a/src/widgets/widgets/qabstractscrollarea.cpp b/src/widgets/widgets/qabstractscrollarea.cpp
+index 16e9297f5e..3f2ff36b67 100644
+--- a/src/widgets/widgets/qabstractscrollarea.cpp
++++ b/src/widgets/widgets/qabstractscrollarea.cpp
+@@ -1230,6 +1230,20 @@ void QAbstractScrollArea::keyPressEvent(QKeyEvent * e)
+ {
+     Q_D(QAbstractScrollArea);
+ 
++    // Patch: Return Page Up / Page Down processing in QScrollArea.
++    // See https://bugreports.qt.io/browse/QTBUG-97908
++#ifndef QT_NO_SHORTCUT
++    if (e == QKeySequence::MoveToPreviousPage) {
++        d->vbar->triggerAction(QScrollBar::SliderPageStepSub);
++        e->accept();
++        return;
++    } else if (e == QKeySequence::MoveToNextPage) {
++        d->vbar->triggerAction(QScrollBar::SliderPageStepAdd);
++        e->accept();
++        return;
++    }
++#endif
++
+ #ifdef QT_KEYPAD_NAVIGATION
+     if (QApplicationPrivate::keypadNavigationEnabled() && !hasEditFocus()) {
+         e->ignore();
