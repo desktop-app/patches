@@ -1,55 +1,99 @@
+diff --git a/cmake/3rdparty/extra-cmake-modules/find-modules/FindEGL.cmake b/cmake/3rdparty/extra-cmake-modules/find-modules/FindEGL.cmake
+index 16dc1768ea..b611ab6e68 100644
+--- a/cmake/3rdparty/extra-cmake-modules/find-modules/FindEGL.cmake
++++ b/cmake/3rdparty/extra-cmake-modules/find-modules/FindEGL.cmake
+@@ -70,6 +70,7 @@ ecm_find_package_version_check(EGL)
+ # in the FIND_PATH() and FIND_LIBRARY() calls
+ find_package(PkgConfig QUIET)
+ pkg_check_modules(PKG_EGL QUIET egl)
++pkg_check_modules(PKG_EPOXY QUIET epoxy)
+ 
+ set(EGL_DEFINITIONS ${PKG_EGL_CFLAGS_OTHER})
+ 
+@@ -81,9 +82,9 @@ find_path(EGL_INCLUDE_DIR
+ )
+ find_library(EGL_LIBRARY
+     NAMES
+-        EGL
++        epoxy
+     HINTS
+-        ${PKG_EGL_LIBRARY_DIRS}
++        ${PKG_EPOXY_LIBRARY_DIRS}
+ )
+ 
+ # NB: We do *not* use the version information from pkg-config, as that
+diff --git a/cmake/FindWrapOpenGL.cmake b/cmake/FindWrapOpenGL.cmake
+index 91d8b77c12..5f55c6b6be 100644
+--- a/cmake/FindWrapOpenGL.cmake
++++ b/cmake/FindWrapOpenGL.cmake
+@@ -9,6 +9,13 @@ set(WrapOpenGL_FOUND OFF)
+ 
+ find_package(OpenGL ${WrapOpenGL_FIND_VERSION})
+ 
++find_package(PkgConfig QUIET)
++pkg_check_modules(PC_EPOXY QUIET epoxy)
++
++find_library(EPOXY_LIBRARY
++             NAMES epoxy
++             HINTS ${PC_EPOXY_LIBDIR})
++
+ if (OpenGL_FOUND)
+     set(WrapOpenGL_FOUND ON)
+ 
+@@ -41,7 +48,8 @@ if (OpenGL_FOUND)
+         target_link_libraries(WrapOpenGL::WrapOpenGL INTERFACE ${__opengl_fw_path})
+         target_link_libraries(WrapOpenGL::WrapOpenGL INTERFACE ${__opengl_agl_fw_path})
+     else()
+-        target_link_libraries(WrapOpenGL::WrapOpenGL INTERFACE OpenGL::GL)
++        target_include_directories(WrapOpenGL::WrapOpenGL INTERFACE ${OPENGL_INCLUDE_DIR})
++        target_link_libraries(WrapOpenGL::WrapOpenGL INTERFACE ${EPOXY_LIBRARY})
+     endif()
+ endif()
+ 
 diff --git a/src/plugins/platforms/xcb/gl_integrations/xcb_egl/qxcbeglmain.cpp b/src/plugins/platforms/xcb/gl_integrations/xcb_egl/qxcbeglmain.cpp
-index 8979c0371b..1a65eeca25 100644
+index 8979c0371b..65374060fb 100644
 --- a/src/plugins/platforms/xcb/gl_integrations/xcb_egl/qxcbeglmain.cpp
 +++ b/src/plugins/platforms/xcb/gl_integrations/xcb_egl/qxcbeglmain.cpp
-@@ -41,6 +41,10 @@
+@@ -41,6 +41,8 @@
  
  #include "qxcbeglintegration.h"
  
-+#ifdef QT_STATICPLUGIN
 +extern "C" bool epoxy_load_egl(bool exit_if_fails, bool load);
-+#endif
 +
  QT_BEGIN_NAMESPACE
  
  class QXcbEglIntegrationPlugin : public QXcbGlIntegrationPlugin
-@@ -50,6 +54,12 @@ class QXcbEglIntegrationPlugin : public QXcbGlIntegrationPlugin
+@@ -50,6 +52,10 @@ class QXcbEglIntegrationPlugin : public QXcbGlIntegrationPlugin
  public:
      QXcbGlIntegration *create() override
      {
-+#ifdef QT_STATICPLUGIN
 +        if (!epoxy_load_egl(false, true)) {
 +            return nullptr;
 +        }
-+#endif
 +
          return new QXcbEglIntegration();
      }
  
 diff --git a/src/plugins/platforms/xcb/gl_integrations/xcb_glx/qxcbglxmain.cpp b/src/plugins/platforms/xcb/gl_integrations/xcb_glx/qxcbglxmain.cpp
-index 898ee3dcf8..79b85d6790 100644
+index 898ee3dcf8..d9bf853b88 100644
 --- a/src/plugins/platforms/xcb/gl_integrations/xcb_glx/qxcbglxmain.cpp
 +++ b/src/plugins/platforms/xcb/gl_integrations/xcb_glx/qxcbglxmain.cpp
-@@ -41,6 +41,10 @@
+@@ -41,6 +41,8 @@
  
  #include "qxcbglxintegration.h"
  
-+#ifdef QT_STATICPLUGIN
 +extern "C" bool epoxy_load_glx(bool exit_if_fails, bool load);
-+#endif
 +
  QT_BEGIN_NAMESPACE
  
  class QXcbGlxIntegrationPlugin : public QXcbGlIntegrationPlugin
-@@ -50,6 +54,12 @@ class QXcbGlxIntegrationPlugin : public QXcbGlIntegrationPlugin
+@@ -50,6 +52,10 @@ class QXcbGlxIntegrationPlugin : public QXcbGlIntegrationPlugin
  public:
      QXcbGlIntegration *create() override
      {
-+#ifdef QT_STATICPLUGIN
 +        if (!epoxy_load_glx(false, true)) {
 +            return nullptr;
 +        }
-+#endif
 +
          return new QXcbGlxIntegration();
      }
