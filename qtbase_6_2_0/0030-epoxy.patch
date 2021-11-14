@@ -1,5 +1,5 @@
 diff --git a/cmake/3rdparty/extra-cmake-modules/find-modules/FindEGL.cmake b/cmake/3rdparty/extra-cmake-modules/find-modules/FindEGL.cmake
-index 16dc1768ea..90ed833ae0 100644
+index 16dc1768ea..f0eaeaf490 100644
 --- a/cmake/3rdparty/extra-cmake-modules/find-modules/FindEGL.cmake
 +++ b/cmake/3rdparty/extra-cmake-modules/find-modules/FindEGL.cmake
 @@ -70,6 +70,7 @@ ecm_find_package_version_check(EGL)
@@ -22,15 +22,27 @@ index 16dc1768ea..90ed833ae0 100644
  )
  
  # NB: We do *not* use the version information from pkg-config, as that
-@@ -116,7 +117,7 @@ if(EGL_INCLUDE_DIR)
+@@ -115,8 +116,9 @@ if(EGL_INCLUDE_DIR)
+     unset(_EGL_version_lines)
  endif()
  
++if (EGL_LIBRARY)
  cmake_push_check_state(RESET)
 -list(APPEND CMAKE_REQUIRED_LIBRARIES "${EGL_LIBRARY}")
 +list(APPEND CMAKE_REQUIRED_LIBRARIES "${EGL_LIBRARY}" "${CMAKE_DL_LIBS}")
  list(APPEND CMAKE_REQUIRED_INCLUDES "${EGL_INCLUDE_DIR}")
  list(APPEND CMAKE_REQUIRED_DEFINITIONS "${EGL_DEFINITIONS}")
  
+@@ -129,6 +131,9 @@ int main(int argc, char *argv[]) {
+ }" HAVE_EGL)
+ 
+ cmake_pop_check_state()
++else()
++set(HAVE_EGL 0)
++endif()
+ 
+ set(required_vars EGL_INCLUDE_DIR HAVE_EGL)
+ if(NOT EMSCRIPTEN)
 diff --git a/cmake/FindWrapOpenGL.cmake b/cmake/FindWrapOpenGL.cmake
 index 91d8b77c12..5f55c6b6be 100644
 --- a/cmake/FindWrapOpenGL.cmake
