@@ -1,31 +1,198 @@
+diff --git a/src/corelib/CMakeLists.txt b/src/corelib/CMakeLists.txt
+index 0bcc3b75b5..f118fe2e04 100644
+--- a/src/corelib/CMakeLists.txt
++++ b/src/corelib/CMakeLists.txt
+@@ -1040,7 +1040,7 @@ qt_internal_extend_target(Core CONDITION QT_FEATURE_library AND WIN32
+         plugin/qlibrary_win.cpp
+ )
+ 
+-qt_internal_extend_target(Core CONDITION QT_FEATURE_dlopen AND QT_FEATURE_library
++qt_internal_extend_target(Core CONDITION QT_FEATURE_dlopen AND (QT_FEATURE_library OR QT_FEATURE_glib)
+     LIBRARIES
+         ${CMAKE_DL_LIBS}
+ )
+@@ -1063,6 +1063,7 @@ qt_internal_extend_target(Core CONDITION QT_FEATURE_poll_select AND UNIX
+ qt_internal_extend_target(Core CONDITION QT_FEATURE_glib AND UNIX
+     SOURCES
+         kernel/qeventdispatcher_glib.cpp kernel/qeventdispatcher_glib_p.h
++        kernel/glib_functions.cpp kernel/glib_functions_p.h
+     LIBRARIES
+         GLIB2::GLIB2
+ )
+diff --git a/src/corelib/configure.cmake b/src/corelib/configure.cmake
+index 45dd1382bd..5dd3cfcae8 100644
+--- a/src/corelib/configure.cmake
++++ b/src/corelib/configure.cmake
+@@ -547,7 +547,7 @@ qt_feature("getentropy" PRIVATE
+ qt_feature("glib" PUBLIC PRIVATE
+     LABEL "GLib"
+     AUTODETECT NOT WIN32
+-    CONDITION GLIB2_FOUND
++    CONDITION GLIB2_FOUND AND QT_FEATURE_dlopen
+ )
+ qt_feature_definition("glib" "QT_NO_GLIB" NEGATE VALUE "1")
+ qt_feature("glibc" PRIVATE
+diff --git a/src/corelib/kernel/glib_functions.cpp b/src/corelib/kernel/glib_functions.cpp
+new file mode 100644
+index 0000000000..2138208808
+--- /dev/null
++++ b/src/corelib/kernel/glib_functions.cpp
+@@ -0,0 +1,63 @@
++#include "glib_functions_p.h"
++
++#include <dlfcn.h>
++#include <memory>
++#include <iostream>
++
++#define LOAD_SYMBOL(handle, func) LoadSymbol(handle, #func, func)
++
++namespace {
++
++struct HandleDeleter {
++	void operator()(void *handle) {
++		dlclose(handle);
++	}
++};
++
++using Handle = std::unique_ptr<void, HandleDeleter>;
++
++bool LoadLibrary(Handle &handle, const char *name) {
++	handle = Handle(dlopen(name, RTLD_LAZY | RTLD_NODELETE));
++	if (handle) {
++		return true;
++	}
++	std::cerr << dlerror() << std::endl;
++	return false;
++}
++
++template <typename Function>
++inline bool LoadSymbol(const Handle &handle, const char *name, Function &func) {
++	func = handle
++		? reinterpret_cast<Function>(dlsym(handle.get(), name))
++		: nullptr;
++	if (const auto error = dlerror()) {
++		std::cerr << error << std::endl;
++	}
++	return (func != nullptr);
++}
++
++} // namespace
++
++bool ResolveGlib() {
++	static const auto loaded = [&] {
++		auto lib = Handle();
++		return LoadLibrary(lib, "libglib-2.0.so.0")
++			&& LOAD_SYMBOL(lib, g_main_context_default)
++			&& LOAD_SYMBOL(lib, g_main_context_iteration)
++			&& LOAD_SYMBOL(lib, g_main_context_new)
++			&& LOAD_SYMBOL(lib, g_main_context_pop_thread_default)
++			&& LOAD_SYMBOL(lib, g_main_context_push_thread_default)
++			&& LOAD_SYMBOL(lib, g_main_context_ref)
++			&& LOAD_SYMBOL(lib, g_main_context_unref)
++			&& LOAD_SYMBOL(lib, g_main_context_wakeup)
++			&& LOAD_SYMBOL(lib, g_source_add_poll)
++			&& LOAD_SYMBOL(lib, g_source_attach)
++			&& LOAD_SYMBOL(lib, g_source_destroy)
++			&& LOAD_SYMBOL(lib, g_source_new)
++			&& LOAD_SYMBOL(lib, g_source_remove_poll)
++			&& LOAD_SYMBOL(lib, g_source_set_can_recurse)
++			&& LOAD_SYMBOL(lib, g_source_set_name)
++			&& LOAD_SYMBOL(lib, g_source_unref);
++	}();
++	return loaded;
++}
+diff --git a/src/corelib/kernel/glib_functions_p.h b/src/corelib/kernel/glib_functions_p.h
+new file mode 100644
+index 0000000000..280af93c15
+--- /dev/null
++++ b/src/corelib/kernel/glib_functions_p.h
+@@ -0,0 +1,39 @@
++#pragma once
++
++#include <glib.h>
++
++#define g_main_context_default ptr_g_main_context_default
++#define g_main_context_iteration ptr_g_main_context_iteration
++#define g_main_context_new ptr_g_main_context_new
++#define g_main_context_pop_thread_default ptr_g_main_context_pop_thread_default
++#define g_main_context_push_thread_default ptr_g_main_context_push_thread_default
++#define g_main_context_ref ptr_g_main_context_ref
++#define g_main_context_unref ptr_g_main_context_unref
++#define g_main_context_wakeup ptr_g_main_context_wakeup
++#define g_source_add_poll ptr_g_source_add_poll
++#define g_source_attach ptr_g_source_attach
++#define g_source_destroy ptr_g_source_destroy
++#define g_source_new ptr_g_source_new
++#define g_source_remove_poll ptr_g_source_remove_poll
++#define g_source_set_can_recurse ptr_g_source_set_can_recurse
++#define g_source_set_name ptr_g_source_set_name
++#define g_source_unref ptr_g_source_unref
++
++inline GMainContext* (*g_main_context_default)(void);
++inline gboolean (*g_main_context_iteration)(GMainContext* context, gboolean may_block);
++inline GMainContext* (*g_main_context_new)(void);
++inline void (*g_main_context_pop_thread_default)(GMainContext* context);
++inline void (*g_main_context_push_thread_default)(GMainContext* context);
++inline GMainContext* (*g_main_context_ref)(GMainContext* context);
++inline void (*g_main_context_unref)(GMainContext* context);
++inline void (*g_main_context_wakeup)(GMainContext* context);
++inline void (*g_source_add_poll)(GSource* source, GPollFD* fd);
++inline guint (*g_source_attach)(GSource* source, GMainContext* context);
++inline void (*g_source_destroy)(GSource* source);
++inline GSource* (*g_source_new)(GSourceFuncs* source_funcs, guint struct_size);
++inline void (*g_source_remove_poll)(GSource* source, GPollFD* fd);
++inline void (*g_source_set_can_recurse)(GSource* source, gboolean can_recurse);
++inline void (*g_source_set_name)(GSource* source, const char* name);
++inline void (*g_source_unref)(GSource* source);
++
++bool ResolveGlib();
 diff --git a/src/corelib/kernel/qeventdispatcher_glib.cpp b/src/corelib/kernel/qeventdispatcher_glib.cpp
-index 3964c1ceac..9a19006f0f 100644
+index 3964c1ceac..97a1546880 100644
 --- a/src/corelib/kernel/qeventdispatcher_glib.cpp
 +++ b/src/corelib/kernel/qeventdispatcher_glib.cpp
-@@ -50,6 +50,10 @@
+@@ -48,7 +48,7 @@
+ #include <QtCore/qlist.h>
+ #include <QtCore/qpair.h>
  
- #include <glib.h>
+-#include <glib.h>
++#include "glib_functions_p.h"
  
-+#if QT_CONFIG(dlopen)
-+#include <dlfcn.h>
-+#endif
-+
  QT_BEGIN_NAMESPACE
  
- struct GPollFDWithQSocketNotifier
-@@ -598,6 +602,15 @@ void QEventDispatcherGlib::wakeUp()
+@@ -598,6 +598,10 @@ void QEventDispatcherGlib::wakeUp()
  
  bool QEventDispatcherGlib::versionSupported()
  {
-+#if QT_CONFIG(dlopen)
-+    const auto handle = dlopen("libglib-2.0.so.0", RTLD_LAZY);
-+    if (!handle) {
-+        Q_UNUSED(dlerror());
++    if (!ResolveGlib()) {
 +        return false;
 +    }
-+    dlclose(handle);
-+#endif
 +
  #if !defined(GLIB_MAJOR_VERSION) || !defined(GLIB_MINOR_VERSION) || !defined(GLIB_MICRO_VERSION)
      return false;
  #else
+diff --git a/src/gui/platform/unix/qeventdispatcher_glib.cpp b/src/gui/platform/unix/qeventdispatcher_glib.cpp
+index bf9e31990e..766e0a0e14 100644
+--- a/src/gui/platform/unix/qeventdispatcher_glib.cpp
++++ b/src/gui/platform/unix/qeventdispatcher_glib.cpp
+@@ -43,7 +43,7 @@
+ 
+ #include "qplatformdefs.h"
+ 
+-#include <glib.h>
++#include <QtCore/private/glib_functions_p.h>
+ #include "private/qguiapplication_p.h"
+ 
+ QT_BEGIN_NAMESPACE
+diff --git a/src/plugins/platforms/xcb/qxcbeventdispatcher.h b/src/plugins/platforms/xcb/qxcbeventdispatcher.h
+index 8dffeef031..1b50f6a107 100644
+--- a/src/plugins/platforms/xcb/qxcbeventdispatcher.h
++++ b/src/plugins/platforms/xcb/qxcbeventdispatcher.h
+@@ -45,7 +45,7 @@
+ #include <QtCore/private/qeventdispatcher_unix_p.h>
+ #if QT_CONFIG(glib)
+ #include <QtCore/private/qeventdispatcher_glib_p.h>
+-#include <glib.h>
++#include <QtCore/private/glib_functions_p.h>
+ #endif
+ 
+ QT_BEGIN_NAMESPACE
