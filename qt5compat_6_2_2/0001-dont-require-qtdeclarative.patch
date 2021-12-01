@@ -1,11 +1,11 @@
 diff --git a/dependencies.yaml b/dependencies.yaml
-index b4eb16a..65b53c2 100644
+index 3839fe4..8d1f795 100644
 --- a/dependencies.yaml
 +++ b/dependencies.yaml
 @@ -2,6 +2,3 @@ dependencies:
    ../qtbase:
-     ref: cc60cf83db6bbf9775b1f7747a48d6b7eb24e585
+     ref: eae95814a46386f8930eeae5486513a78a7a4ddc
      required: true
 -  ../qtdeclarative:
--    ref: 03e111a81863fbd4ba2ea8f9f9764905d3801f26
+-    ref: 00c352c4d4b61f8c7a6243768bc5375c3dca3e76
 -    required: true
