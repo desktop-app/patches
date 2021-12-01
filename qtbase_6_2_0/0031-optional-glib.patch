@@ -1,26 +1,23 @@
 diff --git a/src/corelib/CMakeLists.txt b/src/corelib/CMakeLists.txt
-index 0bcc3b75b5..f118fe2e04 100644
+index 0bcc3b75b5..ce2454cf75 100644
 --- a/src/corelib/CMakeLists.txt
 +++ b/src/corelib/CMakeLists.txt
-@@ -1040,7 +1040,7 @@ qt_internal_extend_target(Core CONDITION QT_FEATURE_library AND WIN32
-         plugin/qlibrary_win.cpp
- )
- 
--qt_internal_extend_target(Core CONDITION QT_FEATURE_dlopen AND QT_FEATURE_library
-+qt_internal_extend_target(Core CONDITION QT_FEATURE_dlopen AND (QT_FEATURE_library OR QT_FEATURE_glib)
-     LIBRARIES
-         ${CMAKE_DL_LIBS}
- )
-@@ -1063,6 +1063,7 @@ qt_internal_extend_target(Core CONDITION QT_FEATURE_poll_select AND UNIX
- qt_internal_extend_target(Core CONDITION QT_FEATURE_glib AND UNIX
-     SOURCES
-         kernel/qeventdispatcher_glib.cpp kernel/qeventdispatcher_glib_p.h
-+        kernel/glib_functions.cpp kernel/glib_functions_p.h
-     LIBRARIES
+@@ -1067,6 +1067,13 @@ qt_internal_extend_target(Core CONDITION QT_FEATURE_glib AND UNIX
          GLIB2::GLIB2
  )
+ 
++qt_internal_extend_target(Core CONDITION QT_FEATURE_glib AND NOT QT_FEATURE_shared
++    SOURCES
++        kernel/glib_functions.cpp kernel/glib_functions_p.h
++    LIBRARIES
++        ${CMAKE_DL_LIBS}
++)
++
+ qt_internal_extend_target(Core CONDITION QT_FEATURE_clock_gettime AND UNIX
+     LIBRARIES
+         WrapRt::WrapRt
 diff --git a/src/corelib/configure.cmake b/src/corelib/configure.cmake
-index 45dd1382bd..5dd3cfcae8 100644
+index 45dd1382bd..5c4eda0b09 100644
 --- a/src/corelib/configure.cmake
 +++ b/src/corelib/configure.cmake
 @@ -547,7 +547,7 @@ qt_feature("getentropy" PRIVATE
@@ -28,7 +25,7 @@ index 45dd1382bd..5dd3cfcae8 100644
      LABEL "GLib"
      AUTODETECT NOT WIN32
 -    CONDITION GLIB2_FOUND
-+    CONDITION GLIB2_FOUND AND QT_FEATURE_dlopen
++    CONDITION GLIB2_FOUND AND (QT_FEATURE_dlopen OR QT_FEATURE_shared) 
  )
  qt_feature_definition("glib" "QT_NO_GLIB" NEGATE VALUE "1")
  qt_feature("glibc" PRIVATE
@@ -103,14 +100,16 @@ index 0000000000..2138208808
 +}
 diff --git a/src/corelib/kernel/glib_functions_p.h b/src/corelib/kernel/glib_functions_p.h
 new file mode 100644
-index 0000000000..280af93c15
+index 0000000000..b338cb1e0f
 --- /dev/null
 +++ b/src/corelib/kernel/glib_functions_p.h
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,42 @@
 +#pragma once
 +
++#include <QtCore/qglobal.h>
 +#include <glib.h>
 +
++#ifdef QT_STATIC
 +#define g_main_context_default ptr_g_main_context_default
 +#define g_main_context_iteration ptr_g_main_context_iteration
 +#define g_main_context_new ptr_g_main_context_new
@@ -146,8 +145,9 @@ index 0000000000..280af93c15
 +inline void (*g_source_unref)(GSource* source);
 +
 +bool ResolveGlib();
++#endif // QT_STATIC
 diff --git a/src/corelib/kernel/qeventdispatcher_glib.cpp b/src/corelib/kernel/qeventdispatcher_glib.cpp
-index 3964c1ceac..97a1546880 100644
+index 3964c1ceac..293326d646 100644
 --- a/src/corelib/kernel/qeventdispatcher_glib.cpp
 +++ b/src/corelib/kernel/qeventdispatcher_glib.cpp
 @@ -48,7 +48,7 @@
@@ -159,13 +159,15 @@ index 3964c1ceac..97a1546880 100644
  
  QT_BEGIN_NAMESPACE
  
-@@ -598,6 +598,10 @@ void QEventDispatcherGlib::wakeUp()
+@@ -598,6 +598,12 @@ void QEventDispatcherGlib::wakeUp()
  
  bool QEventDispatcherGlib::versionSupported()
  {
++#ifdef QT_STATIC
 +    if (!ResolveGlib()) {
 +        return false;
 +    }
++#endif
 +
  #if !defined(GLIB_MAJOR_VERSION) || !defined(GLIB_MINOR_VERSION) || !defined(GLIB_MICRO_VERSION)
      return false;
