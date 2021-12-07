@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index b478cde..abdb464 100644
+index b478cde..5f19170 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -31,10 +31,8 @@ ecm_setup_version(PROJECT VARIABLE_PREFIX KWAYLAND
@@ -15,14 +15,21 @@ index b478cde..abdb464 100644
  
  find_package(Wayland 1.15 COMPONENTS Client Server)
  set_package_properties(Wayland PROPERTIES
-@@ -69,7 +67,6 @@ add_definitions(-DQT_DISABLE_DEPRECATED_BEFORE=0x050f02)
+@@ -69,14 +67,8 @@ add_definitions(-DQT_DISABLE_DEPRECATED_BEFORE=0x050f02)
  # Subdirectories
  ecm_install_po_files_as_qm(po)
  
 -find_package(QtWaylandScanner REQUIRED)
  add_subdirectory(src)
  
- if (BUILD_TESTING)
+-if (BUILD_TESTING)
+-    add_subdirectory(autotests)
+-    add_subdirectory(tests)
+-endif()
+-
+ # create a Config.cmake and a ConfigVersion.cmake file and install them
+ set(CMAKECONFIG_INSTALL_DIR "${KDE_INSTALL_CMAKEPACKAGEDIR}/KF5Wayland")
+ 
 diff --git a/KF5WaylandConfig.cmake.in b/KF5WaylandConfig.cmake.in
 index ef20432..1294d3e 100644
 --- a/KF5WaylandConfig.cmake.in
@@ -57,7 +64,7 @@ index c8a307c..e6497c8 100644
              ${KWaylandClient_APIDOX_BUILD_INCLUDE_DIRS}
              ${KWaylandServer_APIDOX_BUILD_INCLUDE_DIRS}
 diff --git a/src/client/CMakeLists.txt b/src/client/CMakeLists.txt
-index b7ec33a..419b84b 100644
+index b7ec33a..efb390a 100644
 --- a/src/client/CMakeLists.txt
 +++ b/src/client/CMakeLists.txt
 @@ -3,7 +3,7 @@ remove_definitions(-DQT_NO_CAST_FROM_ASCII)
@@ -69,15 +76,24 @@ index b7ec33a..419b84b 100644
  
  set(CLIENT_LIB_SRCS
      appmenu.cpp
-@@ -257,9 +257,9 @@ ecm_generate_export_header(KF5WaylandClient
+@@ -256,10 +256,17 @@ ecm_generate_export_header(KF5WaylandClient
+ 
  target_include_directories(KF5WaylandClient INTERFACE "$<INSTALL_INTERFACE:${KDE_INSTALL_INCLUDEDIR_KF5}/KWayland/Client>")
  
++target_include_directories(KF5WaylandClient
++    PRIVATE ${Wayland_Client_INCLUDE_DIR}
++        ${Qt6Concurrent_INCLUDE_DIRS}
++)
++
++get_target_property(Qt6Concurrent_LIBRARIES Qt6::Concurrent IMPORTED_LOCATION)
++
  target_link_libraries(KF5WaylandClient
 -    PUBLIC Qt5::Gui
-+    PUBLIC Qt6::Gui
-     PRIVATE Wayland::Client
+-    PRIVATE Wayland::Client
 -        Qt5::Concurrent
-+        Qt6::Concurrent
++    PUBLIC Qt6::Gui
++    PRIVATE ${Wayland_Client_LIBRARY}
++        ${Qt6Concurrent_LIBRARIES}
  )
  
  set_target_properties(KF5WaylandClient PROPERTIES VERSION   ${KWAYLAND_VERSION}
