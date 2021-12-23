@@ -302,10 +302,10 @@ index 63d40e63..fab4890d 100644
    return cl_paths
  
 diff --git a/pylib/gyp/win_tool.py b/pylib/gyp/win_tool.py
-index 89734846..957f00f5 100755
+index 89734846..fb63b711 100755
 --- a/pylib/gyp/win_tool.py
 +++ b/pylib/gyp/win_tool.py
-@@ -132,6 +132,7 @@ class WinTool(object):
+@@ -132,11 +132,12 @@ class WinTool(object):
      link = subprocess.Popen(args, shell=sys.platform == 'win32', env=env,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
      out, _ = link.communicate()
@@ -313,6 +313,12 @@ index 89734846..957f00f5 100755
      for line in out.splitlines():
        if (not line.startswith('   Creating library ') and
            not line.startswith('Generating code') and
+           not line.startswith('Finished generating code')):
+-        print(line)
++        print(line.encode("utf-8"))
+     return link.returncode
+ 
+   def ExecLinkWithManifests(self, arch, embed_manifest, out, ldcmd, resname,
 @@ -197,8 +198,8 @@ class WinTool(object):
        # and sometimes doesn't unfortunately.
        with open(our_manifest, 'r') as our_f:
