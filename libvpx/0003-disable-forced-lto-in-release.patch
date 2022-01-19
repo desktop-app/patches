@@ -1,0 +1,14 @@
+diff --git a/build/make/gen_msvs_vcxproj.sh b/build/make/gen_msvs_vcxproj.sh
+index dffed7431..590833de9 100755
+--- a/build/make/gen_msvs_vcxproj.sh
++++ b/build/make/gen_msvs_vcxproj.sh
+@@ -348,9 +348,6 @@ generate_vcxproj() {
+                 tag_content PlatformToolset v143
+             fi
+             tag_content CharacterSet Unicode
+-            if [ "$config" = "Release" ]; then
+-                tag_content WholeProgramOptimization true
+-            fi
+             close_tag PropertyGroup
+         done
+     done
