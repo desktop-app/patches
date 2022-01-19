@@ -1,0 +1,32 @@
+diff --git a/libs.mk b/libs.mk
+index 7cd973bd1..1426a346e 100644
+--- a/libs.mk
++++ b/libs.mk
+@@ -280,6 +280,27 @@ PROJECTS-yes += vp9rc.$(VCPROJ_SFX)
+ vp9rc.$(VCPROJ_SFX): vpx_config.asm
+ vp9rc.$(VCPROJ_SFX): $(RTCD)
+ 
++LIBS-yes += vpx.pc
++vpx.pc: config.mk libs.mk
++	@echo "    [CREATE] $@"
++	$(qexec)echo '# pkg-config file from libvpx $(VERSION_STRING)' > $@
++	$(qexec)echo 'prefix=$(PREFIX)' >> $@
++	$(qexec)echo 'exec_prefix=$${prefix}' >> $@
++	$(qexec)echo 'libdir=$${prefix}/$(LIBSUBDIR)/$(VS_PLATFORMS)' >> $@
++	$(qexec)echo 'includedir=$${prefix}/include' >> $@
++	$(qexec)echo '' >> $@
++	$(qexec)echo 'Name: vpx' >> $@
++	$(qexec)echo 'Description: WebM Project VPx codec implementation' >> $@
++	$(qexec)echo 'Version: $(VERSION_MAJOR).$(VERSION_MINOR).$(VERSION_PATCH)' >> $@
++	$(qexec)echo 'Requires:' >> $@
++	$(qexec)echo 'Conflicts:' >> $@
++	$(qexec)echo 'Libs: -L$${libdir} -l$(CODEC_LIB)' >> $@
++	$(qexec)echo 'Libs.private:' >> $@
++	$(qexec)echo 'Cflags: -I$${includedir}' >> $@
++INSTALL-LIBS-yes += $(LIBSUBDIR)/pkgconfig/vpx.pc
++INSTALL_MAPS += $(LIBSUBDIR)/pkgconfig/%.pc %.pc
++CLEAN-OBJS += vpx.pc
++
+ endif # ifeq ($(CONFIG_MSVS),yes)
+ else # ifeq ($(CONFIG_EXTERNAL_BUILD),yes)
+ LIBVPX_OBJS=$(call objs, $(filter-out $(ASM_INCLUDES), $(CODEC_SRCS)))
