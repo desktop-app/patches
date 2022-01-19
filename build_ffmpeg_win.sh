@@ -111,5 +111,5 @@ export PKG_CONFIG_PATH="$FullExecPath/../local/opus/lib/pkgconfig:$PKG_CONFIG_PA
 --enable-muxer=ogg \
 --enable-muxer=opus
 
-make -j4
-make -j4 install
+make -j8
+make -j8 install
