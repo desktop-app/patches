@@ -1,0 +1,12 @@
+diff --git a/build/make/gen_msvs_vcxproj.sh b/build/make/gen_msvs_vcxproj.sh
+index 590833de9..81dd7698a 100755
+--- a/build/make/gen_msvs_vcxproj.sh
++++ b/build/make/gen_msvs_vcxproj.sh
+@@ -423,6 +423,7 @@ generate_vcxproj() {
+                 tag_content CompileAsWinRT false
+                 tag_content PrecompiledHeader NotUsing
+                 tag_content SDLCheck false
++                tag_content MultiProcessorCompilation true
+             fi
+             close_tag ClCompile
+             case "$proj_kind" in
