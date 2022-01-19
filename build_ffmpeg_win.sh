@@ -9,9 +9,10 @@ pacman --noconfirm -S msys/make
 pacman --noconfirm -S diffutils
 pacman --noconfirm -S pkg-config
 
-export PKG_CONFIG_PATH="$FullExecPath/../local/opus/lib/pkgconfig:$PKG_CONFIG_PATH"
+export PKG_CONFIG_PATH="$FullExecPath/../local/lib/pkgconfig:$PKG_CONFIG_PATH"
 
-./configure --toolchain=msvc \
+./configure --prefix=$FullScriptPath/../local \
+--toolchain=msvc \
 --extra-cflags="-DCONFIG_SAFE_BITSTREAM_READER=1" \
 --extra-cxxflags="-DCONFIG_SAFE_BITSTREAM_READER=1" \
 --disable-programs \
@@ -29,6 +30,7 @@ export PKG_CONFIG_PATH="$FullExecPath/../local/opus/lib/pkgconfig:$PKG_CONFIG_PA
 --enable-hwaccel=mpeg2_dxva2 \
 --enable-protocol=file \
 --enable-libopus \
+--enable-libvpx \
 --enable-decoder=aac \
 --enable-decoder=aac_fixed \
 --enable-decoder=aac_latm \
@@ -38,6 +40,8 @@ export PKG_CONFIG_PATH="$FullExecPath/../local/opus/lib/pkgconfig:$PKG_CONFIG_PA
 --enable-decoder=gif \
 --enable-decoder=h264 \
 --enable-decoder=hevc \
+--enable-decoder=libvpx_vp8 \
+--enable-decoder=libvpx_vp9 \
 --enable-decoder=mp1 \
 --enable-decoder=mp1float \
 --enable-decoder=mp2 \
@@ -103,6 +107,7 @@ export PKG_CONFIG_PATH="$FullExecPath/../local/opus/lib/pkgconfig:$PKG_CONFIG_PA
 --enable-demuxer=gif \
 --enable-demuxer=h264 \
 --enable-demuxer=hevc \
+--enable-demuxer=matroska \
 --enable-demuxer=m4v \
 --enable-demuxer=mov \
 --enable-demuxer=mp3 \
