@@ -1,18 +1,33 @@
 diff --git a/libs.mk b/libs.mk
-index 7cd973bd1..1426a346e 100644
+index 7cd973bd1..d96b50b46 100644
 --- a/libs.mk
 +++ b/libs.mk
-@@ -280,6 +280,27 @@ PROJECTS-yes += vp9rc.$(VCPROJ_SFX)
+@@ -280,6 +280,42 @@ PROJECTS-yes += vp9rc.$(VCPROJ_SFX)
  vp9rc.$(VCPROJ_SFX): vpx_config.asm
  vp9rc.$(VCPROJ_SFX): $(RTCD)
  
++# List of all platforms supported for vpx.pc target
++ifneq ($(findstring x86_64,$(TOOLCHAIN)),)
++VS_PLATFORM = x64
++else
++ifneq ($(findstring x86,$(TOOLCHAIN)),)
++VS_PLATFORM = Win32
++else
++ifneq ($(findstring arm64,$(TOOLCHAIN)),)
++VS_PLATFORM = ARM64
++else
++VS_PLATFORM = ARM
++endif
++endif
++endif
++
 +LIBS-yes += vpx.pc
 +vpx.pc: config.mk libs.mk
 +	@echo "    [CREATE] $@"
 +	$(qexec)echo '# pkg-config file from libvpx $(VERSION_STRING)' > $@
 +	$(qexec)echo 'prefix=$(PREFIX)' >> $@
 +	$(qexec)echo 'exec_prefix=$${prefix}' >> $@
-+	$(qexec)echo 'libdir=$${prefix}/$(LIBSUBDIR)/$(VS_PLATFORMS)' >> $@
++	$(qexec)echo 'libdir=$${prefix}/$(LIBSUBDIR)/$(VS_PLATFORM)' >> $@
 +	$(qexec)echo 'includedir=$${prefix}/include' >> $@
 +	$(qexec)echo '' >> $@
 +	$(qexec)echo 'Name: vpx' >> $@
