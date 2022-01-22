@@ -6,6 +6,7 @@ popd > /dev/null
 
 pacman --noconfirm -Sy
 pacman --noconfirm -S msys/make
+pacman --noconfirm -S diffutils
 
 ./configure --prefix=$FullScriptPath/../local \
 --target=$TARGET \
