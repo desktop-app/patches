@@ -11,6 +11,7 @@ pacman --noconfirm -S diffutils
 ./configure --prefix=$FullScriptPath/../local \
 --target=$TARGET \
 --disable-examples \
+--disable-unit-tests \
 --disable-tools \
 --disable-docs \
 --enable-static-msvcrt \
