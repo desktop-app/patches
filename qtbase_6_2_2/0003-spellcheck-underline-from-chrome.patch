@@ -1,8 +1,8 @@
 diff --git a/src/gui/painting/qpainter.cpp b/src/gui/painting/qpainter.cpp
-index 01400a0bc8..274695c0c6 100644
+index 13ae30433c..280ebab353 100644
 --- a/src/gui/painting/qpainter.cpp
 +++ b/src/gui/painting/qpainter.cpp
-@@ -5990,6 +5990,92 @@ static QPixmap generateWavyPixmap(qreal maxRadius, const QPen &pen)
+@@ -5994,6 +5994,93 @@ static QPixmap generateWavyPixmap(qreal maxRadius, const QPen &pen)
      return pixmap;
  }
  
@@ -25,11 +25,12 @@ index 01400a0bc8..274695c0c6 100644
 +
 +    constexpr qreal kMarkerHeight = 3;
 +
++    const auto ratio = qApp->devicePixelRatio();
 +    const qreal height = kMarkerHeight * factor;
-+    const qreal width = height * 2;
++    const qreal width = height + 1;
 +
-+    pixmap = QPixmap(qCeil(width), qFloor(height) * 2);
-+    pixmap.setDevicePixelRatio(qApp->devicePixelRatio());
++    pixmap = QPixmap(qCeil(width) * ratio, qFloor(height) * ratio);
++    pixmap.setDevicePixelRatio(ratio);
 +    pixmap.fill(Qt::transparent);
 +    {
 +        QPainter imgPainter(&pixmap);
@@ -95,7 +96,7 @@ index 01400a0bc8..274695c0c6 100644
  static void drawTextItemDecoration(QPainter *painter, const QPointF &pos, const QFontEngine *fe, QTextEngine *textEngine,
                                     QTextCharFormat::UnderlineStyle underlineStyle,
                                     QTextItem::RenderFlags flags, qreal width,
-@@ -6007,18 +6093,36 @@ static void drawTextItemDecoration(QPainter *painter, const QPointF &pos, const
+@@ -6011,18 +6098,36 @@ static void drawTextItemDecoration(QPainter *painter, const QPointF &pos, const
      pen.setWidthF(fe->lineThickness().toReal());
      pen.setCapStyle(Qt::FlatCap);
  
@@ -127,7 +128,7 @@ index 01400a0bc8..274695c0c6 100644
 +
 +        painter->setBrushOrigin(painter->brushOrigin().x(), 0);
 +#ifdef Q_OS_MAC
-+        const auto h = wave.height() / 2;
++        const auto h = wave.height() / qApp->devicePixelRatio();
 +        painter->drawTiledPixmap(
 +            QRectF(pos.x(), (descent - h) / 2., qCeil(width), h),
 +            wave);
