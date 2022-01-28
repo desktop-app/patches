@@ -1,0 +1,15 @@
+diff --git a/build/make/configure.sh b/build/make/configure.sh
+index 81d30a16c..b3ec74b32 100644
+--- a/build/make/configure.sh
++++ b/build/make/configure.sh
+@@ -919,8 +919,8 @@ process_common_toolchain() {
+       add_ldflags "-mmacosx-version-min=10.15"
+       ;;
+     *-darwin20-*)
+-      add_cflags  "-mmacosx-version-min=10.16 -arch ${toolchain%%-*}"
+-      add_ldflags "-mmacosx-version-min=10.16 -arch ${toolchain%%-*}"
++      add_cflags  "-mmacosx-version-min=10.12 -arch ${toolchain%%-*}"
++      add_ldflags "-mmacosx-version-min=10.12 -arch ${toolchain%%-*}"
+       ;;
+     *-iphonesimulator-*)
+       add_cflags  "-miphoneos-version-min=${IOS_VERSION_MIN}"
