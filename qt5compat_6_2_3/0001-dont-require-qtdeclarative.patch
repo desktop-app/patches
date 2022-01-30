@@ -1,0 +1,10 @@
+diff --git a/dependencies.yaml b/dependencies.yaml
+index 41d2823..f33550a 100644
+--- a/dependencies.yaml
++++ b/dependencies.yaml
+@@ -4,4 +4,4 @@ dependencies:
+     required: true
+   ../qtdeclarative:
+     ref: 28dfd3b03d5ed8ca4c0f7f07f70fb591b5e245ba
+-    required: true
++    required: false
