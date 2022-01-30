@@ -1,8 +1,8 @@
 diff --git a/cmake/QtAutoDetect.cmake b/cmake/QtAutoDetect.cmake
-index 5c6cba89ae..ee7c1bd1ff 100644
+index 8450035084..04632e47ef 100644
 --- a/cmake/QtAutoDetect.cmake
 +++ b/cmake/QtAutoDetect.cmake
-@@ -361,7 +361,7 @@ function(qt_auto_detect_darwin)
+@@ -347,7 +347,7 @@ function(qt_auto_detect_darwin)
          if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
              if(NOT CMAKE_SYSTEM_NAME)
                  # macOS
@@ -12,12 +12,12 @@ index 5c6cba89ae..ee7c1bd1ff 100644
                  set(version "13.0")
              elseif(CMAKE_SYSTEM_NAME STREQUAL watchOS)
 diff --git a/cmake/QtCompilerFlags.cmake b/cmake/QtCompilerFlags.cmake
-index a376ac0097..617f4c8984 100644
+index 0954ba95c5..f3fbcc7fff 100644
 --- a/cmake/QtCompilerFlags.cmake
 +++ b/cmake/QtCompilerFlags.cmake
-@@ -11,6 +11,14 @@ if (MSVC)
- else()
-     list(APPEND _qt_compiler_warning_flags_on -Wall -Wextra)
+@@ -15,6 +15,14 @@ else()
+         list(APPEND _qt_compiler_warning_flags_on -Wall -Wextra)
+     endif()
      list(APPEND _qt_compiler_warning_flags_off -w)
 +
 +    if (APPLE)
@@ -31,7 +31,7 @@ index a376ac0097..617f4c8984 100644
  
  set(_qt_compiler_warning_flags_condition
 diff --git a/mkspecs/common/macx.conf b/mkspecs/common/macx.conf
-index 4edf26406d..7c0405632d 100644
+index b5427dd88c..4cb13ffa0a 100644
 --- a/mkspecs/common/macx.conf
 +++ b/mkspecs/common/macx.conf
 @@ -5,7 +5,7 @@
