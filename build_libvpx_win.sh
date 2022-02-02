@@ -8,8 +8,11 @@ pacman --noconfirm -Sy
 pacman --noconfirm -S msys/make
 pacman --noconfirm -S diffutils
 
+unset temp
+unset tmp
+
 ./configure --prefix=$FullScriptPath/../local \
---target=$TARGET \
+--target=$BUILD_TARGET \
 --disable-examples \
 --disable-unit-tests \
 --disable-tools \
