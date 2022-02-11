@@ -1,13 +1,14 @@
 diff --git a/src/plugins/platformthemes/gtk3/CMakeLists.txt b/src/plugins/platformthemes/gtk3/CMakeLists.txt
-index 62e752bd92..fcc70ecc1b 100644
+index 62e752bd92..f068d91a50 100644
 --- a/src/plugins/platformthemes/gtk3/CMakeLists.txt
 +++ b/src/plugins/platformthemes/gtk3/CMakeLists.txt
-@@ -16,9 +16,12 @@ qt_internal_add_plugin(QGtk3ThemePlugin
+@@ -16,9 +16,13 @@ qt_internal_add_plugin(QGtk3ThemePlugin
          qgtk3dialoghelpers.cpp qgtk3dialoghelpers.h
          qgtk3menu.cpp qgtk3menu.h
          qgtk3theme.cpp qgtk3theme.h
 +        gtk_functions.h
      DEFINES
++        GLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_40
 +        GLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_40
          GDK_VERSION_MIN_REQUIRED=GDK_VERSION_3_6
      LIBRARIES # special case
