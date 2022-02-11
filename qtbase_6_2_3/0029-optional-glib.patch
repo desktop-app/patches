@@ -76,24 +76,27 @@ index 0000000000..a63f30b3ad
 +inline void (*g_source_unref)(GSource* source);
 +#endif // QT_STATIC
 diff --git a/src/corelib/kernel/qeventdispatcher_glib.cpp b/src/corelib/kernel/qeventdispatcher_glib.cpp
-index 3964c1ceac..d7775b3e1a 100644
+index 3964c1ceac..de89654236 100644
 --- a/src/corelib/kernel/qeventdispatcher_glib.cpp
 +++ b/src/corelib/kernel/qeventdispatcher_glib.cpp
-@@ -48,10 +48,72 @@
+@@ -48,10 +48,76 @@
  #include <QtCore/qlist.h>
  #include <QtCore/qpair.h>
  
 -#include <glib.h>
 +#include "glib_functions_p.h"
 +
++#ifdef QT_STATIC
 +#include <dlfcn.h>
 +#include <memory>
 +#include <iostream>
 +
 +#define LOAD_SYMBOL(handle, func) LoadSymbol(handle, #func, func)
++#endif // QT_STATIC
  
  QT_BEGIN_NAMESPACE
  
++#ifdef QT_STATIC
 +namespace {
 +
 +struct HandleDeleter {
@@ -149,11 +152,12 @@ index 3964c1ceac..d7775b3e1a 100644
 +}
 +
 +} // namespace
++#endif // QT_STATIC
 +
  struct GPollFDWithQSocketNotifier
  {
      GPollFD pollfd;
-@@ -598,6 +660,12 @@ void QEventDispatcherGlib::wakeUp()
+@@ -598,6 +664,12 @@ void QEventDispatcherGlib::wakeUp()
  
  bool QEventDispatcherGlib::versionSupported()
  {
