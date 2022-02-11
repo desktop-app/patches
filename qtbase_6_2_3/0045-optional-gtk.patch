@@ -1,196 +1,26 @@
 diff --git a/src/plugins/platformthemes/gtk3/CMakeLists.txt b/src/plugins/platformthemes/gtk3/CMakeLists.txt
-index 62e752bd92..e210bf5926 100644
+index 62e752bd92..fcc70ecc1b 100644
 --- a/src/plugins/platformthemes/gtk3/CMakeLists.txt
 +++ b/src/plugins/platformthemes/gtk3/CMakeLists.txt
-@@ -16,9 +16,11 @@ qt_internal_add_plugin(QGtk3ThemePlugin
+@@ -16,9 +16,12 @@ qt_internal_add_plugin(QGtk3ThemePlugin
          qgtk3dialoghelpers.cpp qgtk3dialoghelpers.h
          qgtk3menu.cpp qgtk3menu.h
          qgtk3theme.cpp qgtk3theme.h
-+        gtk_functions.cpp gtk_functions.h
++        gtk_functions.h
      DEFINES
++        GLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_40
          GDK_VERSION_MIN_REQUIRED=GDK_VERSION_3_6
      LIBRARIES # special case
 +        ${CMAKE_DL_LIBS}
          PkgConfig::GTK3
          Qt::Core
          Qt::CorePrivate
-diff --git a/src/plugins/platformthemes/gtk3/gtk_functions.cpp b/src/plugins/platformthemes/gtk3/gtk_functions.cpp
-new file mode 100644
-index 0000000000..5656f89f16
---- /dev/null
-+++ b/src/plugins/platformthemes/gtk3/gtk_functions.cpp
-@@ -0,0 +1,165 @@
-+#include "gtk_functions.h"
-+
-+#include <dlfcn.h>
-+#include <memory>
-+#include <iostream>
-+
-+#define LOAD_SYMBOL(handle, func) LoadSymbol(handle, #func, func)
-+
-+namespace {
-+
-+struct HandleDeleter {
-+	void operator()(void *handle) {
-+		dlclose(handle);
-+	}
-+};
-+
-+using Handle = std::unique_ptr<void, HandleDeleter>;
-+
-+bool LoadLibrary(Handle &handle, const char *name) {
-+	handle = Handle(dlopen(name, RTLD_LAZY | RTLD_NODELETE));
-+	if (handle) {
-+		return true;
-+	}
-+	std::cerr << dlerror() << std::endl;
-+	return false;
-+}
-+
-+template <typename Function>
-+inline bool LoadSymbol(const Handle &handle, const char *name, Function &func) {
-+	func = handle
-+		? reinterpret_cast<Function>(dlsym(handle.get(), name))
-+		: nullptr;
-+	if (const auto error = dlerror()) {
-+		std::cerr << error << std::endl;
-+	}
-+	return (func != nullptr);
-+}
-+
-+} // namespace
-+
-+bool ResolveGtk() {
-+	static const auto loaded = [&] {
-+		auto lib = Handle();
-+		return LoadLibrary(lib, "libgtk-3.so.0")
-+			&& LOAD_SYMBOL(lib, g_free)
-+			&& LOAD_SYMBOL(lib, g_log_default_handler)
-+			&& LOAD_SYMBOL(lib, g_log_set_handler)
-+			&& LOAD_SYMBOL(lib, g_slist_free)
-+			&& LOAD_SYMBOL(lib, g_strcmp0)
-+			&& LOAD_SYMBOL(lib, g_object_class_find_property)
-+			&& LOAD_SYMBOL(lib, g_object_get)
-+			&& LOAD_SYMBOL(lib, g_object_set)
-+			&& LOAD_SYMBOL(lib, g_object_unref)
-+			&& LOAD_SYMBOL(lib, g_signal_connect_data)
-+			&& LOAD_SYMBOL(lib, g_type_check_instance_cast)
-+			&& LOAD_SYMBOL(lib, g_type_check_instance_is_a)
-+			&& LOAD_SYMBOL(lib, g_type_check_instance_is_fundamentally_a)
-+			&& LOAD_SYMBOL(lib, g_type_ensure)
-+			&& LOAD_SYMBOL(lib, gdk_pixbuf_new_from_file_at_size)
-+			&& LOAD_SYMBOL(lib, gdk_window_focus)
-+			&& LOAD_SYMBOL(lib, gdk_window_get_display)
-+			&& LOAD_SYMBOL(lib, gdk_window_set_modal_hint)
-+			&& LOAD_SYMBOL(lib, gdk_x11_display_get_xdisplay)
-+			&& LOAD_SYMBOL(lib, gdk_x11_window_get_type)
-+			&& LOAD_SYMBOL(lib, gdk_x11_window_get_xid)
-+			&& LOAD_SYMBOL(lib, gtk_accel_label_get_type)
-+			&& LOAD_SYMBOL(lib, gtk_accel_label_set_accel)
-+			&& LOAD_SYMBOL(lib, gtk_bin_get_child)
-+			&& LOAD_SYMBOL(lib, gtk_bin_get_type)
-+			&& LOAD_SYMBOL(lib, gtk_button_get_type)
-+			&& LOAD_SYMBOL(lib, gtk_button_set_label)
-+			&& LOAD_SYMBOL(lib, gtk_check_menu_item_get_active)
-+			&& LOAD_SYMBOL(lib, gtk_check_menu_item_get_type)
-+			&& LOAD_SYMBOL(lib, gtk_check_menu_item_new)
-+			&& LOAD_SYMBOL(lib, gtk_check_menu_item_set_active)
-+			&& LOAD_SYMBOL(lib, gtk_check_version)
-+			&& LOAD_SYMBOL(lib, gtk_clipboard_get)
-+			&& LOAD_SYMBOL(lib, gtk_clipboard_store)
-+			&& LOAD_SYMBOL(lib, gtk_color_chooser_dialog_new)
-+			&& LOAD_SYMBOL(lib, gtk_color_chooser_get_rgba)
-+			&& LOAD_SYMBOL(lib, gtk_color_chooser_get_type)
-+			&& LOAD_SYMBOL(lib, gtk_color_chooser_set_rgba)
-+			&& LOAD_SYMBOL(lib, gtk_color_chooser_set_use_alpha)
-+			&& LOAD_SYMBOL(lib, gtk_container_get_type)
-+			&& LOAD_SYMBOL(lib, gtk_container_remove)
-+			&& LOAD_SYMBOL(lib, gtk_dialog_add_button)
-+			&& LOAD_SYMBOL(lib, gtk_dialog_get_type)
-+			&& LOAD_SYMBOL(lib, gtk_dialog_get_widget_for_response)
-+			&& LOAD_SYMBOL(lib, gtk_dialog_run)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_add_filter)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_dialog_new)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_current_folder)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_filename)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_filenames)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_filter)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_preview_filename)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_type)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_remove_filter)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_select_filename)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_action)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_create_folders)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_current_folder)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_current_name)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_do_overwrite_confirmation)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_filter)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_local_only)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_preview_widget)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_preview_widget_active)
-+			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_select_multiple)
-+			&& LOAD_SYMBOL(lib, gtk_file_filter_add_pattern)
-+			&& LOAD_SYMBOL(lib, gtk_file_filter_new)
-+			&& LOAD_SYMBOL(lib, gtk_file_filter_set_name)
-+			&& LOAD_SYMBOL(lib, gtk_font_chooser_dialog_new)
-+			&& LOAD_SYMBOL(lib, gtk_font_chooser_get_font)
-+			&& LOAD_SYMBOL(lib, gtk_font_chooser_get_type)
-+			&& LOAD_SYMBOL(lib, gtk_font_chooser_set_font)
-+			&& LOAD_SYMBOL(lib, gtk_get_current_event_time)
-+			&& LOAD_SYMBOL(lib, gtk_image_get_type)
-+			&& LOAD_SYMBOL(lib, gtk_image_new)
-+			&& LOAD_SYMBOL(lib, gtk_image_set_from_pixbuf)
-+			&& LOAD_SYMBOL(lib, gtk_init)
-+			&& LOAD_SYMBOL(lib, gtk_menu_get_type)
-+			&& LOAD_SYMBOL(lib, gtk_menu_item_get_type)
-+			&& LOAD_SYMBOL(lib, gtk_menu_item_new)
-+			&& LOAD_SYMBOL(lib, gtk_menu_item_set_label)
-+			&& LOAD_SYMBOL(lib, gtk_menu_item_set_submenu)
-+			&& LOAD_SYMBOL(lib, gtk_menu_item_set_use_underline)
-+			&& LOAD_SYMBOL(lib, gtk_menu_new)
-+			&& LOAD_SYMBOL(lib, gtk_menu_popdown)
-+			&& LOAD_SYMBOL(lib, gtk_menu_popup)
-+			&& LOAD_SYMBOL(lib, gtk_menu_shell_get_type)
-+			&& LOAD_SYMBOL(lib, gtk_menu_shell_insert)
-+			&& LOAD_SYMBOL(lib, gtk_menu_shell_select_item)
-+			&& LOAD_SYMBOL(lib, gtk_separator_menu_item_new)
-+			&& LOAD_SYMBOL(lib, gtk_settings_get_default)
-+			&& LOAD_SYMBOL(lib, gtk_widget_destroy)
-+			&& LOAD_SYMBOL(lib, gtk_widget_get_scale_factor)
-+			&& LOAD_SYMBOL(lib, gtk_widget_get_type)
-+			&& LOAD_SYMBOL(lib, gtk_widget_get_window)
-+			&& LOAD_SYMBOL(lib, gtk_widget_hide)
-+			&& LOAD_SYMBOL(lib, gtk_widget_hide_on_delete)
-+			&& LOAD_SYMBOL(lib, gtk_widget_realize)
-+			&& LOAD_SYMBOL(lib, gtk_widget_set_sensitive)
-+			&& LOAD_SYMBOL(lib, gtk_widget_set_visible)
-+			&& LOAD_SYMBOL(lib, gtk_widget_show)
-+			&& LOAD_SYMBOL(lib, gtk_window_get_type)
-+			&& LOAD_SYMBOL(lib, gtk_window_set_title)
-+			&& LOAD_SYMBOL(lib, gtk_window_set_transient_for)
-+			&& LOAD_SYMBOL(lib, pango_font_description_free)
-+			&& LOAD_SYMBOL(lib, pango_font_description_from_string)
-+			&& LOAD_SYMBOL(lib, pango_font_description_get_family)
-+			&& LOAD_SYMBOL(lib, pango_font_description_get_size)
-+			&& LOAD_SYMBOL(lib, pango_font_description_get_style)
-+			&& LOAD_SYMBOL(lib, pango_font_description_get_weight)
-+			&& LOAD_SYMBOL(lib, pango_font_description_new)
-+			&& LOAD_SYMBOL(lib, pango_font_description_set_family)
-+			&& LOAD_SYMBOL(lib, pango_font_description_set_size)
-+			&& LOAD_SYMBOL(lib, pango_font_description_set_style)
-+			&& LOAD_SYMBOL(lib, pango_font_description_set_weight)
-+			&& LOAD_SYMBOL(lib, pango_font_description_to_string)
-+			&& LOAD_SYMBOL(lib, pango_font_face_get_type)
-+			&& LOAD_SYMBOL(lib, pango_font_family_get_type);
-+	}();
-+	return loaded;
-+}
 diff --git a/src/plugins/platformthemes/gtk3/gtk_functions.h b/src/plugins/platformthemes/gtk3/gtk_functions.h
 new file mode 100644
-index 0000000000..86c5477f2e
+index 0000000000..a4060f0e6a
 --- /dev/null
 +++ b/src/plugins/platformthemes/gtk3/gtk_functions.h
-@@ -0,0 +1,363 @@
+@@ -0,0 +1,358 @@
 +#pragma once
 +
 +#include <gtk/gtk.h>
@@ -355,9 +185,6 @@ index 0000000000..86c5477f2e
 +inline gboolean (*g_type_check_instance_is_a)(
 +	GTypeInstance* instance,
 +	GType iface_type);
-+inline gboolean (*g_type_check_instance_is_fundamentally_a)(
-+	GTypeInstance* instance,
-+	GType fundamental_type);
 +inline void (*g_type_ensure)(GType type);
 +inline GdkPixbuf *(*gdk_pixbuf_new_from_file_at_size)(
 +	const char *filename,
@@ -552,23 +379,186 @@ index 0000000000..86c5477f2e
 +inline char *(*pango_font_description_to_string)(const PangoFontDescription *desc);
 +inline GType (*pango_font_face_get_type)(void);
 +inline GType (*pango_font_family_get_type)(void);
-+
-+bool ResolveGtk();
 diff --git a/src/plugins/platformthemes/gtk3/main.cpp b/src/plugins/platformthemes/gtk3/main.cpp
-index 860fc3a26e..ce19c90c30 100644
+index 860fc3a26e..184d15e8e9 100644
 --- a/src/plugins/platformthemes/gtk3/main.cpp
 +++ b/src/plugins/platformthemes/gtk3/main.cpp
-@@ -40,6 +40,9 @@
+@@ -40,8 +40,174 @@
  #include <qpa/qplatformthemeplugin.h>
  #include "qgtk3theme.h"
  
 +#undef signals
 +#include "gtk_functions.h"
 +
++#include <dlfcn.h>
++#include <memory>
++#include <iostream>
++
++#define LOAD_SYMBOL(handle, func) LoadSymbol(handle, #func, func)
++
  QT_BEGIN_NAMESPACE
  
++namespace {
++
++struct HandleDeleter {
++	void operator()(void *handle) {
++		dlclose(handle);
++	}
++};
++
++using Handle = std::unique_ptr<void, HandleDeleter>;
++
++bool LoadLibrary(Handle &handle, const char *name) {
++	handle = Handle(dlopen(name, RTLD_LAZY | RTLD_NODELETE));
++	if (handle) {
++		return true;
++	}
++	std::cerr << dlerror() << std::endl;
++	return false;
++}
++
++template <typename Function>
++inline bool LoadSymbol(const Handle &handle, const char *name, Function &func) {
++	func = handle
++		? reinterpret_cast<Function>(dlsym(handle.get(), name))
++		: nullptr;
++	if (const auto error = dlerror()) {
++		std::cerr << error << std::endl;
++	}
++	return (func != nullptr);
++}
++
++bool ResolveGtk() {
++	static const auto loaded = [&] {
++		auto lib = Handle();
++		return LoadLibrary(lib, "libgtk-3.so.0")
++			&& LOAD_SYMBOL(lib, g_free)
++			&& LOAD_SYMBOL(lib, g_log_default_handler)
++			&& LOAD_SYMBOL(lib, g_log_set_handler)
++			&& LOAD_SYMBOL(lib, g_slist_free)
++			&& LOAD_SYMBOL(lib, g_strcmp0)
++			&& LOAD_SYMBOL(lib, g_object_class_find_property)
++			&& LOAD_SYMBOL(lib, g_object_get)
++			&& LOAD_SYMBOL(lib, g_object_set)
++			&& LOAD_SYMBOL(lib, g_object_unref)
++			&& LOAD_SYMBOL(lib, g_signal_connect_data)
++			&& LOAD_SYMBOL(lib, g_type_check_instance_cast)
++			&& LOAD_SYMBOL(lib, g_type_check_instance_is_a)
++			&& LOAD_SYMBOL(lib, g_type_ensure)
++			&& LOAD_SYMBOL(lib, gdk_pixbuf_new_from_file_at_size)
++			&& LOAD_SYMBOL(lib, gdk_window_focus)
++			&& LOAD_SYMBOL(lib, gdk_window_get_display)
++			&& LOAD_SYMBOL(lib, gdk_window_set_modal_hint)
++			&& LOAD_SYMBOL(lib, gdk_x11_display_get_xdisplay)
++			&& LOAD_SYMBOL(lib, gdk_x11_window_get_type)
++			&& LOAD_SYMBOL(lib, gdk_x11_window_get_xid)
++			&& LOAD_SYMBOL(lib, gtk_accel_label_get_type)
++			&& LOAD_SYMBOL(lib, gtk_accel_label_set_accel)
++			&& LOAD_SYMBOL(lib, gtk_bin_get_child)
++			&& LOAD_SYMBOL(lib, gtk_bin_get_type)
++			&& LOAD_SYMBOL(lib, gtk_button_get_type)
++			&& LOAD_SYMBOL(lib, gtk_button_set_label)
++			&& LOAD_SYMBOL(lib, gtk_check_menu_item_get_active)
++			&& LOAD_SYMBOL(lib, gtk_check_menu_item_get_type)
++			&& LOAD_SYMBOL(lib, gtk_check_menu_item_new)
++			&& LOAD_SYMBOL(lib, gtk_check_menu_item_set_active)
++			&& LOAD_SYMBOL(lib, gtk_check_version)
++			&& LOAD_SYMBOL(lib, gtk_clipboard_get)
++			&& LOAD_SYMBOL(lib, gtk_clipboard_store)
++			&& LOAD_SYMBOL(lib, gtk_color_chooser_dialog_new)
++			&& LOAD_SYMBOL(lib, gtk_color_chooser_get_rgba)
++			&& LOAD_SYMBOL(lib, gtk_color_chooser_get_type)
++			&& LOAD_SYMBOL(lib, gtk_color_chooser_set_rgba)
++			&& LOAD_SYMBOL(lib, gtk_color_chooser_set_use_alpha)
++			&& LOAD_SYMBOL(lib, gtk_container_get_type)
++			&& LOAD_SYMBOL(lib, gtk_container_remove)
++			&& LOAD_SYMBOL(lib, gtk_dialog_add_button)
++			&& LOAD_SYMBOL(lib, gtk_dialog_get_type)
++			&& LOAD_SYMBOL(lib, gtk_dialog_get_widget_for_response)
++			&& LOAD_SYMBOL(lib, gtk_dialog_run)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_add_filter)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_dialog_new)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_current_folder)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_filename)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_filenames)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_filter)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_preview_filename)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_type)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_remove_filter)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_select_filename)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_action)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_create_folders)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_current_folder)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_current_name)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_do_overwrite_confirmation)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_filter)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_local_only)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_preview_widget)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_preview_widget_active)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_select_multiple)
++			&& LOAD_SYMBOL(lib, gtk_file_filter_add_pattern)
++			&& LOAD_SYMBOL(lib, gtk_file_filter_new)
++			&& LOAD_SYMBOL(lib, gtk_file_filter_set_name)
++			&& LOAD_SYMBOL(lib, gtk_font_chooser_dialog_new)
++			&& LOAD_SYMBOL(lib, gtk_font_chooser_get_font)
++			&& LOAD_SYMBOL(lib, gtk_font_chooser_get_type)
++			&& LOAD_SYMBOL(lib, gtk_font_chooser_set_font)
++			&& LOAD_SYMBOL(lib, gtk_get_current_event_time)
++			&& LOAD_SYMBOL(lib, gtk_image_get_type)
++			&& LOAD_SYMBOL(lib, gtk_image_new)
++			&& LOAD_SYMBOL(lib, gtk_image_set_from_pixbuf)
++			&& LOAD_SYMBOL(lib, gtk_init)
++			&& LOAD_SYMBOL(lib, gtk_menu_get_type)
++			&& LOAD_SYMBOL(lib, gtk_menu_item_get_type)
++			&& LOAD_SYMBOL(lib, gtk_menu_item_new)
++			&& LOAD_SYMBOL(lib, gtk_menu_item_set_label)
++			&& LOAD_SYMBOL(lib, gtk_menu_item_set_submenu)
++			&& LOAD_SYMBOL(lib, gtk_menu_item_set_use_underline)
++			&& LOAD_SYMBOL(lib, gtk_menu_new)
++			&& LOAD_SYMBOL(lib, gtk_menu_popdown)
++			&& LOAD_SYMBOL(lib, gtk_menu_popup)
++			&& LOAD_SYMBOL(lib, gtk_menu_shell_get_type)
++			&& LOAD_SYMBOL(lib, gtk_menu_shell_insert)
++			&& LOAD_SYMBOL(lib, gtk_menu_shell_select_item)
++			&& LOAD_SYMBOL(lib, gtk_separator_menu_item_new)
++			&& LOAD_SYMBOL(lib, gtk_settings_get_default)
++			&& LOAD_SYMBOL(lib, gtk_widget_destroy)
++			&& LOAD_SYMBOL(lib, gtk_widget_get_scale_factor)
++			&& LOAD_SYMBOL(lib, gtk_widget_get_type)
++			&& LOAD_SYMBOL(lib, gtk_widget_get_window)
++			&& LOAD_SYMBOL(lib, gtk_widget_hide)
++			&& LOAD_SYMBOL(lib, gtk_widget_hide_on_delete)
++			&& LOAD_SYMBOL(lib, gtk_widget_realize)
++			&& LOAD_SYMBOL(lib, gtk_widget_set_sensitive)
++			&& LOAD_SYMBOL(lib, gtk_widget_set_visible)
++			&& LOAD_SYMBOL(lib, gtk_widget_show)
++			&& LOAD_SYMBOL(lib, gtk_window_get_type)
++			&& LOAD_SYMBOL(lib, gtk_window_set_title)
++			&& LOAD_SYMBOL(lib, gtk_window_set_transient_for)
++			&& LOAD_SYMBOL(lib, pango_font_description_free)
++			&& LOAD_SYMBOL(lib, pango_font_description_from_string)
++			&& LOAD_SYMBOL(lib, pango_font_description_get_family)
++			&& LOAD_SYMBOL(lib, pango_font_description_get_size)
++			&& LOAD_SYMBOL(lib, pango_font_description_get_style)
++			&& LOAD_SYMBOL(lib, pango_font_description_get_weight)
++			&& LOAD_SYMBOL(lib, pango_font_description_new)
++			&& LOAD_SYMBOL(lib, pango_font_description_set_family)
++			&& LOAD_SYMBOL(lib, pango_font_description_set_size)
++			&& LOAD_SYMBOL(lib, pango_font_description_set_style)
++			&& LOAD_SYMBOL(lib, pango_font_description_set_weight)
++			&& LOAD_SYMBOL(lib, pango_font_description_to_string)
++			&& LOAD_SYMBOL(lib, pango_font_face_get_type)
++			&& LOAD_SYMBOL(lib, pango_font_family_get_type);
++	}();
++	return loaded;
++}
++
++} // namespace
++
  class QGtk3ThemePlugin : public QPlatformThemePlugin
-@@ -54,7 +57,7 @@ public:
+ {
+    Q_OBJECT
+@@ -54,7 +220,7 @@ public:
  QPlatformTheme *QGtk3ThemePlugin::create(const QString &key, const QStringList &params)
  {
      Q_UNUSED(params);
@@ -604,10 +594,10 @@ index 3e00d9610f..1d366a0005 100644
  
  #if QT_CONFIG(shortcut)
 diff --git a/src/plugins/platformthemes/gtk3/qgtk3theme.cpp b/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
-index 93520344f8..0a7e0593de 100644
+index a47720384c..e768ea4d3e 100644
 --- a/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
 +++ b/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
-@@ -47,6 +47,8 @@
+@@ -48,6 +48,8 @@
  
  #include <X11/Xlib.h>
  

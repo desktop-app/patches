@@ -1,5 +1,5 @@
 diff --git a/src/corelib/CMakeLists.txt b/src/corelib/CMakeLists.txt
-index 9a0285d7a2..7d818657ad 100644
+index 92ae288a83..e4b7a42bf9 100644
 --- a/src/corelib/CMakeLists.txt
 +++ b/src/corelib/CMakeLists.txt
 @@ -1073,6 +1073,13 @@ qt_internal_extend_target(Core CONDITION QT_FEATURE_glib AND UNIX
@@ -8,7 +8,7 @@ index 9a0285d7a2..7d818657ad 100644
  
 +qt_internal_extend_target(Core CONDITION QT_FEATURE_glib AND NOT QT_FEATURE_shared
 +    SOURCES
-+        kernel/glib_functions.cpp kernel/glib_functions_p.h
++        kernel/glib_functions_p.h
 +    LIBRARIES
 +        ${CMAKE_DL_LIBS}
 +)
@@ -29,81 +29,12 @@ index 549c94b29b..93e7622dbd 100644
  )
  qt_feature_definition("glib" "QT_NO_GLIB" NEGATE VALUE "1")
  qt_feature("glibc" PRIVATE
-diff --git a/src/corelib/kernel/glib_functions.cpp b/src/corelib/kernel/glib_functions.cpp
-new file mode 100644
-index 0000000000..2138208808
---- /dev/null
-+++ b/src/corelib/kernel/glib_functions.cpp
-@@ -0,0 +1,63 @@
-+#include "glib_functions_p.h"
-+
-+#include <dlfcn.h>
-+#include <memory>
-+#include <iostream>
-+
-+#define LOAD_SYMBOL(handle, func) LoadSymbol(handle, #func, func)
-+
-+namespace {
-+
-+struct HandleDeleter {
-+	void operator()(void *handle) {
-+		dlclose(handle);
-+	}
-+};
-+
-+using Handle = std::unique_ptr<void, HandleDeleter>;
-+
-+bool LoadLibrary(Handle &handle, const char *name) {
-+	handle = Handle(dlopen(name, RTLD_LAZY | RTLD_NODELETE));
-+	if (handle) {
-+		return true;
-+	}
-+	std::cerr << dlerror() << std::endl;
-+	return false;
-+}
-+
-+template <typename Function>
-+inline bool LoadSymbol(const Handle &handle, const char *name, Function &func) {
-+	func = handle
-+		? reinterpret_cast<Function>(dlsym(handle.get(), name))
-+		: nullptr;
-+	if (const auto error = dlerror()) {
-+		std::cerr << error << std::endl;
-+	}
-+	return (func != nullptr);
-+}
-+
-+} // namespace
-+
-+bool ResolveGlib() {
-+	static const auto loaded = [&] {
-+		auto lib = Handle();
-+		return LoadLibrary(lib, "libglib-2.0.so.0")
-+			&& LOAD_SYMBOL(lib, g_main_context_default)
-+			&& LOAD_SYMBOL(lib, g_main_context_iteration)
-+			&& LOAD_SYMBOL(lib, g_main_context_new)
-+			&& LOAD_SYMBOL(lib, g_main_context_pop_thread_default)
-+			&& LOAD_SYMBOL(lib, g_main_context_push_thread_default)
-+			&& LOAD_SYMBOL(lib, g_main_context_ref)
-+			&& LOAD_SYMBOL(lib, g_main_context_unref)
-+			&& LOAD_SYMBOL(lib, g_main_context_wakeup)
-+			&& LOAD_SYMBOL(lib, g_source_add_poll)
-+			&& LOAD_SYMBOL(lib, g_source_attach)
-+			&& LOAD_SYMBOL(lib, g_source_destroy)
-+			&& LOAD_SYMBOL(lib, g_source_new)
-+			&& LOAD_SYMBOL(lib, g_source_remove_poll)
-+			&& LOAD_SYMBOL(lib, g_source_set_can_recurse)
-+			&& LOAD_SYMBOL(lib, g_source_set_name)
-+			&& LOAD_SYMBOL(lib, g_source_unref);
-+	}();
-+	return loaded;
-+}
 diff --git a/src/corelib/kernel/glib_functions_p.h b/src/corelib/kernel/glib_functions_p.h
 new file mode 100644
-index 0000000000..b338cb1e0f
+index 0000000000..a63f30b3ad
 --- /dev/null
 +++ b/src/corelib/kernel/glib_functions_p.h
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,40 @@
 +#pragma once
 +
 +#include <QtCore/qglobal.h>
@@ -143,23 +74,86 @@ index 0000000000..b338cb1e0f
 +inline void (*g_source_set_can_recurse)(GSource* source, gboolean can_recurse);
 +inline void (*g_source_set_name)(GSource* source, const char* name);
 +inline void (*g_source_unref)(GSource* source);
-+
-+bool ResolveGlib();
 +#endif // QT_STATIC
 diff --git a/src/corelib/kernel/qeventdispatcher_glib.cpp b/src/corelib/kernel/qeventdispatcher_glib.cpp
-index 3964c1ceac..293326d646 100644
+index 3964c1ceac..d7775b3e1a 100644
 --- a/src/corelib/kernel/qeventdispatcher_glib.cpp
 +++ b/src/corelib/kernel/qeventdispatcher_glib.cpp
-@@ -48,7 +48,7 @@
+@@ -48,10 +48,72 @@
  #include <QtCore/qlist.h>
  #include <QtCore/qpair.h>
  
 -#include <glib.h>
 +#include "glib_functions_p.h"
++
++#include <dlfcn.h>
++#include <memory>
++#include <iostream>
++
++#define LOAD_SYMBOL(handle, func) LoadSymbol(handle, #func, func)
  
  QT_BEGIN_NAMESPACE
  
-@@ -598,6 +598,12 @@ void QEventDispatcherGlib::wakeUp()
++namespace {
++
++struct HandleDeleter {
++	void operator()(void *handle) {
++		dlclose(handle);
++	}
++};
++
++using Handle = std::unique_ptr<void, HandleDeleter>;
++
++bool LoadLibrary(Handle &handle, const char *name) {
++	handle = Handle(dlopen(name, RTLD_LAZY | RTLD_NODELETE));
++	if (handle) {
++		return true;
++	}
++	std::cerr << dlerror() << std::endl;
++	return false;
++}
++
++template <typename Function>
++inline bool LoadSymbol(const Handle &handle, const char *name, Function &func) {
++	func = handle
++		? reinterpret_cast<Function>(dlsym(handle.get(), name))
++		: nullptr;
++	if (const auto error = dlerror()) {
++		std::cerr << error << std::endl;
++	}
++	return (func != nullptr);
++}
++
++bool ResolveGlib() {
++	static const auto loaded = [&] {
++		auto lib = Handle();
++		return LoadLibrary(lib, "libglib-2.0.so.0")
++			&& LOAD_SYMBOL(lib, g_main_context_default)
++			&& LOAD_SYMBOL(lib, g_main_context_iteration)
++			&& LOAD_SYMBOL(lib, g_main_context_new)
++			&& LOAD_SYMBOL(lib, g_main_context_pop_thread_default)
++			&& LOAD_SYMBOL(lib, g_main_context_push_thread_default)
++			&& LOAD_SYMBOL(lib, g_main_context_ref)
++			&& LOAD_SYMBOL(lib, g_main_context_unref)
++			&& LOAD_SYMBOL(lib, g_main_context_wakeup)
++			&& LOAD_SYMBOL(lib, g_source_add_poll)
++			&& LOAD_SYMBOL(lib, g_source_attach)
++			&& LOAD_SYMBOL(lib, g_source_destroy)
++			&& LOAD_SYMBOL(lib, g_source_new)
++			&& LOAD_SYMBOL(lib, g_source_remove_poll)
++			&& LOAD_SYMBOL(lib, g_source_set_can_recurse)
++			&& LOAD_SYMBOL(lib, g_source_set_name)
++			&& LOAD_SYMBOL(lib, g_source_unref);
++	}();
++	return loaded;
++}
++
++} // namespace
++
+ struct GPollFDWithQSocketNotifier
+ {
+     GPollFD pollfd;
+@@ -598,6 +660,12 @@ void QEventDispatcherGlib::wakeUp()
  
  bool QEventDispatcherGlib::versionSupported()
  {
