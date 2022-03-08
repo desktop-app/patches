@@ -1,0 +1,100 @@
+diff --git a/src/plugins/platformthemes/gtk3/qgtk3dialoghelpers.cpp b/src/plugins/platformthemes/gtk3/qgtk3dialoghelpers.cpp
+index 65564b59a1..63c0d6a363 100644
+--- a/src/plugins/platformthemes/gtk3/qgtk3dialoghelpers.cpp
++++ b/src/plugins/platformthemes/gtk3/qgtk3dialoghelpers.cpp
+@@ -45,6 +45,7 @@
+ #include <qcolor.h>
+ #include <qdebug.h>
+ #include <qfont.h>
++#include <qfileinfo.h>
+ 
+ #include <private/qguiapplication_p.h>
+ #include <qpa/qplatformfontdatabase.h>
+@@ -55,6 +56,14 @@
+ #include <gdk/gdkx.h>
+ #include <pango/pango.h>
+ 
++// The size of the preview we display for selected image files. We set height
++// larger than width because generally there is more free space vertically
++// than horiztonally (setting the preview image will alway expand the width of
++// the dialog, but usually not the height). The image's aspect ratio will always
++// be preserved.
++#define PREVIEW_WIDTH 256
++#define PREVIEW_HEIGHT 512
++
+ QT_BEGIN_NAMESPACE
+ 
+ class QGtk3Dialog : public QWindow
+@@ -250,6 +259,10 @@ QGtk3FileDialogHelper::QGtk3FileDialogHelper()
+     g_signal_connect(GTK_FILE_CHOOSER(d->gtkDialog()), "selection-changed", G_CALLBACK(onSelectionChanged), this);
+     g_signal_connect_swapped(GTK_FILE_CHOOSER(d->gtkDialog()), "current-folder-changed", G_CALLBACK(onCurrentFolderChanged), this);
+     g_signal_connect_swapped(GTK_FILE_CHOOSER(d->gtkDialog()), "notify::filter", G_CALLBACK(onFilterChanged), this);
++
++    previewWidget = gtk_image_new();
++    g_signal_connect(G_OBJECT(d->gtkDialog()), "update-preview", G_CALLBACK(onUpdatePreview), this);
++    gtk_file_chooser_set_preview_widget(GTK_FILE_CHOOSER(d->gtkDialog()), previewWidget);
+ }
+ 
+ QGtk3FileDialogHelper::~QGtk3FileDialogHelper()
+@@ -390,6 +403,33 @@ void QGtk3FileDialogHelper::onFilterChanged(QGtk3FileDialogHelper *dialog)
+     emit dialog->filterSelected(dialog->selectedNameFilter());
+ }
+ 
++void QGtk3FileDialogHelper::onUpdatePreview(GtkDialog *gtkDialog, QGtk3FileDialogHelper *helper)
++{
++    gchar *filename = gtk_file_chooser_get_preview_filename(GTK_FILE_CHOOSER(gtkDialog));
++    if (!filename) {
++        gtk_file_chooser_set_preview_widget_active(GTK_FILE_CHOOSER(gtkDialog), false);
++        return;
++    }
++
++    // Don't attempt to open anything which isn't a regular file. If a named pipe,
++    // this may hang.
++    QFileInfo fileinfo(filename);
++    if (!fileinfo.exists() || !fileinfo.isFile()) {
++        g_free(filename);
++        gtk_file_chooser_set_preview_widget_active(GTK_FILE_CHOOSER(gtkDialog), false);
++        return;
++    }
++
++    // This will preserve the image's aspect ratio.
++    GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file_at_size(filename, PREVIEW_WIDTH, PREVIEW_HEIGHT, 0);
++    g_free(filename);
++    if (pixbuf) {
++        gtk_image_set_from_pixbuf(GTK_IMAGE(helper->previewWidget), pixbuf);
++        g_object_unref(pixbuf);
++    }
++    gtk_file_chooser_set_preview_widget_active(GTK_FILE_CHOOSER(gtkDialog), pixbuf ? true : false);
++}
++
+ static GtkFileChooserAction gtkFileChooserAction(const QSharedPointer<QFileDialogOptions> &options)
+ {
+     switch (options->fileMode()) {
+diff --git a/src/plugins/platformthemes/gtk3/qgtk3dialoghelpers.h b/src/plugins/platformthemes/gtk3/qgtk3dialoghelpers.h
+index e78a7fc6d1..1a055ac055 100644
+--- a/src/plugins/platformthemes/gtk3/qgtk3dialoghelpers.h
++++ b/src/plugins/platformthemes/gtk3/qgtk3dialoghelpers.h
+@@ -47,6 +47,7 @@
+ #include <QtCore/qstring.h>
+ #include <qpa/qplatformdialoghelper.h>
+ 
++typedef struct _GtkWidget GtkWidget;
+ typedef struct _GtkDialog GtkDialog;
+ typedef struct _GtkFileFilter GtkFileFilter;
+ 
+@@ -108,6 +109,7 @@ private:
+     static void onSelectionChanged(GtkDialog *dialog, QGtk3FileDialogHelper *helper);
+     static void onCurrentFolderChanged(QGtk3FileDialogHelper *helper);
+     static void onFilterChanged(QGtk3FileDialogHelper *helper);
++    static void onUpdatePreview(GtkDialog *dialog, QGtk3FileDialogHelper *helper);
+     void applyOptions();
+     void setNameFilters(const QStringList &filters);
+     void selectFileInternal(const QUrl &filename);
+@@ -118,6 +120,7 @@ private:
+     QHash<QString, GtkFileFilter*> _filters;
+     QHash<GtkFileFilter*, QString> _filterNames;
+     QScopedPointer<QGtk3Dialog> d;
++    GtkWidget *previewWidget;
+ };
+ 
+ class QGtk3FontDialogHelper : public QPlatformFontDialogHelper

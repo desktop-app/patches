@@ -1,0 +1,139 @@
+diff --git a/src/corelib/kernel/qeventdispatcher_win.cpp b/src/corelib/kernel/qeventdispatcher_win.cpp
+index 65fc7870f2..dd37e20b42 100644
+--- a/src/corelib/kernel/qeventdispatcher_win.cpp
++++ b/src/corelib/kernel/qeventdispatcher_win.cpp
+@@ -124,7 +124,17 @@ void WINAPI QT_WIN_CALLBACK qt_fast_timer_proc(uint timerId, uint /*reserved*/,
+         return;
+     auto t = reinterpret_cast<WinTimerInfo*>(user);
+     Q_ASSERT(t);
+-    QCoreApplication::postEvent(t->dispatcher, new QTimerEvent(t->timerId));
++    QMutexLocker lock(&t->fastTimerMutex);
++    if (t->timerId != -1) {
++        QCoreApplication::postEvent(t->dispatcher, new QTimerEvent(t->timerId));
++        return;
++    }
++    Q_ASSERT(!t->inTimerEvent);
++    Q_ASSERT(t->fastTimerId != 0);
++    timeKillEvent(t->fastTimerId);
++    lock.unlock();
++
++    delete t;
+ }
+ 
+ static inline UINT inputQueueMask()
+@@ -393,12 +403,12 @@ void QEventDispatcherWin32Private::registerTimer(WinTimerInfo *t)
+         // optimization for single-shot-zero-timer
+         QCoreApplication::postEvent(q, new QZeroTimerEvent(t->timerId));
+         ok = true;
+-    } else if (interval < 20u || t->timerType == Qt::PreciseTimer) {
++    } else if (interval < 20u || (interval < 1000u && t->timerType == Qt::PreciseTimer)) {
+         // 3/2016: Although MSDN states timeSetEvent() is deprecated, the function
+         // is still deemed to be the most reliable precision timer.
+         t->fastTimerId = timeSetEvent(interval, 1, qt_fast_timer_proc, DWORD_PTR(t),
+                                       TIME_CALLBACK_FUNCTION | TIME_PERIODIC | TIME_KILL_SYNCHRONOUS);
+-        ok = t->fastTimerId;
++        ok = (t->fastTimerId != 0);
+     }
+ 
+     if (!ok) {
+@@ -412,16 +422,34 @@ void QEventDispatcherWin32Private::registerTimer(WinTimerInfo *t)
+ 
+ void QEventDispatcherWin32Private::unregisterTimer(WinTimerInfo *t)
+ {
++    const auto tTimerId = t->timerId;
++    const auto tDispatcher = t->dispatcher;
++    const auto tUseFastTimer = (t->fastTimerId != 0);
++    const auto tDelete = (!tUseFastTimer && !t->inTimerEvent);
+     if (t->interval == 0) {
+-        QCoreApplicationPrivate::removePostedTimerEvent(t->dispatcher, t->timerId);
+-    } else if (t->fastTimerId != 0) {
+-        timeKillEvent(t->fastTimerId);
+-        QCoreApplicationPrivate::removePostedTimerEvent(t->dispatcher, t->timerId);
++        QCoreApplicationPrivate::removePostedTimerEvent(tDispatcher, tTimerId);
++    } else if (tUseFastTimer) {
++        // 't' will be deleted in the next qt_fast_timer_proc.
++        // timeKillEvent(t->fastTimerId);
+     } else if (internalHwnd) {
+-        KillTimer(internalHwnd, t->timerId);
++        KillTimer(internalHwnd, tTimerId);
++    }
++    if (tUseFastTimer && !t->inTimerEvent) {
++        // sendTimerEvent locks the mutex in case of t->inTimerEvent.
++        t->fastTimerMutex.lock();
+     }
++    // Upon fastTimerMutex unlock qt_fast_timer_proc may delete 't'.
+     t->timerId = -1;
+-    if (!t->inTimerEvent)
++    if (tUseFastTimer) {
++        if (!t->inTimerEvent) {
++            // sendTimerEvent unlocks the mutex in case of t->inTimerEvent.
++            // Right after that line qt_fast_timer_proc may delete 't'.
++            t->fastTimerMutex.unlock();
++        }
++        QCoreApplicationPrivate::removePostedTimerEvent(tDispatcher, tTimerId);
++    }
++
++    if (tDelete)
+         delete t;
+ }
+ 
+@@ -436,14 +464,27 @@ void QEventDispatcherWin32Private::sendTimerEvent(int timerId)
+         calculateNextTimeout(t, qt_msectime());
+ 
+         QTimerEvent e(t->timerId);
++
++        const auto tUseFastTimer = (t->fastTimerId != 0);
++        if (tUseFastTimer) {
++            // sendEvent below may unregisterTimer,
++            // qt_fast_timer_proc should not delete 't' just yet.
++            t->fastTimerMutex.lock();
++        }
++
+         QCoreApplication::sendEvent(t->obj, &e);
+ 
+         // timer could have been removed
+-        if (t->timerId == -1) {
++        if (t->timerId == -1 && !tUseFastTimer) {
+             delete t;
+         } else {
+             t->inTimerEvent = false;
+         }
++
++        if (tUseFastTimer) {
++            // Right after that line qt_fast_timer_proc may delete 't'.
++            t->fastTimerMutex.unlock();
++        }
+     }
+ }
+ 
+@@ -1046,7 +1087,9 @@ bool QEventDispatcherWin32::event(QEvent *e)
+ 
+             // timer could have been removed
+             if (t->timerId == -1) {
+-                delete t;
++                if (t->fastTimerId == 0) {
++                    delete t;
++                }
+             } else {
+                 if (t->interval == 0 && t->inTimerEvent) {
+                     // post the next zero timer event as long as the timer was not restarted
+diff --git a/src/corelib/kernel/qeventdispatcher_win_p.h b/src/corelib/kernel/qeventdispatcher_win_p.h
+index dbb30ab568..d9fdeb0ec1 100644
+--- a/src/corelib/kernel/qeventdispatcher_win_p.h
++++ b/src/corelib/kernel/qeventdispatcher_win_p.h
+@@ -54,6 +54,7 @@
+ #include "QtCore/qabstracteventdispatcher.h"
+ #include "QtCore/qt_windows.h"
+ #include "QtCore/qhash.h"
++#include "QtCore/qmutex.h"
+ 
+ #include "qabstracteventdispatcher_p.h"
+ 
+@@ -141,6 +142,7 @@ struct WinTimerInfo {                           // internal timer info
+     QObject *obj;                               // - object to receive events
+     bool inTimerEvent;
+     UINT fastTimerId;
++    QMutex fastTimerMutex;
+ };
+ 
+ class QZeroTimerEvent : public QTimerEvent

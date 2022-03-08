@@ -1,0 +1,13 @@
+diff --git a/mkspecs/common/macx.conf b/mkspecs/common/macx.conf
+index d16b77acb8..acb737f44e 100644
+--- a/mkspecs/common/macx.conf
++++ b/mkspecs/common/macx.conf
+@@ -5,7 +5,7 @@
+ QMAKE_PLATFORM         += macos osx macx
+ QMAKE_MAC_SDK           = macosx
+ 
+-QMAKE_MACOSX_DEPLOYMENT_TARGET = 10.13
++QMAKE_MACOSX_DEPLOYMENT_TARGET = 10.12
+ QMAKE_APPLE_DEVICE_ARCHS = x86_64
+ 
+ # Should be 10.15, but as long as the CI builds with

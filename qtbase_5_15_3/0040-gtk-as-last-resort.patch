@@ -1,0 +1,76 @@
+diff --git a/src/platformsupport/themes/genericunix/genericunix.pri b/src/platformsupport/themes/genericunix/genericunix.pri
+index 11da533bc4..09a31b3ac4 100644
+--- a/src/platformsupport/themes/genericunix/genericunix.pri
++++ b/src/platformsupport/themes/genericunix/genericunix.pri
+@@ -1,6 +1,8 @@
+ HEADERS += $$PWD/qgenericunixthemes_p.h
+ SOURCES += $$PWD/qgenericunixthemes.cpp
+ 
++qtConfig(dlopen): QMAKE_USE_PRIVATE += libdl
++
+ qtConfig(dbus) {
+     include(dbusmenu/dbusmenu.pri)
+ 
+diff --git a/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp b/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
+index cb1b39db64..fea7708218 100644
+--- a/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
++++ b/src/platformsupport/themes/genericunix/qgenericunixthemes.cpp
+@@ -73,6 +73,10 @@
+ 
+ #include <algorithm>
+ 
++#if QT_CONFIG(dlopen)
++#include <dlfcn.h>
++#endif
++
+ QT_BEGIN_NAMESPACE
+ 
+ Q_DECLARE_LOGGING_CATEGORY(qLcTray)
+@@ -851,24 +855,12 @@ QStringList QGenericUnixTheme::themeNames()
+     QStringList result;
+     if (QGuiApplication::desktopSettingsAware()) {
+         const QByteArray desktopEnvironment = QGuiApplicationPrivate::platformIntegration()->services()->desktopEnvironment();
+-        QList<QByteArray> gtkBasedEnvironments;
+-        gtkBasedEnvironments << "GNOME"
+-                             << "X-CINNAMON"
+-                             << "UNITY"
+-                             << "MATE"
+-                             << "XFCE"
+-                             << "LXDE";
+         const QList<QByteArray> desktopNames = desktopEnvironment.split(':');
+         for (const QByteArray &desktopName : desktopNames) {
+             if (desktopEnvironment == "KDE") {
+ #if QT_CONFIG(settings)
+                 result.push_back(QLatin1String(QKdeTheme::name));
+ #endif
+-            } else if (gtkBasedEnvironments.contains(desktopName)) {
+-                // prefer the GTK3 theme implementation with native dialogs etc.
+-                result.push_back(QStringLiteral("gtk3"));
+-                // fallback to the generic Gnome theme if loading the GTK3 theme fails
+-                result.push_back(QLatin1String(QGnomeTheme::name));
+             } else {
+                 // unknown, but lowercase the name (our standard practice) and
+                 // remove any "x-" prefix
+@@ -876,6 +868,22 @@ QStringList QGenericUnixTheme::themeNames()
+                 result.push_back(s.startsWith(QLatin1String("x-")) ? s.mid(2) : s);
+             }
+         }
++        if (!result.contains(QLatin1String(QKdeTheme::name))) {
++#if QT_CONFIG(dlopen)
++            if (const auto handle = dlopen("libgtk-3.so.0", RTLD_LAZY)) {
++                // prefer the GTK3 theme implementation with native dialogs etc.
++                result.push_back(QStringLiteral("gtk3"));
++                dlclose(handle);
++            } else {
++                Q_UNUSED(dlerror());
++            }
++#else
++            // prefer the GTK3 theme implementation with native dialogs etc.
++            result.push_back(QStringLiteral("gtk3"));
++#endif
++            // fallback to the generic Gnome theme if loading the GTK3 theme fails
++            result.push_back(QLatin1String(QGnomeTheme::name));
++        }
+     } // desktopSettingsAware
+     result.append(QLatin1String(QGenericUnixTheme::name));
+     return result;

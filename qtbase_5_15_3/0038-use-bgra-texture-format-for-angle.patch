@@ -1,0 +1,66 @@
+diff --git a/src/gui/painting/qplatformbackingstore.cpp b/src/gui/painting/qplatformbackingstore.cpp
+index c092a7153f..55fce94abc 100644
+--- a/src/gui/painting/qplatformbackingstore.cpp
++++ b/src/gui/painting/qplatformbackingstore.cpp
+@@ -529,8 +529,14 @@ GLuint QPlatformBackingStore::toTexture(const QRegion &dirtyRegion, QSize *textu
+     QImage image = toImage();
+     QSize imageSize = image.size();
+ 
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++    GLenum basicFormat = GL_BGRA_EXT;
++#else // DESKTOP_APP_QT_STATIC_ANGLE
++    GLenum basicFormat = GL_RGBA;
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
++
+     QOpenGLContext *ctx = QOpenGLContext::currentContext();
+-    GLenum internalFormat = GL_RGBA;
++    GLenum internalFormat = basicFormat;
+     GLuint pixelType = GL_UNSIGNED_BYTE;
+ 
+     bool needsConversion = false;
+@@ -573,6 +579,15 @@ GLuint QPlatformBackingStore::toTexture(const QRegion &dirtyRegion, QSize *textu
+         needsConversion = true;
+         break;
+     }
++
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++	if (*flags & TextureSwizzle) {
++		*flags &= ~TextureSwizzle;
++	} else {
++		*flags |= TextureSwizzle;
++	}
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
++
+     if (imageSize.isEmpty()) {
+         *textureSize = imageSize;
+         return 0;
+@@ -593,7 +608,11 @@ GLuint QPlatformBackingStore::toTexture(const QRegion &dirtyRegion, QSize *textu
+     // instance on platforms that manually implement client-side decorations.
+     static const int bytesPerPixel = 4;
+     const int strideInPixels = image.bytesPerLine() / bytesPerPixel;
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++    const bool hasUnpackRowLength = true;
++#else // DESKTOP_APP_QT_STATIC_ANGLE
+     const bool hasUnpackRowLength = !ctx->isOpenGLES() || ctx->format().majorVersion() >= 3;
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
+ 
+     QOpenGLFunctions *funcs = ctx->functions();
+ 
+@@ -620,7 +639,7 @@ GLuint QPlatformBackingStore::toTexture(const QRegion &dirtyRegion, QSize *textu
+         funcs->glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+         funcs->glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+ 
+-        funcs->glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, imageSize.width(), imageSize.height(), 0, GL_RGBA, pixelType,
++        funcs->glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, imageSize.width(), imageSize.height(), 0, basicFormat, pixelType,
+                             const_cast<uchar*>(image.constBits()));
+     } else {
+         funcs->glBindTexture(GL_TEXTURE_2D, d_ptr->textureId);
+@@ -628,7 +647,7 @@ GLuint QPlatformBackingStore::toTexture(const QRegion &dirtyRegion, QSize *textu
+         QRect rect = dirtyRegion.boundingRect() & imageRect;
+ 
+         if (hasUnpackRowLength) {
+-            funcs->glTexSubImage2D(GL_TEXTURE_2D, 0, rect.x(), rect.y(), rect.width(), rect.height(), GL_RGBA, pixelType,
++            funcs->glTexSubImage2D(GL_TEXTURE_2D, 0, rect.x(), rect.y(), rect.width(), rect.height(), basicFormat, pixelType,
+                                    image.constScanLine(rect.y()) + rect.x() * bytesPerPixel);
+         } else {
+             // if the rect is wide enough it's cheaper to just
