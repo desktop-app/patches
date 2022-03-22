@@ -9,6 +9,10 @@ pacman --noconfirm -S msys/make
 pacman --noconfirm -S diffutils
 pacman --noconfirm -S pkg-config
 
+cd $FullScriptPath/../nv-codec-headers
+make PREFIX="$FullScriptPath/../local" install
+cd $FullScriptPath/../ffmpeg
+
 export PKG_CONFIG_PATH="$FullExecPath/../local/lib/pkgconfig:$PKG_CONFIG_PATH"
 
 ./configure --prefix=$FullScriptPath/../local \
@@ -19,15 +23,24 @@ export PKG_CONFIG_PATH="$FullExecPath/../local/lib/pkgconfig:$PKG_CONFIG_PATH"
 --disable-doc \
 --disable-network \
 --disable-everything \
+--enable-hwaccel=av1_d3d11va \
+--enable-hwaccel=av1_d3d11va2 \
+--enable-hwaccel=av1_dxva2 \
+--enable-hwaccel=av1_nvdec \
 --enable-hwaccel=h264_d3d11va \
 --enable-hwaccel=h264_d3d11va2 \
 --enable-hwaccel=h264_dxva2 \
+--enable-hwaccel=h264_nvdec \
 --enable-hwaccel=hevc_d3d11va \
 --enable-hwaccel=hevc_d3d11va2 \
 --enable-hwaccel=hevc_dxva2 \
+--enable-hwaccel=hevc_nvdec \
 --enable-hwaccel=mpeg2_d3d11va \
 --enable-hwaccel=mpeg2_d3d11va2 \
 --enable-hwaccel=mpeg2_dxva2 \
+--enable-hwaccel=mpeg2_nvdec \
+--enable-hwaccel=mpeg4_nvdec \
+--enable-hwaccel=vp8_nvdec \
 --enable-protocol=file \
 --enable-libopus \
 --enable-libvpx \
@@ -36,6 +49,8 @@ export PKG_CONFIG_PATH="$FullExecPath/../local/lib/pkgconfig:$PKG_CONFIG_PATH"
 --enable-decoder=aac_latm \
 --enable-decoder=aasc \
 --enable-decoder=alac \
+--enable-decoder=av1 \
+--enable-decoder=av1_cuvid \
 --enable-decoder=flac \
 --enable-decoder=gif \
 --enable-decoder=h264 \
@@ -86,6 +101,7 @@ export PKG_CONFIG_PATH="$FullExecPath/../local/lib/pkgconfig:$PKG_CONFIG_PATH"
 --enable-decoder=pcm_u32le \
 --enable-decoder=pcm_u8 \
 --enable-decoder=vorbis \
+--enable-decoder=vp8 \
 --enable-decoder=wavpack \
 --enable-decoder=wmalossless \
 --enable-decoder=wmapro \
