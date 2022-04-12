@@ -1,0 +1,609 @@
+diff --git a/src/plugins/platformthemes/gtk3/CMakeLists.txt b/src/plugins/platformthemes/gtk3/CMakeLists.txt
+index 62e752bd92..f068d91a50 100644
+--- a/src/plugins/platformthemes/gtk3/CMakeLists.txt
++++ b/src/plugins/platformthemes/gtk3/CMakeLists.txt
+@@ -16,9 +16,13 @@ qt_internal_add_plugin(QGtk3ThemePlugin
+         qgtk3dialoghelpers.cpp qgtk3dialoghelpers.h
+         qgtk3menu.cpp qgtk3menu.h
+         qgtk3theme.cpp qgtk3theme.h
++        gtk_functions.h
+     DEFINES
++        GLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_40
++        GLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_40
+         GDK_VERSION_MIN_REQUIRED=GDK_VERSION_3_6
+     LIBRARIES # special case
++        ${CMAKE_DL_LIBS}
+         PkgConfig::GTK3
+         Qt::Core
+         Qt::CorePrivate
+diff --git a/src/plugins/platformthemes/gtk3/gtk_functions.h b/src/plugins/platformthemes/gtk3/gtk_functions.h
+new file mode 100644
+index 0000000000..a4060f0e6a
+--- /dev/null
++++ b/src/plugins/platformthemes/gtk3/gtk_functions.h
+@@ -0,0 +1,358 @@
++#pragma once
++
++#include <gtk/gtk.h>
++#include <gdk/gdk.h>
++#include <gdk/gdkx.h>
++#include <pango/pango.h>
++
++#define g_free ptr_g_free
++#define g_log_default_handler ptr_g_log_default_handler
++#define g_log_set_handler ptr_g_log_set_handler
++#define g_slist_free ptr_g_slist_free
++#define g_strcmp0 ptr_g_strcmp0
++#define g_object_class_find_property ptr_g_object_class_find_property
++#define g_object_get ptr_g_object_get
++#define g_object_set ptr_g_object_set
++#define g_object_unref ptr_g_object_unref
++#define g_signal_connect_data ptr_g_signal_connect_data
++#define g_type_check_instance_cast ptr_g_type_check_instance_cast
++#define g_type_check_instance_is_a ptr_g_type_check_instance_is_a
++#define g_type_check_instance_is_fundamentally_a ptr_g_type_check_instance_is_fundamentally_a
++#define g_type_ensure ptr_g_type_ensure
++#define gdk_pixbuf_new_from_file_at_size ptr_gdk_pixbuf_new_from_file_at_size
++#define gdk_window_focus ptr_gdk_window_focus
++#define gdk_window_get_display ptr_gdk_window_get_display
++#define gdk_window_set_modal_hint ptr_gdk_window_set_modal_hint
++#define gdk_x11_display_get_xdisplay ptr_gdk_x11_display_get_xdisplay
++#define gdk_x11_window_get_type ptr_gdk_x11_window_get_type
++#define gdk_x11_window_get_xid ptr_gdk_x11_window_get_xid
++#define gtk_accel_label_get_type ptr_gtk_accel_label_get_type
++#define gtk_accel_label_set_accel ptr_gtk_accel_label_set_accel
++#define gtk_bin_get_child ptr_gtk_bin_get_child
++#define gtk_bin_get_type ptr_gtk_bin_get_type
++#define gtk_button_get_type ptr_gtk_button_get_type
++#define gtk_button_set_label ptr_gtk_button_set_label
++#define gtk_check_menu_item_get_active ptr_gtk_check_menu_item_get_active
++#define gtk_check_menu_item_get_type ptr_gtk_check_menu_item_get_type
++#define gtk_check_menu_item_new ptr_gtk_check_menu_item_new
++#define gtk_check_menu_item_set_active ptr_gtk_check_menu_item_set_active
++#define gtk_check_version ptr_gtk_check_version
++#define gtk_clipboard_get ptr_gtk_clipboard_get
++#define gtk_clipboard_store ptr_gtk_clipboard_store
++#define gtk_color_chooser_dialog_new ptr_gtk_color_chooser_dialog_new
++#define gtk_color_chooser_get_type ptr_gtk_color_chooser_get_type
++#define gtk_color_chooser_get_rgba ptr_gtk_color_chooser_get_rgba
++#define gtk_color_chooser_set_rgba ptr_gtk_color_chooser_set_rgba
++#define gtk_color_chooser_set_use_alpha ptr_gtk_color_chooser_set_use_alpha
++#define gtk_container_get_type ptr_gtk_container_get_type
++#define gtk_container_remove ptr_gtk_container_remove
++#define gtk_dialog_add_button ptr_gtk_dialog_add_button
++#define gtk_dialog_get_type ptr_gtk_dialog_get_type
++#define gtk_dialog_get_widget_for_response ptr_gtk_dialog_get_widget_for_response
++#define gtk_dialog_run ptr_gtk_dialog_run
++#define gtk_file_chooser_add_filter ptr_gtk_file_chooser_add_filter
++#define gtk_file_chooser_dialog_new ptr_gtk_file_chooser_dialog_new
++#define gtk_file_chooser_get_current_folder ptr_gtk_file_chooser_get_current_folder
++#define gtk_file_chooser_get_filename ptr_gtk_file_chooser_get_filename
++#define gtk_file_chooser_get_filenames ptr_gtk_file_chooser_get_filenames
++#define gtk_file_chooser_get_filter ptr_gtk_file_chooser_get_filter
++#define gtk_file_chooser_get_preview_filename ptr_gtk_file_chooser_get_preview_filename
++#define gtk_file_chooser_get_type ptr_gtk_file_chooser_get_type
++#define gtk_file_chooser_remove_filter ptr_gtk_file_chooser_remove_filter
++#define gtk_file_chooser_select_filename ptr_gtk_file_chooser_select_filename
++#define gtk_file_chooser_set_action ptr_gtk_file_chooser_set_action
++#define gtk_file_chooser_set_create_folders ptr_gtk_file_chooser_set_create_folders
++#define gtk_file_chooser_set_current_folder ptr_gtk_file_chooser_set_current_folder
++#define gtk_file_chooser_set_current_name ptr_gtk_file_chooser_set_current_name
++#define gtk_file_chooser_set_do_overwrite_confirmation ptr_gtk_file_chooser_set_do_overwrite_confirmation
++#define gtk_file_chooser_set_filter ptr_gtk_file_chooser_set_filter
++#define gtk_file_chooser_set_local_only ptr_gtk_file_chooser_set_local_only
++#define gtk_file_chooser_set_preview_widget ptr_gtk_file_chooser_set_preview_widget
++#define gtk_file_chooser_set_preview_widget_active ptr_gtk_file_chooser_set_preview_widget_active
++#define gtk_file_chooser_set_select_multiple ptr_gtk_file_chooser_set_select_multiple
++#define gtk_file_filter_add_pattern ptr_gtk_file_filter_add_pattern
++#define gtk_file_filter_new ptr_gtk_file_filter_new
++#define gtk_file_filter_set_name ptr_gtk_file_filter_set_name
++#define gtk_font_chooser_dialog_new ptr_gtk_font_chooser_dialog_new
++#define gtk_font_chooser_get_font ptr_gtk_font_chooser_get_font
++#define gtk_font_chooser_get_type ptr_gtk_font_chooser_get_type
++#define gtk_font_chooser_set_font ptr_gtk_font_chooser_set_font
++#define gtk_get_current_event_time ptr_gtk_get_current_event_time
++#define gtk_image_get_type ptr_gtk_image_get_type
++#define gtk_image_new ptr_gtk_image_new
++#define gtk_image_set_from_pixbuf ptr_gtk_image_set_from_pixbuf
++#define gtk_init ptr_gtk_init
++#define gtk_menu_get_type ptr_gtk_menu_get_type
++#define gtk_menu_item_get_type ptr_gtk_menu_item_get_type
++#define gtk_menu_item_new ptr_gtk_menu_item_new
++#define gtk_menu_item_set_label ptr_gtk_menu_item_set_label
++#define gtk_menu_item_set_submenu ptr_gtk_menu_item_set_submenu
++#define gtk_menu_item_set_use_underline ptr_gtk_menu_item_set_use_underline
++#define gtk_menu_new ptr_gtk_menu_new
++#define gtk_menu_popdown ptr_gtk_menu_popdown
++#define gtk_menu_popup ptr_gtk_menu_popup
++#define gtk_menu_shell_get_type ptr_gtk_menu_shell_get_type
++#define gtk_menu_shell_insert ptr_gtk_menu_shell_insert
++#define gtk_menu_shell_select_item ptr_gtk_menu_shell_select_item
++#define gtk_separator_menu_item_new ptr_gtk_separator_menu_item_new
++#define gtk_settings_get_default ptr_gtk_settings_get_default
++#define gtk_widget_destroy ptr_gtk_widget_destroy
++#define gtk_widget_get_scale_factor ptr_gtk_widget_get_scale_factor
++#define gtk_widget_get_type ptr_gtk_widget_get_type
++#define gtk_widget_get_window ptr_gtk_widget_get_window
++#define gtk_widget_hide ptr_gtk_widget_hide
++#define gtk_widget_hide_on_delete ptr_gtk_widget_hide_on_delete
++#define gtk_widget_realize ptr_gtk_widget_realize
++#define gtk_widget_set_sensitive ptr_gtk_widget_set_sensitive
++#define gtk_widget_set_visible ptr_gtk_widget_set_visible
++#define gtk_widget_show ptr_gtk_widget_show
++#define gtk_window_get_type ptr_gtk_window_get_type
++#define gtk_window_set_title ptr_gtk_window_set_title
++#define gtk_window_set_transient_for ptr_gtk_window_set_transient_for
++#define pango_font_description_free ptr_pango_font_description_free
++#define pango_font_description_from_string ptr_pango_font_description_from_string
++#define pango_font_description_get_family ptr_pango_font_description_get_family
++#define pango_font_description_get_size ptr_pango_font_description_get_size
++#define pango_font_description_get_style ptr_pango_font_description_get_style
++#define pango_font_description_get_weight ptr_pango_font_description_get_weight
++#define pango_font_description_new ptr_pango_font_description_new
++#define pango_font_description_set_family ptr_pango_font_description_set_family
++#define pango_font_description_set_size ptr_pango_font_description_set_size
++#define pango_font_description_set_style ptr_pango_font_description_set_style
++#define pango_font_description_set_weight ptr_pango_font_description_set_weight
++#define pango_font_description_to_string ptr_pango_font_description_to_string
++#define pango_font_face_get_type ptr_pango_font_face_get_type
++#define pango_font_family_get_type ptr_pango_font_family_get_type
++
++inline void (*g_free)(gpointer mem);
++inline void (*g_log_default_handler)(
++	const gchar* log_domain,
++	GLogLevelFlags log_level,
++	const gchar* message,
++	gpointer unused_data);
++inline guint (*g_log_set_handler)(
++	const gchar* log_domain,
++	GLogLevelFlags log_levels,
++	GLogFunc log_func,
++	gpointer user_data);
++inline void (*g_slist_free)(GSList* list);
++inline int (*g_strcmp0)(const char* str1, const char* str2);
++inline GParamSpec* (*g_object_class_find_property)(
++	GObjectClass* oclass,
++	const gchar* property_name);
++inline void (*g_object_get)(
++	gpointer object,
++	const gchar* first_property_name,
++	...);
++inline void (*g_object_set)(
++	gpointer object,
++	const gchar* first_property_name,
++	...);
++inline void (*g_object_unref)(gpointer object);
++inline gulong (*g_signal_connect_data)(
++	gpointer instance,
++	const gchar* detailed_signal,
++	GCallback c_handler,
++	gpointer data,
++	GClosureNotify destroy_data,
++	GConnectFlags connect_flags);
++inline GTypeInstance* (*g_type_check_instance_cast)(
++	GTypeInstance* instance,
++	GType iface_type);
++inline gboolean (*g_type_check_instance_is_a)(
++	GTypeInstance* instance,
++	GType iface_type);
++inline void (*g_type_ensure)(GType type);
++inline GdkPixbuf *(*gdk_pixbuf_new_from_file_at_size)(
++	const char *filename,
++	int width,
++	int height,
++	GError **error);
++inline void (*gdk_window_focus)(GdkWindow *window, guint32 timestamp);
++inline GdkDisplay *(*gdk_window_get_display)(GdkWindow *window);
++inline void (*gdk_window_set_modal_hint)(GdkWindow *window, gboolean modal);
++inline Display *(*gdk_x11_display_get_xdisplay)(GdkDisplay *display);
++inline GType (*gdk_x11_window_get_type)(void);
++inline Window (*gdk_x11_window_get_xid)(GdkWindow *window);
++inline GType (*gtk_accel_label_get_type)(void);
++inline void (*gtk_accel_label_set_accel)(
++	GtkAccelLabel *accel_label,
++	guint accelerator_key,
++	GdkModifierType accelerator_mods);
++inline GtkWidget *(*gtk_bin_get_child)(GtkBin *bin);
++inline GType (*gtk_bin_get_type)(void);
++inline GType (*gtk_button_get_type)(void);
++inline void (*gtk_button_set_label)(GtkButton *button, const gchar *label);
++inline gboolean (*gtk_check_menu_item_get_active)(GtkCheckMenuItem *check_menu_item);
++inline GType (*gtk_check_menu_item_get_type)(void);
++inline GtkWidget* (*gtk_check_menu_item_new)(void);
++inline void (*gtk_check_menu_item_set_active)(
++	GtkCheckMenuItem *check_menu_item,
++	gboolean is_active);
++inline const gchar *(*gtk_check_version)(
++	guint required_major,
++	guint required_minor,
++	guint required_micro);
++inline GtkClipboard *(*gtk_clipboard_get)(GdkAtom selection);
++inline void (*gtk_clipboard_store)(GtkClipboard *clipboard);
++inline GtkWidget *(*gtk_color_chooser_dialog_new)(
++	const gchar *title,
++	GtkWindow *parent);
++inline GType (*gtk_color_chooser_get_type)(void);
++inline void (*gtk_color_chooser_get_rgba)(
++	GtkColorChooser *chooser,
++	GdkRGBA *color);
++inline void (*gtk_color_chooser_set_rgba)(
++	GtkColorChooser *chooser,
++	const GdkRGBA *color);
++inline void (*gtk_color_chooser_set_use_alpha)(
++	GtkColorChooser *chooser,
++	gboolean use_alpha);
++inline GType (*gtk_container_get_type)(void);
++inline void (*gtk_container_remove)(GtkContainer *container, GtkWidget *widget);
++inline GtkWidget *(*gtk_dialog_add_button)(
++	GtkDialog *dialog,
++	const gchar *button_text,
++	gint response_id);
++inline GType (*gtk_dialog_get_type)(void);
++inline GtkWidget* (*gtk_dialog_get_widget_for_response)(
++	GtkDialog *dialog,
++	gint response_id);
++inline gint (*gtk_dialog_run)(GtkDialog *dialog);
++inline void (*gtk_file_chooser_add_filter)(
++	GtkFileChooser *chooser,
++	GtkFileFilter *filter);
++inline GtkWidget *(*gtk_file_chooser_dialog_new)(
++	const gchar *title,
++	GtkWindow *parent,
++	GtkFileChooserAction action,
++	const gchar *first_button_text,
++	...);
++inline gchar *(*gtk_file_chooser_get_current_folder)(GtkFileChooser *chooser);
++inline gchar *(*gtk_file_chooser_get_filename)(GtkFileChooser *chooser);
++inline GSList *(*gtk_file_chooser_get_filenames)(GtkFileChooser *chooser);
++inline GtkFileFilter *(*gtk_file_chooser_get_filter)(GtkFileChooser *chooser);
++inline char *(*gtk_file_chooser_get_preview_filename)(GtkFileChooser *chooser);
++inline GType (*gtk_file_chooser_get_type)(void);
++inline void (*gtk_file_chooser_remove_filter)(
++	GtkFileChooser *chooser,
++	GtkFileFilter *filter);
++inline gboolean (*gtk_file_chooser_select_filename)(
++	GtkFileChooser *chooser,
++	const char *filename);
++inline void (*gtk_file_chooser_set_action)(
++	GtkFileChooser *chooser,
++	GtkFileChooserAction action);
++inline void (*gtk_file_chooser_set_create_folders)(
++	GtkFileChooser *chooser,
++	gboolean create_folders);
++inline gboolean (*gtk_file_chooser_set_current_folder)(
++	GtkFileChooser *chooser,
++	const gchar *filename);
++inline void (*gtk_file_chooser_set_current_name)(
++	GtkFileChooser *chooser,
++	const gchar *name);
++inline void (*gtk_file_chooser_set_do_overwrite_confirmation)(
++	GtkFileChooser *chooser,
++	gboolean do_overwrite_confirmation);
++inline void (*gtk_file_chooser_set_filter)(
++	GtkFileChooser *chooser,
++	GtkFileFilter *filter);
++inline void (*gtk_file_chooser_set_local_only)(
++	GtkFileChooser *chooser,
++	gboolean local_only);
++inline void (*gtk_file_chooser_set_preview_widget)(
++	GtkFileChooser *chooser,
++	GtkWidget *preview_widget);
++inline void (*gtk_file_chooser_set_preview_widget_active)(
++	GtkFileChooser *chooser,
++	gboolean active);
++inline void (*gtk_file_chooser_set_select_multiple)(
++	GtkFileChooser *chooser,
++	gboolean select_multiple);
++inline void (*gtk_file_filter_add_pattern)(
++	GtkFileFilter *filter,
++	const gchar *pattern);
++inline GtkFileFilter *(*gtk_file_filter_new)(void);
++inline void (*gtk_file_filter_set_name)(
++	GtkFileFilter *filter,
++	const gchar *name);
++inline GtkWidget* (*gtk_font_chooser_dialog_new)(
++	const gchar *title,
++	GtkWindow *parent);
++inline gchar* (*gtk_font_chooser_get_font)(GtkFontChooser *fontchooser);
++inline GType (*gtk_font_chooser_get_type)(void);
++inline void (*gtk_font_chooser_set_font)(
++	GtkFontChooser *fontchooser,
++	const gchar *fontname);
++inline guint32 (*gtk_get_current_event_time)(void);
++inline GType (*gtk_image_get_type)(void);
++inline GtkWidget* (*gtk_image_new)(void);
++inline void (*gtk_image_set_from_pixbuf)(GtkImage *image, GdkPixbuf *pixbuf);
++inline void (*gtk_init)(int *argc, char ***argv);
++inline GType (*gtk_menu_get_type)(void);
++inline GType (*gtk_menu_item_get_type)(void);
++inline GtkWidget* (*gtk_menu_item_new)(void);
++inline void (*gtk_menu_item_set_label)(GtkMenuItem *menu_item, const gchar *label);
++inline void (*gtk_menu_item_set_submenu)(GtkMenuItem *menu_item, GtkWidget *submenu);
++inline void (*gtk_menu_item_set_use_underline)(
++	GtkMenuItem *menu_item,
++	gboolean setting);
++inline GtkWidget* (*gtk_menu_new)(void);
++inline void (*gtk_menu_popdown)(GtkMenu *menu);
++inline void (*gtk_menu_popup)(
++	GtkMenu *menu,
++	GtkWidget *parent_menu_shell,
++	GtkWidget *parent_menu_item,
++	GtkMenuPositionFunc func,
++	gpointer data,
++	guint button,
++	guint32 activate_time);
++inline GType (*gtk_menu_shell_get_type)(void);
++inline void (*gtk_menu_shell_insert)(
++	GtkMenuShell *menu_shell,
++	GtkWidget *child,
++	gint position);
++inline void (*gtk_menu_shell_select_item)(
++	GtkMenuShell *menu_shell,
++	GtkWidget *menu_item);
++inline GtkWidget* (*gtk_separator_menu_item_new)(void);
++inline GtkSettings* (*gtk_settings_get_default)(void);
++inline void (*gtk_widget_destroy)(GtkWidget *widget);
++inline gint (*gtk_widget_get_scale_factor)(GtkWidget *widget);
++inline GType (*gtk_widget_get_type)(void);
++inline GdkWindow *(*gtk_widget_get_window)(GtkWidget *widget);
++inline void (*gtk_widget_hide)(GtkWidget *widget);
++inline gboolean (*gtk_widget_hide_on_delete)(GtkWidget *widget);
++inline void (*gtk_widget_realize)(GtkWidget *widget);
++inline void (*gtk_widget_set_sensitive)(GtkWidget *widget, gboolean sensitive);
++inline void (*gtk_widget_set_visible)(GtkWidget *widget, gboolean visible);
++inline void (*gtk_widget_show)(GtkWidget *widget);
++inline GType (*gtk_window_get_type)(void);
++inline void (*gtk_window_set_title)(GtkWindow *window, const gchar *title);
++inline void (*gtk_window_set_transient_for)(GtkWindow *window, GtkWindow *parent);
++inline void (*pango_font_description_free)(PangoFontDescription *desc);
++inline PangoFontDescription *(*pango_font_description_from_string)(const char *str);
++inline const char *(*pango_font_description_get_family)(
++	const PangoFontDescription *desc);
++inline gint (*pango_font_description_get_size)(const PangoFontDescription *desc);
++inline PangoStyle (*pango_font_description_get_style)(
++	const PangoFontDescription *desc);
++inline PangoWeight (*pango_font_description_get_weight)(
++	const PangoFontDescription *desc);
++inline PangoFontDescription *(*pango_font_description_new)(void);
++inline void (*pango_font_description_set_family)(
++	PangoFontDescription *desc,
++	const char *family);
++inline void (*pango_font_description_set_size)(
++	PangoFontDescription *desc,
++	gint size);
++inline void (*pango_font_description_set_style)(
++	PangoFontDescription *desc,
++	PangoStyle style);
++inline void (*pango_font_description_set_weight)(
++	PangoFontDescription *desc,
++	PangoWeight weight);
++inline char *(*pango_font_description_to_string)(const PangoFontDescription *desc);
++inline GType (*pango_font_face_get_type)(void);
++inline GType (*pango_font_family_get_type)(void);
+diff --git a/src/plugins/platformthemes/gtk3/main.cpp b/src/plugins/platformthemes/gtk3/main.cpp
+index 860fc3a26e..184d15e8e9 100644
+--- a/src/plugins/platformthemes/gtk3/main.cpp
++++ b/src/plugins/platformthemes/gtk3/main.cpp
+@@ -40,8 +40,174 @@
+ #include <qpa/qplatformthemeplugin.h>
+ #include "qgtk3theme.h"
+ 
++#undef signals
++#include "gtk_functions.h"
++
++#include <dlfcn.h>
++#include <memory>
++#include <iostream>
++
++#define LOAD_SYMBOL(handle, func) LoadSymbol(handle, #func, func)
++
+ QT_BEGIN_NAMESPACE
+ 
++namespace {
++
++struct HandleDeleter {
++	void operator()(void *handle) {
++		dlclose(handle);
++	}
++};
++
++using Handle = std::unique_ptr<void, HandleDeleter>;
++
++bool LoadLibrary(Handle &handle, const char *name) {
++	handle = Handle(dlopen(name, RTLD_LAZY | RTLD_NODELETE));
++	if (handle) {
++		return true;
++	}
++	std::cerr << dlerror() << std::endl;
++	return false;
++}
++
++template <typename Function>
++inline bool LoadSymbol(const Handle &handle, const char *name, Function &func) {
++	func = handle
++		? reinterpret_cast<Function>(dlsym(handle.get(), name))
++		: nullptr;
++	if (const auto error = dlerror()) {
++		std::cerr << error << std::endl;
++	}
++	return (func != nullptr);
++}
++
++bool ResolveGtk() {
++	static const auto loaded = [&] {
++		auto lib = Handle();
++		return LoadLibrary(lib, "libgtk-3.so.0")
++			&& LOAD_SYMBOL(lib, g_free)
++			&& LOAD_SYMBOL(lib, g_log_default_handler)
++			&& LOAD_SYMBOL(lib, g_log_set_handler)
++			&& LOAD_SYMBOL(lib, g_slist_free)
++			&& LOAD_SYMBOL(lib, g_strcmp0)
++			&& LOAD_SYMBOL(lib, g_object_class_find_property)
++			&& LOAD_SYMBOL(lib, g_object_get)
++			&& LOAD_SYMBOL(lib, g_object_set)
++			&& LOAD_SYMBOL(lib, g_object_unref)
++			&& LOAD_SYMBOL(lib, g_signal_connect_data)
++			&& LOAD_SYMBOL(lib, g_type_check_instance_cast)
++			&& LOAD_SYMBOL(lib, g_type_check_instance_is_a)
++			&& LOAD_SYMBOL(lib, g_type_ensure)
++			&& LOAD_SYMBOL(lib, gdk_pixbuf_new_from_file_at_size)
++			&& LOAD_SYMBOL(lib, gdk_window_focus)
++			&& LOAD_SYMBOL(lib, gdk_window_get_display)
++			&& LOAD_SYMBOL(lib, gdk_window_set_modal_hint)
++			&& LOAD_SYMBOL(lib, gdk_x11_display_get_xdisplay)
++			&& LOAD_SYMBOL(lib, gdk_x11_window_get_type)
++			&& LOAD_SYMBOL(lib, gdk_x11_window_get_xid)
++			&& LOAD_SYMBOL(lib, gtk_accel_label_get_type)
++			&& LOAD_SYMBOL(lib, gtk_accel_label_set_accel)
++			&& LOAD_SYMBOL(lib, gtk_bin_get_child)
++			&& LOAD_SYMBOL(lib, gtk_bin_get_type)
++			&& LOAD_SYMBOL(lib, gtk_button_get_type)
++			&& LOAD_SYMBOL(lib, gtk_button_set_label)
++			&& LOAD_SYMBOL(lib, gtk_check_menu_item_get_active)
++			&& LOAD_SYMBOL(lib, gtk_check_menu_item_get_type)
++			&& LOAD_SYMBOL(lib, gtk_check_menu_item_new)
++			&& LOAD_SYMBOL(lib, gtk_check_menu_item_set_active)
++			&& LOAD_SYMBOL(lib, gtk_check_version)
++			&& LOAD_SYMBOL(lib, gtk_clipboard_get)
++			&& LOAD_SYMBOL(lib, gtk_clipboard_store)
++			&& LOAD_SYMBOL(lib, gtk_color_chooser_dialog_new)
++			&& LOAD_SYMBOL(lib, gtk_color_chooser_get_rgba)
++			&& LOAD_SYMBOL(lib, gtk_color_chooser_get_type)
++			&& LOAD_SYMBOL(lib, gtk_color_chooser_set_rgba)
++			&& LOAD_SYMBOL(lib, gtk_color_chooser_set_use_alpha)
++			&& LOAD_SYMBOL(lib, gtk_container_get_type)
++			&& LOAD_SYMBOL(lib, gtk_container_remove)
++			&& LOAD_SYMBOL(lib, gtk_dialog_add_button)
++			&& LOAD_SYMBOL(lib, gtk_dialog_get_type)
++			&& LOAD_SYMBOL(lib, gtk_dialog_get_widget_for_response)
++			&& LOAD_SYMBOL(lib, gtk_dialog_run)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_add_filter)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_dialog_new)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_current_folder)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_filename)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_filenames)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_filter)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_preview_filename)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_get_type)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_remove_filter)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_select_filename)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_action)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_create_folders)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_current_folder)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_current_name)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_do_overwrite_confirmation)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_filter)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_local_only)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_preview_widget)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_preview_widget_active)
++			&& LOAD_SYMBOL(lib, gtk_file_chooser_set_select_multiple)
++			&& LOAD_SYMBOL(lib, gtk_file_filter_add_pattern)
++			&& LOAD_SYMBOL(lib, gtk_file_filter_new)
++			&& LOAD_SYMBOL(lib, gtk_file_filter_set_name)
++			&& LOAD_SYMBOL(lib, gtk_font_chooser_dialog_new)
++			&& LOAD_SYMBOL(lib, gtk_font_chooser_get_font)
++			&& LOAD_SYMBOL(lib, gtk_font_chooser_get_type)
++			&& LOAD_SYMBOL(lib, gtk_font_chooser_set_font)
++			&& LOAD_SYMBOL(lib, gtk_get_current_event_time)
++			&& LOAD_SYMBOL(lib, gtk_image_get_type)
++			&& LOAD_SYMBOL(lib, gtk_image_new)
++			&& LOAD_SYMBOL(lib, gtk_image_set_from_pixbuf)
++			&& LOAD_SYMBOL(lib, gtk_init)
++			&& LOAD_SYMBOL(lib, gtk_menu_get_type)
++			&& LOAD_SYMBOL(lib, gtk_menu_item_get_type)
++			&& LOAD_SYMBOL(lib, gtk_menu_item_new)
++			&& LOAD_SYMBOL(lib, gtk_menu_item_set_label)
++			&& LOAD_SYMBOL(lib, gtk_menu_item_set_submenu)
++			&& LOAD_SYMBOL(lib, gtk_menu_item_set_use_underline)
++			&& LOAD_SYMBOL(lib, gtk_menu_new)
++			&& LOAD_SYMBOL(lib, gtk_menu_popdown)
++			&& LOAD_SYMBOL(lib, gtk_menu_popup)
++			&& LOAD_SYMBOL(lib, gtk_menu_shell_get_type)
++			&& LOAD_SYMBOL(lib, gtk_menu_shell_insert)
++			&& LOAD_SYMBOL(lib, gtk_menu_shell_select_item)
++			&& LOAD_SYMBOL(lib, gtk_separator_menu_item_new)
++			&& LOAD_SYMBOL(lib, gtk_settings_get_default)
++			&& LOAD_SYMBOL(lib, gtk_widget_destroy)
++			&& LOAD_SYMBOL(lib, gtk_widget_get_scale_factor)
++			&& LOAD_SYMBOL(lib, gtk_widget_get_type)
++			&& LOAD_SYMBOL(lib, gtk_widget_get_window)
++			&& LOAD_SYMBOL(lib, gtk_widget_hide)
++			&& LOAD_SYMBOL(lib, gtk_widget_hide_on_delete)
++			&& LOAD_SYMBOL(lib, gtk_widget_realize)
++			&& LOAD_SYMBOL(lib, gtk_widget_set_sensitive)
++			&& LOAD_SYMBOL(lib, gtk_widget_set_visible)
++			&& LOAD_SYMBOL(lib, gtk_widget_show)
++			&& LOAD_SYMBOL(lib, gtk_window_get_type)
++			&& LOAD_SYMBOL(lib, gtk_window_set_title)
++			&& LOAD_SYMBOL(lib, gtk_window_set_transient_for)
++			&& LOAD_SYMBOL(lib, pango_font_description_free)
++			&& LOAD_SYMBOL(lib, pango_font_description_from_string)
++			&& LOAD_SYMBOL(lib, pango_font_description_get_family)
++			&& LOAD_SYMBOL(lib, pango_font_description_get_size)
++			&& LOAD_SYMBOL(lib, pango_font_description_get_style)
++			&& LOAD_SYMBOL(lib, pango_font_description_get_weight)
++			&& LOAD_SYMBOL(lib, pango_font_description_new)
++			&& LOAD_SYMBOL(lib, pango_font_description_set_family)
++			&& LOAD_SYMBOL(lib, pango_font_description_set_size)
++			&& LOAD_SYMBOL(lib, pango_font_description_set_style)
++			&& LOAD_SYMBOL(lib, pango_font_description_set_weight)
++			&& LOAD_SYMBOL(lib, pango_font_description_to_string)
++			&& LOAD_SYMBOL(lib, pango_font_face_get_type)
++			&& LOAD_SYMBOL(lib, pango_font_family_get_type);
++	}();
++	return loaded;
++}
++
++} // namespace
++
+ class QGtk3ThemePlugin : public QPlatformThemePlugin
+ {
+    Q_OBJECT
+@@ -54,7 +220,7 @@ public:
+ QPlatformTheme *QGtk3ThemePlugin::create(const QString &key, const QStringList &params)
+ {
+     Q_UNUSED(params);
+-    if (!key.compare(QLatin1String(QGtk3Theme::name), Qt::CaseInsensitive))
++    if (!key.compare(QLatin1String(QGtk3Theme::name), Qt::CaseInsensitive) && ResolveGtk())
+         return new QGtk3Theme;
+ 
+     return nullptr;
+diff --git a/src/plugins/platformthemes/gtk3/qgtk3dialoghelpers.cpp b/src/plugins/platformthemes/gtk3/qgtk3dialoghelpers.cpp
+index 4f417d77d8..c0ef445b0f 100644
+--- a/src/plugins/platformthemes/gtk3/qgtk3dialoghelpers.cpp
++++ b/src/plugins/platformthemes/gtk3/qgtk3dialoghelpers.cpp
+@@ -56,6 +56,8 @@
+ #include <gdk/gdkx.h>
+ #include <pango/pango.h>
+ 
++#include "gtk_functions.h"
++
+ // The size of the preview we display for selected image files. We set height
+ // larger than width because generally there is more free space vertically
+ // than horiztonally (setting the preview image will alway expand the width of
+diff --git a/src/plugins/platformthemes/gtk3/qgtk3menu.cpp b/src/plugins/platformthemes/gtk3/qgtk3menu.cpp
+index 3e00d9610f..1d366a0005 100644
+--- a/src/plugins/platformthemes/gtk3/qgtk3menu.cpp
++++ b/src/plugins/platformthemes/gtk3/qgtk3menu.cpp
+@@ -46,6 +46,8 @@
+ #undef signals
+ #include <gtk/gtk.h>
+ 
++#include "gtk_functions.h"
++
+ QT_BEGIN_NAMESPACE
+ 
+ #if QT_CONFIG(shortcut)
+diff --git a/src/plugins/platformthemes/gtk3/qgtk3theme.cpp b/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
+index a47720384c..e768ea4d3e 100644
+--- a/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
++++ b/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
+@@ -48,6 +48,8 @@
+ 
+ #include <X11/Xlib.h>
+ 
++#include "gtk_functions.h"
++
+ QT_BEGIN_NAMESPACE
+ 
+ const char *QGtk3Theme::name = "gtk3";

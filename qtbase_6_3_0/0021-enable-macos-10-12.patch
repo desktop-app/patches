@@ -1,0 +1,45 @@
+diff --git a/cmake/QtAutoDetect.cmake b/cmake/QtAutoDetect.cmake
+index 8450035084..04632e47ef 100644
+--- a/cmake/QtAutoDetect.cmake
++++ b/cmake/QtAutoDetect.cmake
+@@ -347,7 +347,7 @@ function(qt_auto_detect_darwin)
+         if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+             if(NOT CMAKE_SYSTEM_NAME)
+                 # macOS
+-                set(version "10.14")
++                set(version "10.12")
+             elseif(CMAKE_SYSTEM_NAME STREQUAL iOS)
+                 set(version "13.0")
+             elseif(CMAKE_SYSTEM_NAME STREQUAL watchOS)
+diff --git a/cmake/QtCompilerFlags.cmake b/cmake/QtCompilerFlags.cmake
+index 0954ba95c5..f3fbcc7fff 100644
+--- a/cmake/QtCompilerFlags.cmake
++++ b/cmake/QtCompilerFlags.cmake
+@@ -15,6 +15,14 @@ else()
+         list(APPEND _qt_compiler_warning_flags_on -Wall -Wextra)
+     endif()
+     list(APPEND _qt_compiler_warning_flags_off -w)
++
++    if (APPLE)
++        list(APPEND _qt_compiler_warning_flags_on
++            -Werror=unguarded-availability
++            -Werror=unguarded-availability-new
++            -Werror=unsupported-availability-guard
++        )
++    endif()
+ endif()
+ 
+ set(_qt_compiler_warning_flags_condition
+diff --git a/mkspecs/common/macx.conf b/mkspecs/common/macx.conf
+index b5427dd88c..4cb13ffa0a 100644
+--- a/mkspecs/common/macx.conf
++++ b/mkspecs/common/macx.conf
+@@ -5,7 +5,7 @@
+ QMAKE_PLATFORM         += macos osx macx
+ QMAKE_MAC_SDK           = macosx
+ 
+-QMAKE_MACOSX_DEPLOYMENT_TARGET = 10.14
++QMAKE_MACOSX_DEPLOYMENT_TARGET = 10.12
+ 
+ QT_MAC_SDK_VERSION_MIN = 10.15
+ 

@@ -1,0 +1,57 @@
+diff --git a/src/gui/platform/darwin/qapplekeymapper.mm b/src/gui/platform/darwin/qapplekeymapper.mm
+index bdf741573d..ae3e24fbbc 100644
+--- a/src/gui/platform/darwin/qapplekeymapper.mm
++++ b/src/gui/platform/darwin/qapplekeymapper.mm
+@@ -608,8 +608,8 @@ QList<int> QAppleKeyMapper::possibleKeys(const QKeyEvent *event) const
+         if ((eventModifiers & candidateModifiers) == candidateModifiers) {
+             // If the event includes more modifiers than the candidate they
+             // will need to be included in the resulting key combination.
+-            auto additionalModifiers = eventModifiers & ~candidateModifiers;
+-            ret << int(additionalModifiers) + int(keyAfterApplyingModifiers);
++            // Patch: Fix non-english layout global shortcuts.
++            ret << int(candidateModifiers) + int(keyAfterApplyingModifiers);
+         }
+     }
+ 
+diff --git a/src/plugins/platforms/cocoa/qnsview_keys.mm b/src/plugins/platforms/cocoa/qnsview_keys.mm
+index dbcab6c6d1..fd9988301a 100644
+--- a/src/plugins/platforms/cocoa/qnsview_keys.mm
++++ b/src/plugins/platforms/cocoa/qnsview_keys.mm
+@@ -161,6 +161,23 @@
+         [super keyUp:nsevent];
+ }
+ 
++// Patch: Enable Ctrl+Tab and Ctrl+Shift+Tab / Ctrl+Backtab handle in-app.
++- (BOOL)performKeyEquivalent:(NSEvent *)nsevent
++{
++    NSString *chars = [nsevent charactersIgnoringModifiers];
++
++    if ([nsevent type] == NSEventTypeKeyDown && [chars length] > 0) {
++        QChar ch = [chars characterAtIndex:0];
++        Qt::Key qtKey = QAppleKeyMapper::fromCocoaKey(ch);
++        if ([nsevent modifierFlags] & NSEventModifierFlagControl
++                && (qtKey == Qt::Key_Tab || qtKey == Qt::Key_Backtab)) {
++            [self handleKeyEvent:nsevent];
++            return YES;
++        }
++    }
++    return [super performKeyEquivalent:nsevent];
++}
++
+ - (void)cancelOperation:(id)sender
+ {
+     Q_UNUSED(sender);
+diff --git a/src/widgets/kernel/qwidget.cpp b/src/widgets/kernel/qwidget.cpp
+index f56fe8559d..200d8b2a3b 100644
+--- a/src/widgets/kernel/qwidget.cpp
++++ b/src/widgets/kernel/qwidget.cpp
+@@ -8712,7 +8712,8 @@ bool QWidget::event(QEvent *event)
+     case QEvent::KeyPress: {
+         QKeyEvent *k = (QKeyEvent *)event;
+         bool res = false;
+-        if (!(k->modifiers() & (Qt::ControlModifier | Qt::AltModifier))) {  //### Add MetaModifier?
++        // Patch: Enable Ctrl+Tab and Ctrl+Shift+Tab / Ctrl+Backtab handle in-app.
++        if (!(k->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+             if (k->key() == Qt::Key_Backtab
+                 || (k->key() == Qt::Key_Tab && (k->modifiers() & Qt::ShiftModifier)))
+                 res = focusNextPrevChild(false);
