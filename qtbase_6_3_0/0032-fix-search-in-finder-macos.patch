@@ -1,0 +1,15 @@
+diff --git a/src/plugins/platforms/cocoa/qcocoafiledialoghelper.mm b/src/plugins/platforms/cocoa/qcocoafiledialoghelper.mm
+index e84d50d729..53c492436c 100644
+--- a/src/plugins/platforms/cocoa/qcocoafiledialoghelper.mm
++++ b/src/plugins/platforms/cocoa/qcocoafiledialoghelper.mm
+@@ -406,6 +406,10 @@ typedef QSharedPointer<QFileDialogOptions> SharedPointerFileDialogOptions;
+ {
+     Q_UNUSED(sender);
+ 
++    // Patch: Fix crash when searching in Finder.
++    if (!path || [path isEqual:[NSNull null]])
++        return;
++
+     if (!(path && path.length) || [path isEqualToString:m_currentDirectory])
+         return;
+ 
