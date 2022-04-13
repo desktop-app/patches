@@ -1,8 +1,8 @@
 diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms/cocoa/qcocoawindow.mm
-index 70cfa42974..2a0e44b478 100644
+index 70cfa42974..bc1b47b55c 100644
 --- a/src/plugins/platforms/cocoa/qcocoawindow.mm
 +++ b/src/plugins/platforms/cocoa/qcocoawindow.mm
-@@ -556,6 +556,32 @@ NSUInteger QCocoaWindow::windowStyleMask(Qt::WindowFlags flags)
+@@ -556,6 +556,15 @@ NSUInteger QCocoaWindow::windowStyleMask(Qt::WindowFlags flags)
          }
      }();
  
@@ -14,23 +14,6 @@ index 70cfa42974..2a0e44b478 100644
 +    if (nonactivatingPanelMask.isValid() && nonactivatingPanelMask.toBool()) {
 +        styleMask |= NSWindowStyleMaskNonactivatingPanel;
 +    }
-+
-+    if (frameless) {
-+        // Frameless windows do not display the traffic lights buttons for
-+        // e.g. minimize, however StyleMaskMiniaturizable is required to allow
-+        // programmatic minimize.
-+        styleMask |= NSWindowStyleMaskMiniaturizable;
-+    } else if (flags & Qt::CustomizeWindowHint) {
-+        if (flags & Qt::WindowTitleHint)
-+            styleMask |= NSWindowStyleMaskTitled;
-+        if (flags & Qt::WindowCloseButtonHint)
-+            styleMask |= NSWindowStyleMaskClosable;
-+        if (flags & Qt::WindowMinimizeButtonHint)
-+            styleMask |= NSWindowStyleMaskMiniaturizable;
-+        if (flags & Qt::WindowMaximizeButtonHint)
-+            styleMask |= NSWindowStyleMaskResizable;
-+    } else {
-+        styleMask |= NSWindowStyleMaskClosable | NSWindowStyleMaskTitled;
 +
      // We determine which buttons to show in updateTitleBarButtons,
      // so we can enable all the relevant style masks here to ensure
