@@ -1,13 +1,66 @@
+From ec75a18ac6889f276b928b6c6e9eadf10eb6dcdd Mon Sep 17 00:00:00 2001
+From: Liang Qi <liang.qi@qt.io>
+Date: Tue, 19 Apr 2022 12:11:07 +0200
+Subject: [PATCH] xcb: create fake screen when XRandR 1.2 and later unavailable
+
+Keep the old behavior from 6.0 to 6.2.
+
+Fixes: QTBUG-102637
+Pick-to: 6.3
+Change-Id: I2e596c7d5161a3dc7a8493358e272a481aee5308
+---
+
+diff --git a/src/plugins/platforms/xcb/qxcbconnection.h b/src/plugins/platforms/xcb/qxcbconnection.h
+index 943f380..c25f79f 100644
+--- a/src/plugins/platforms/xcb/qxcbconnection.h
++++ b/src/plugins/platforms/xcb/qxcbconnection.h
+@@ -262,6 +262,7 @@
+                              xcb_randr_get_output_info_reply_t *outputInfo);
+     void destroyScreen(QXcbScreen *screen);
+     void initializeScreens(bool initialized);
++    void initializeScreensWithoutXRandR(xcb_screen_iterator_t *it, int screenNumber, QXcbScreen *primaryScreen);
+     void initializeScreensFromOutput(xcb_screen_iterator_t *it, int screenNumber, QXcbScreen *primaryScreen);
+ 
+     void updateScreen_monitor(QXcbScreen *screen, xcb_randr_monitor_info_t *monitorInfo, xcb_timestamp_t timestamp = XCB_NONE);
 diff --git a/src/plugins/platforms/xcb/qxcbconnection_screens.cpp b/src/plugins/platforms/xcb/qxcbconnection_screens.cpp
-index eef563917c..9169ac110e 100644
+index a9bc2ae..37dc3d0 100644
 --- a/src/plugins/platforms/xcb/qxcbconnection_screens.cpp
 +++ b/src/plugins/platforms/xcb/qxcbconnection_screens.cpp
-@@ -349,7 +349,7 @@ void QXcbConnection::initializeScreens(bool initialized)
-     while (it.rem) {
-         if (isAtLeastXRandR15())
+@@ -350,6 +350,10 @@
              initializeScreensFromMonitor(&it, xcbScreenNumber, primaryScreen, initialized);
--        else if (isAtLeastXRandR12())
-+        else
+         else if (isAtLeastXRandR12())
              initializeScreensFromOutput(&it, xcbScreenNumber, primaryScreen);
++        else {
++            qWarning("There is no XRandR 1.2 and later version available. There will be only fake screen(s) to use.");
++            initializeScreensWithoutXRandR(&it, xcbScreenNumber, primaryScreen);
++        }
  
          xcb_screen_next(&it);
+         ++xcbScreenNumber;
+@@ -382,6 +386,26 @@
+     }
+ }
+ 
++void QXcbConnection::initializeScreensWithoutXRandR(xcb_screen_iterator_t *it, int xcbScreenNumber, QXcbScreen *primaryScreen)
++{
++    // XRandR extension is missing, then create a fake/legacy screen.
++    xcb_screen_t *xcbScreen = it->data;
++    QXcbVirtualDesktop *virtualDesktop = new QXcbVirtualDesktop(this, xcbScreen, xcbScreenNumber);
++    m_virtualDesktops.append(virtualDesktop);
++    QList<QPlatformScreen *> siblings;
++
++    QXcbScreen *screen = new QXcbScreen(this, virtualDesktop, XCB_NONE, nullptr);
++    qCDebug(lcQpaScreen) << "created fake screen" << screen;
++    m_screens << screen;
++
++    if (primaryScreenNumber() == xcbScreenNumber) {
++        primaryScreen = screen;
++        primaryScreen->setPrimary(true);
++    }
++    siblings << screen;
++    virtualDesktop->setScreens(std::move(siblings));
++}
++
+ void QXcbConnection::initializeScreensFromOutput(xcb_screen_iterator_t *it, int xcbScreenNumber, QXcbScreen *primaryScreen)
+ {
+     // Each "screen" in xcb terminology is a virtual desktop,
