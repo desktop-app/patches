@@ -1,0 +1,13 @@
+diff --git a/src/plugins/platforms/xcb/qxcbconnection_screens.cpp b/src/plugins/platforms/xcb/qxcbconnection_screens.cpp
+index eef563917c..9169ac110e 100644
+--- a/src/plugins/platforms/xcb/qxcbconnection_screens.cpp
++++ b/src/plugins/platforms/xcb/qxcbconnection_screens.cpp
+@@ -349,7 +349,7 @@ void QXcbConnection::initializeScreens(bool initialized)
+     while (it.rem) {
+         if (isAtLeastXRandR15())
+             initializeScreensFromMonitor(&it, xcbScreenNumber, primaryScreen, initialized);
+-        else if (isAtLeastXRandR12())
++        else
+             initializeScreensFromOutput(&it, xcbScreenNumber, primaryScreen);
+ 
+         xcb_screen_next(&it);
