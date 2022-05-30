@@ -1,5 +1,22 @@
+diff --git a/src/gui/kernel/qguiapplication.cpp b/src/gui/kernel/qguiapplication.cpp
+index 4c819e0915..c4d640aa28 100644
+--- a/src/gui/kernel/qguiapplication.cpp
++++ b/src/gui/kernel/qguiapplication.cpp
+@@ -255,11 +255,7 @@ static void initThemeHints()
+ 
+ static bool checkNeedPortalSupport()
+ {
+-#if QT_CONFIG(dbus)
+-    return !QStandardPaths::locate(QStandardPaths::RuntimeLocation, QLatin1String("flatpak-info")).isEmpty() || qEnvironmentVariableIsSet("SNAP");
+-#else
+-    return false;
+-#endif // QT_CONFIG(dbus)
++    return true;
+ }
+ 
+ // Using aggregate initialization instead of ctor so we can have a POD global static
 diff --git a/src/gui/platform/unix/qgenericunixthemes.cpp b/src/gui/platform/unix/qgenericunixthemes.cpp
-index 86f2a266ea..49be369452 100644
+index 86f2a266ea..87a81c2eb9 100644
 --- a/src/gui/platform/unix/qgenericunixthemes.cpp
 +++ b/src/gui/platform/unix/qgenericunixthemes.cpp
 @@ -853,24 +853,12 @@ QStringList QGenericUnixTheme::themeNames()
@@ -27,16 +44,14 @@ index 86f2a266ea..49be369452 100644
              } else {
                  // unknown, but lowercase the name (our standard practice) and
                  // remove any "x-" prefix
-@@ -878,6 +866,12 @@ QStringList QGenericUnixTheme::themeNames()
+@@ -878,6 +866,10 @@ QStringList QGenericUnixTheme::themeNames()
                  result.push_back(s.startsWith(QLatin1String("x-")) ? s.mid(2) : s);
              }
          }
-+        if (!result.contains(QLatin1String(QKdeTheme::name))) {
-+            // prefer the GTK3 theme implementation with native dialogs etc.
-+            result.push_back(QStringLiteral("gtk3"));
-+            // fallback to the generic Gnome theme if loading the GTK3 theme fails
-+            result.push_back(QLatin1String(QGnomeTheme::name));
-+        }
++        // prefer the GTK3 theme implementation with native dialogs etc.
++        result.push_back(QStringLiteral("gtk3"));
++        // fallback to the generic Gnome theme if loading the GTK3 theme fails
++        result.push_back(QLatin1String(QGnomeTheme::name));
      } // desktopSettingsAware
      result.append(QLatin1String(QGenericUnixTheme::name));
      return result;
