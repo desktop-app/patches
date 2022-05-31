@@ -1,9 +1,13 @@
 diff --git a/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportalfiledialog.cpp b/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportalfiledialog.cpp
-index 61d0059898..a36a700542 100644
+index 61d0059898..b0803b91c9 100644
 --- a/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportalfiledialog.cpp
 +++ b/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportalfiledialog.cpp
-@@ -298,7 +298,11 @@ void QXdgDesktopPortalFileDialog::openPortal()
-     connect(watcher, &QDBusPendingCallWatcher::finished, this, [this] (QDBusPendingCallWatcher *watcher) {
+@@ -295,10 +295,14 @@ void QXdgDesktopPortalFileDialog::openPortal()
+ 
+     QDBusPendingCall pendingCall = QDBusConnection::sessionBus().asyncCall(message);
+     QDBusPendingCallWatcher *watcher = new QDBusPendingCallWatcher(pendingCall);
+-    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this] (QDBusPendingCallWatcher *watcher) {
++    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, d] (QDBusPendingCallWatcher *watcher) {
          QDBusPendingReply<QDBusObjectPath> reply = *watcher;
          if (reply.isError()) {
 -            Q_EMIT reject();
