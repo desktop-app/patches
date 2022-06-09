@@ -1,0 +1,29 @@
+From 58d464566160383b8e53d17a53629b9c06684c7a Mon Sep 17 00:00:00 2001
+From: André de la Rocha <andre.rocha@qt.io>
+Date: Wed, 20 Apr 2022 19:10:05 +0200
+Subject: [PATCH] Windows: Fix pop-up windows being incorrectly moved to primary display
+
+Amends a previous workaround used with AMD graphic adapters, which under
+some circumstances could incorrectly move pop-up windows and cause
+issues with menus.
+
+Fixes: QTBUG-97533
+Pick-to: 6.2 6.3
+Change-Id: Icc83198913b0e78ae3d7c0679e46f8b46b7015bf
+Reviewed-by: Qt CI Bot <qt_ci_bot@qt-project.org>
+Reviewed-by: Volker Hilsheimer <volker.hilsheimer@qt.io>
+---
+
+diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
+index 2a91b46..389c224 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.cpp
++++ b/src/plugins/platforms/windows/qwindowswindow.cpp
+@@ -693,7 +693,7 @@
+ {
+     const QPoint orgPos(context->frameX - invMargins.left(), context->frameY - invMargins.top());
+ 
+-    if (!w || (!w->isTopLevel() && w->surfaceType() != QWindow::OpenGLSurface))
++    if (!w || w->type() != Qt::Window)
+         return orgPos;
+ 
+     // Workaround for QTBUG-50371
