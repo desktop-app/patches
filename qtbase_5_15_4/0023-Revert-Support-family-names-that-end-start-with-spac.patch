@@ -1,0 +1,18 @@
+diff --git a/src/gui/text/qfontdatabase.cpp b/src/gui/text/qfontdatabase.cpp
+index 72dcac6904..0f5219410d 100644
+--- a/src/gui/text/qfontdatabase.cpp
++++ b/src/gui/text/qfontdatabase.cpp
+@@ -503,12 +503,10 @@ void QFontDatabasePrivate::invalidate()
+     emit static_cast<QGuiApplication *>(QCoreApplication::instance())->fontDatabaseChanged();
+ }
+ 
+-QtFontFamily *QFontDatabasePrivate::family(const QString &family, FamilyRequestFlags flags)
++QtFontFamily *QFontDatabasePrivate::family(const QString &f, FamilyRequestFlags flags)
+ {
+     QtFontFamily *fam = nullptr;
+ 
+-    const QString f = family.trimmed();
+-
+     int low = 0;
+     int high = count;
+     int pos = count / 2;
