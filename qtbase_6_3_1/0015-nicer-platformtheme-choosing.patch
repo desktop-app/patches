@@ -1,27 +1,16 @@
 diff --git a/src/gui/kernel/qguiapplication.cpp b/src/gui/kernel/qguiapplication.cpp
-index b4d5914207..86e2368028 100644
+index b4d5914207..106930b6f4 100644
 --- a/src/gui/kernel/qguiapplication.cpp
 +++ b/src/gui/kernel/qguiapplication.cpp
-@@ -255,11 +255,16 @@ static void initThemeHints()
- 
+@@ -256,7 +256,7 @@ static void initThemeHints()
  static bool checkNeedPortalSupport()
  {
--#if QT_CONFIG(dbus)
+ #if QT_CONFIG(dbus)
 -    return !QStandardPaths::locate(QStandardPaths::RuntimeLocation, QLatin1String("flatpak-info")).isEmpty() || qEnvironmentVariableIsSet("SNAP");
-+#if defined Q_OS_UNIX && !defined Q_OS_MAC
 +    return true;
  #else
      return false;
--#endif // QT_CONFIG(dbus)
-+#endif
-+// #if QT_CONFIG(dbus)
-+//     return !QStandardPaths::locate(QStandardPaths::RuntimeLocation, QLatin1String("flatpak-info")).isEmpty() || qEnvironmentVariableIsSet("SNAP");
-+// #else
-+//     return false;
-+// #endif // QT_CONFIG(dbus)
- }
- 
- // Using aggregate initialization instead of ctor so we can have a POD global static
+ #endif // QT_CONFIG(dbus)
 diff --git a/src/gui/platform/unix/qgenericunixthemes.cpp b/src/gui/platform/unix/qgenericunixthemes.cpp
 index 86f2a266ea..87a81c2eb9 100644
 --- a/src/gui/platform/unix/qgenericunixthemes.cpp
