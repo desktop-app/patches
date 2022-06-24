@@ -1,21 +1,8 @@
-diff --git a/src/gui/kernel/qguiapplication.cpp b/src/gui/kernel/qguiapplication.cpp
-index b4d5914207..106930b6f4 100644
---- a/src/gui/kernel/qguiapplication.cpp
-+++ b/src/gui/kernel/qguiapplication.cpp
-@@ -256,7 +256,7 @@ static void initThemeHints()
- static bool checkNeedPortalSupport()
- {
- #if QT_CONFIG(dbus)
--    return !QStandardPaths::locate(QStandardPaths::RuntimeLocation, QLatin1String("flatpak-info")).isEmpty() || qEnvironmentVariableIsSet("SNAP");
-+    return true;
- #else
-     return false;
- #endif // QT_CONFIG(dbus)
 diff --git a/src/gui/platform/unix/qgenericunixthemes.cpp b/src/gui/platform/unix/qgenericunixthemes.cpp
-index 86f2a266ea..87a81c2eb9 100644
+index 86f2a266ea..b6a9f2b4af 100644
 --- a/src/gui/platform/unix/qgenericunixthemes.cpp
 +++ b/src/gui/platform/unix/qgenericunixthemes.cpp
-@@ -853,24 +853,12 @@ QStringList QGenericUnixTheme::themeNames()
+@@ -853,24 +853,13 @@ QStringList QGenericUnixTheme::themeNames()
      QStringList result;
      if (QGuiApplication::desktopSettingsAware()) {
          const QByteArray desktopEnvironment = QGuiApplicationPrivate::platformIntegration()->services()->desktopEnvironment();
@@ -27,6 +14,7 @@ index 86f2a266ea..87a81c2eb9 100644
 -                             << "XFCE"
 -                             << "LXDE";
          const QList<QByteArray> desktopNames = desktopEnvironment.split(':');
++        result.push_back(QStringLiteral("xdgdesktopportal"));
          for (const QByteArray &desktopName : desktopNames) {
              if (desktopEnvironment == "KDE") {
  #if QT_CONFIG(settings)
@@ -40,7 +28,7 @@ index 86f2a266ea..87a81c2eb9 100644
              } else {
                  // unknown, but lowercase the name (our standard practice) and
                  // remove any "x-" prefix
-@@ -878,6 +866,10 @@ QStringList QGenericUnixTheme::themeNames()
+@@ -878,6 +867,10 @@ QStringList QGenericUnixTheme::themeNames()
                  result.push_back(s.startsWith(QLatin1String("x-")) ? s.mid(2) : s);
              }
          }
@@ -51,3 +39,15 @@ index 86f2a266ea..87a81c2eb9 100644
      } // desktopSettingsAware
      result.append(QLatin1String(QGenericUnixTheme::name));
      return result;
+diff --git a/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp b/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
+index 87b9f20a4c..c074ab7b87 100644
+--- a/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
++++ b/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
+@@ -108,6 +108,7 @@ QXdgDesktopPortalTheme::QXdgDesktopPortalTheme()
+ 
+     QStringList themeNames;
+     themeNames += QGuiApplicationPrivate::platform_integration->themeNames();
++    themeNames.removeAll(QStringLiteral("xdgdesktopportal"));
+     // 1) Look for a theme plugin.
+     for (const QString &themeName : qAsConst(themeNames)) {
+         d->baseTheme = QPlatformThemeFactory::create(themeName, nullptr);
