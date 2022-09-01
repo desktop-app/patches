@@ -1,0 +1,53 @@
+diff --git a/src/gui/platform/unix/qgenericunixthemes.cpp b/src/gui/platform/unix/qgenericunixthemes.cpp
+index 62ef0636c7..c469306644 100644
+--- a/src/gui/platform/unix/qgenericunixthemes.cpp
++++ b/src/gui/platform/unix/qgenericunixthemes.cpp
+@@ -824,24 +824,13 @@ QStringList QGenericUnixTheme::themeNames()
+     QStringList result;
+     if (QGuiApplication::desktopSettingsAware()) {
+         const QByteArray desktopEnvironment = QGuiApplicationPrivate::platformIntegration()->services()->desktopEnvironment();
+-        QList<QByteArray> gtkBasedEnvironments;
+-        gtkBasedEnvironments << "GNOME"
+-                             << "X-CINNAMON"
+-                             << "UNITY"
+-                             << "MATE"
+-                             << "XFCE"
+-                             << "LXDE";
+         const QList<QByteArray> desktopNames = desktopEnvironment.split(':');
++        result.push_back(QStringLiteral("xdgdesktopportal"));
+         for (const QByteArray &desktopName : desktopNames) {
+             if (desktopEnvironment == "KDE") {
+ #if QT_CONFIG(settings)
+                 result.push_back(QLatin1StringView(QKdeTheme::name));
+ #endif
+-            } else if (gtkBasedEnvironments.contains(desktopName)) {
+-                // prefer the GTK3 theme implementation with native dialogs etc.
+-                result.push_back(QStringLiteral("gtk3"));
+-                // fallback to the generic Gnome theme if loading the GTK3 theme fails
+-                result.push_back(QLatin1StringView(QGnomeTheme::name));
+             } else {
+                 // unknown, but lowercase the name (our standard practice) and
+                 // remove any "x-" prefix
+@@ -849,6 +838,10 @@ QStringList QGenericUnixTheme::themeNames()
+                 result.push_back(s.startsWith("x-"_L1) ? s.mid(2) : s);
+             }
+         }
++        // prefer the GTK3 theme implementation with native dialogs etc.
++        result.push_back(QStringLiteral("gtk3"));
++        // fallback to the generic Gnome theme if loading the GTK3 theme fails
++        result.push_back(QLatin1StringView(QGnomeTheme::name));
+     } // desktopSettingsAware
+     result.append(QLatin1StringView(QGenericUnixTheme::name));
+     return result;
+diff --git a/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp b/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
+index e6a72e4289..97f0cf6e39 100644
+--- a/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
++++ b/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
+@@ -74,6 +74,7 @@ QXdgDesktopPortalTheme::QXdgDesktopPortalTheme()
+ 
+     QStringList themeNames;
+     themeNames += QGuiApplicationPrivate::platform_integration->themeNames();
++    themeNames.removeAll(QStringLiteral("xdgdesktopportal"));
+     // 1) Look for a theme plugin.
+     for (const QString &themeName : qAsConst(themeNames)) {
+         d->baseTheme = QPlatformThemeFactory::create(themeName, nullptr);
