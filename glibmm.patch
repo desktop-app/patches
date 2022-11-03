@@ -1,5 +1,153 @@
+diff --git a/glib/glibmm/object.cc b/glib/glibmm/object.cc
+index 4dc73b31..f29f30bb 100644
+--- a/glib/glibmm/object.cc
++++ b/glib/glibmm/object.cc
+@@ -30,7 +30,7 @@ namespace Glib
+ {
+ 
+ ConstructParams::ConstructParams(const Glib::Class& glibmm_class_)
+-: glibmm_class(glibmm_class_), n_parameters(0), parameter_names(nullptr), parameter_values(nullptr)
++: glibmm_class(glibmm_class_), n_parameters(0), parameters(nullptr)
+ {
+ }
+ 
+@@ -46,7 +46,7 @@ ConstructParams::ConstructParams(const Glib::Class& glibmm_class_)
+  */
+ ConstructParams::ConstructParams(
+   const Glib::Class& glibmm_class_, const char* first_property_name, ...)
+-: glibmm_class(glibmm_class_), n_parameters(0), parameter_names(nullptr), parameter_values(nullptr)
++: glibmm_class(glibmm_class_), n_parameters(0), parameters(nullptr)
+ {
+   va_list var_args;
+   va_start(var_args, first_property_name);
+@@ -69,26 +69,23 @@ ConstructParams::ConstructParams(
+       break;
+     }
+ 
+-    if (n_parameters >= n_alloced_params) {
+-      n_alloced_params += 8;
+-      parameter_names = g_renew(const char*, parameter_names, n_alloced_params);
+-      parameter_values = g_renew(GValue, parameter_values, n_alloced_params);
+-    }
++    if (n_parameters >= n_alloced_params)
++      parameters = g_renew(GParameter, parameters, n_alloced_params += 8);
++
++    GParameter& param = parameters[n_parameters];
+ 
+-    auto& param_name = parameter_names[n_parameters];
+-    auto& param_value = parameter_values[n_parameters];
+-    param_name = name;
+-    param_value.g_type = 0;
++    param.name = name;
++    param.value.g_type = 0;
+ 
+     // Fill the GValue with the current vararg, and move on to the next one.
+-    g_value_init(&param_value, G_PARAM_SPEC_VALUE_TYPE(pspec));
+-    G_VALUE_COLLECT(&param_value, var_args, 0, &collect_error);
++    g_value_init(&param.value, G_PARAM_SPEC_VALUE_TYPE(pspec));
++    G_VALUE_COLLECT(&param.value, var_args, 0, &collect_error);
+ 
+     if (collect_error)
+     {
+       g_warning("Glib::ConstructParams::ConstructParams(): %s", collect_error);
+       g_free(collect_error);
+-      g_value_unset(&param_value);
++      g_value_unset(&param.value);
+       break;
+     }
+ 
+@@ -102,13 +99,10 @@ ConstructParams::ConstructParams(
+ 
+ ConstructParams::~ConstructParams() noexcept
+ {
+-  while (n_parameters > 0) {
+-    auto& param_value = parameter_values[--n_parameters];
+-    g_value_unset(&param_value);
+-  }
++  while (n_parameters > 0)
++    g_value_unset(&parameters[--n_parameters].value);
+ 
+-  g_free(parameter_names);
+-  g_free(parameter_values);
++  g_free(parameters);
+ }
+ 
+ /**** Glib::Object_Class ***************************************************/
+@@ -166,10 +160,10 @@ Object::Object()
+     custom_class_init_finished();
+   }
+ 
+-  GObject* const new_object = g_object_new_with_properties(object_type, 0, nullptr, nullptr);
++  void* const new_object = g_object_newv(object_type, 0, nullptr);
+ 
+   // Connect the GObject and Glib::Object instances.
+-  ObjectBase::initialize(new_object);
++  ObjectBase::initialize(static_cast<GObject*>(new_object));
+ }
+ 
+ Object::Object(const Glib::ConstructParams& construct_params)
+@@ -193,11 +187,11 @@ Object::Object(const Glib::ConstructParams& construct_params)
+   // This works with custom types too, since those inherit the properties of
+   // their base class.
+ 
+-  GObject* const new_object =
+-    g_object_new_with_properties(object_type, construct_params.n_parameters, construct_params.parameter_names, construct_params.parameter_values);
++  void* const new_object =
++    g_object_newv(object_type, construct_params.n_parameters, construct_params.parameters);
+ 
+   // Connect the GObject and Glib::Object instances.
+-  ObjectBase::initialize(new_object);
++  ObjectBase::initialize(static_cast<GObject*>(new_object));
+ }
+ 
+ Object::Object(GObject* castitem)
+diff --git a/glib/glibmm/object.h b/glib/glibmm/object.h
+index 6db4b5cb..66adc145 100644
+--- a/glib/glibmm/object.h
++++ b/glib/glibmm/object.h
+@@ -53,9 +53,8 @@ class GLIBMM_API GSigConnectionNode;
+ 
+ /* ConstructParams::ConstructParams() takes a varargs list of properties
+  * and values, like g_object_new() does.  This list will then be converted
+- * to an array of parameter names and an array of parameter values,
+- * for use with g_object_new_with_properties().  No overhead is
+- * involved, since g_object_new() is just a wrapper around g_object_new_with_properties()
++ * to a GParameter array, for use with g_object_newv().  No overhead is
++ * involved, since g_object_new() is just a wrapper around g_object_newv()
+  * as well.
+  *
+  * The advantage of an auxiliary ConstructParams object over g_object_new()
+@@ -71,8 +70,7 @@ class GLIBMM_API ConstructParams
+ public:
+   const Glib::Class& glibmm_class;
+   unsigned int n_parameters;
+-  const char ** parameter_names;
+-  GValue* parameter_values;
++  GParameter* parameters;
+ 
+   explicit ConstructParams(const Glib::Class& glibmm_class_);
+   ConstructParams(const Glib::Class& glibmm_class_, const char* first_property_name,
+diff --git a/meson.build b/meson.build
+index b73a1ccc..516947f7 100644
+--- a/meson.build
++++ b/meson.build
+@@ -107,12 +107,13 @@ sigcxx_req = '>= 3.0.0'
+ glib_req = '>= 2.73.2'
+ 
+ # There are pkg-config files for sigc++ and glib on MSVC, so just use that.
++dl_dep = cpp_compiler.find_library('dl', required : false)
+ sigcxx_dep = dependency('sigc++-3.0', version: sigcxx_req)
+ glib_dep = dependency('glib-2.0', version: glib_req)
+ gobject_dep = dependency('gobject-2.0', version: glib_req)
+ gmodule_dep = dependency('gmodule-2.0', version: glib_req)
+ 
+-glibmm_build_dep = [sigcxx_dep, glib_dep, gobject_dep, gmodule_dep]
++glibmm_build_dep = [dl_dep, sigcxx_dep, glib_dep, gobject_dep, gmodule_dep]
+ glibmm_requires = [
+   'sigc++-3.0', sigcxx_req,
+   'glib-2.0', glib_req,
 diff --git a/tools/generate_wrap_init.pl.in b/tools/generate_wrap_init.pl.in
-index f49fe2f2..7a40db96 100644
+index 50e08275..8ce0da9f 100644
 --- a/tools/generate_wrap_init.pl.in
 +++ b/tools/generate_wrap_init.pl.in
 @@ -206,6 +206,7 @@ print << "EOF";
@@ -8,9 +156,9 @@ index f49fe2f2..7a40db96 100644
  #define GLIBMM_INCLUDED_FROM_WRAP_INIT_CC
 +#include <dlfcn.h>
  #include <glibmm.h>
- 
- // Disable the 'const' function attribute of the get_type() functions.
-@@ -360,8 +361,8 @@ foreach my $sub_namespace (sort keys %extra_namespaces)
+ #include <${parent_dir}/wrap_init.h>
+ #include <glibmm/error.h>
+@@ -354,8 +355,8 @@ foreach my $sub_namespace (sort keys %extra_namespaces)
        my ($cppname, $basename, @extra_namespace) = @{$i};
        if (@extra_namespace > 0 && $sub_namespace eq join("::", @extra_namespace))
        {
@@ -21,7 +169,7 @@ index f49fe2f2..7a40db96 100644
        }
      }
      print_with_guards($filename_header, $message) if $message;
-@@ -386,8 +387,8 @@ foreach my $filename_header (sort keys %exceptions)
+@@ -380,8 +381,8 @@ foreach my $filename_header (sort keys %exceptions)
      my ($cppname, $basename, @extra_namespace) = @{$i};
      if (@extra_namespace == 0)
      {
@@ -32,7 +180,7 @@ index f49fe2f2..7a40db96 100644
      }
    }
    print_with_guards($filename_header, $message) if $message;
-@@ -418,8 +419,8 @@ foreach my $filename_header (sort keys %objects)
+@@ -412,8 +413,8 @@ foreach my $filename_header (sort keys %objects)
    {
      my ($cppname, $basename, @extra_namespace) = @{$i};
      my $qualified_cppname = join("::", (@extra_namespace, $cppname));
@@ -75,10 +223,10 @@ index 45354752..a3dae03f 100644
  
  #include <__MODULE__/__FILE__.h>
 diff --git a/tools/m4/class_interface.m4 b/tools/m4/class_interface.m4
-index 3c0b93ef..6be342a1 100644
+index 5243b265..7da9a316 100644
 --- a/tools/m4/class_interface.m4
 +++ b/tools/m4/class_interface.m4
-@@ -84,7 +84,8 @@ const Glib::Interface_Class& __CPPNAME__`'_Class::init()
+@@ -86,7 +86,8 @@ const Glib::Interface_Class& __CPPNAME__`'_Class::init()
      class_init_func_ = &__CPPNAME__`'_Class::iface_init_function;
  
      // We can not derive from another interface, and it is not necessary anyway.
@@ -88,11 +236,41 @@ index 3c0b93ef..6be342a1 100644
    }
  
    return *this;
+diff --git a/tools/m4/class_opaque_refcounted.m4 b/tools/m4/class_opaque_refcounted.m4
+index 544f772e..607ac795 100644
+--- a/tools/m4/class_opaque_refcounted.m4
++++ b/tools/m4/class_opaque_refcounted.m4
+@@ -115,7 +115,9 @@ GType __CPPNAME__::get_type()
+ ifelse(__OPAQUE_FUNC_GTYPE__,,`dnl
+   return _GET_TYPE_FUNC(__CNAME__);
+ ',`dnl
+-  return __OPAQUE_FUNC_GTYPE__`'();
++  if (const auto func = (decltype(&__OPAQUE_FUNC_GTYPE__)) dlsym(RTLD_DEFAULT, "__OPAQUE_FUNC_GTYPE__"))
++    return func();
++  return GType();
+ ')dnl
+ }
+ 
 diff --git a/tools/m4/class_shared.m4 b/tools/m4/class_shared.m4
-index 68804128..2d84d1a4 100644
+index 1dab09d0..0c5db057 100644
 --- a/tools/m4/class_shared.m4
 +++ b/tools/m4/class_shared.m4
-@@ -164,7 +164,8 @@ ifdef(`__BOOL_DO_NOT_DERIVE_GTYPE__',`dnl
+@@ -173,10 +173,12 @@ ifdef(`__BOOL_ABI_AS_WITH_DERIVED_GTYPE__',`dnl
+     class_init_func_ = &__CPPNAME__`'_Class::class_init_function;
+ 
+     // Do not derive a GType, or use a derived class:
+-    gtype_ = _LOWER(__CCAST__)_get_type();
++    if (const auto func = (decltype(&_LOWER(__CCAST__)_get_type)) dlsym(RTLD_DEFAULT, "_LOWER(__CCAST__)_get_type"))
++      gtype_ = func();
+ ',`dnl
+     // Do not derive a GType, or use a derived class:
+-    gtype_ = _LOWER(__CCAST__)_get_type();
++    if (const auto func = (decltype(&_LOWER(__CCAST__)_get_type)) dlsym(RTLD_DEFAULT, "_LOWER(__CCAST__)_get_type"))
++      gtype_ = func();
+ ')',`dnl not __BOOL_DO_NOT_DERIVE_GTYPE__
+     // Glib::Class has to know the class init function to clone custom types.
+     class_init_func_ = &__CPPNAME__`'_Class::class_init_function;
+@@ -186,7 +188,8 @@ ifdef(`__BOOL_ABI_AS_WITH_DERIVED_GTYPE__',`dnl
      //CppClassParent::CppObjectType::get_type();
  
      // Create the wrapper type, with the same class/instance size as the base type.
@@ -102,7 +280,22 @@ index 68804128..2d84d1a4 100644
  
      // Add derived versions of interfaces, if the C type implements any interfaces:
  _IMPORT(SECTION_CC_IMPLEMENTS_INTERFACES)
-@@ -191,7 +192,8 @@ ifdef(`__BOOL_DO_NOT_DERIVE_GTYPE__',`dnl
+@@ -207,10 +210,12 @@ ifdef(`__BOOL_ABI_AS_WITH_DERIVED_GTYPE__',`dnl
+     class_init_func_ = &__CPPNAME__`'_Class::class_init_function;
+ 
+     // Do not derive a GType, or use a derived class:
+-    gtype_ = _LOWER(__CCAST__)_get_type();
++    if (const auto func = (decltype(&_LOWER(__CCAST__)_get_type)) dlsym(RTLD_DEFAULT, "_LOWER(__CCAST__)_get_type"))
++      gtype_ = func();
+ ',`dnl
+     // Do not derive a GType, or use a derived class:
+-    gtype_ = _LOWER(__CCAST__)_get_type();
++    if (const auto func = (decltype(&_LOWER(__CCAST__)_get_type)) dlsym(RTLD_DEFAULT, "_LOWER(__CCAST__)_get_type"))
++      gtype_ = func();
+ ')',`dnl
+     // Glib::Class has to know the class init function to clone custom types.
+     class_init_func_ = &__CPPNAME__`'_Class::class_init_function;
+@@ -220,7 +225,8 @@ ifdef(`__BOOL_ABI_AS_WITH_DERIVED_GTYPE__',`dnl
      //CppClassParent::CppObjectType::get_type();
  
      // Create the wrapper type, with the same class/instance size as the base type.
@@ -112,7 +305,7 @@ index 68804128..2d84d1a4 100644
  
      // Add derived versions of interfaces, if the C type implements any interfaces:
  _IMPORT(SECTION_CC_IMPLEMENTS_INTERFACES)
-@@ -244,7 +246,9 @@ GType __CPPNAME__::get_type(GTypeModule* module)
+@@ -285,7 +291,9 @@ GType __CPPNAME__::get_type(GTypeModule* module)
  
  GType __CPPNAME__::get_base_type()
  {
