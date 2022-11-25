@@ -1,0 +1,159 @@
+From 54c1178cdc048b540922e7ded9dd47a76640afc0 Mon Sep 17 00:00:00 2001
+From: Ilya Fedin <fedin-ilja2010@ya.ru>
+Date: Fri, 25 Nov 2022 11:48:09 +0400
+Subject: [PATCH] Revert "Do not use client-side data pointers in
+ qopenglpaintengine"
+
+This reverts commit e487b07e18f1cb7ff126744be57b2ae1b9839c6c.
+---
+ src/opengl/qopenglpaintengine.cpp | 47 ++++++++++++------------
+ src/opengl/qopenglpaintengine_p.h | 59 ++++++++++++++++++++-----------
+ 2 files changed, 63 insertions(+), 43 deletions(-)
+
+diff --git a/src/opengl/qopenglpaintengine.cpp b/src/opengl/qopenglpaintengine.cpp
+index 5d9bcf2a38..2556881e12 100644
+--- a/src/opengl/qopenglpaintengine.cpp
++++ b/src/opengl/qopenglpaintengine.cpp
+@@ -726,11 +726,11 @@ void QOpenGL2PaintEngineExPrivate::resetGLState()
+         float color[] = { 1.0f, 1.0f, 1.0f, 1.0f };
+         funcs.glVertexAttrib4fv(3, color);
+     }
+-    if (vao.isCreated())
++    if (vao.isCreated()) {
+         vao.release();
+-
+-    funcs.glBindBuffer(GL_ARRAY_BUFFER, 0);
+-    funcs.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
++        funcs.glBindBuffer(GL_ARRAY_BUFFER, 0);
++        funcs.glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
++    }
+ }
+ 
+ void QOpenGL2PaintEngineEx::endNativePainting()
+@@ -2198,27 +2198,28 @@ bool QOpenGL2PaintEngineEx::begin(QPaintDevice *pdev)
+         bool created = d->vao.create();
+ 
+         // If we managed to create it then we have a profile that supports VAOs
+-        if (created)
++        if (created) {
+             d->vao.bind();
+-    }
+ 
+-    // Generate a new Vertex Buffer Object if we don't have one already
+-    if (!d->vertexBuffer.isCreated()) {
+-        d->vertexBuffer.create();
+-        // Set its usage to StreamDraw, we will use this buffer only a few times before refilling it
+-        d->vertexBuffer.setUsagePattern(QOpenGLBuffer::StreamDraw);
+-    }
+-    if (!d->texCoordBuffer.isCreated()) {
+-        d->texCoordBuffer.create();
+-        d->texCoordBuffer.setUsagePattern(QOpenGLBuffer::StreamDraw);
+-    }
+-    if (!d->opacityBuffer.isCreated()) {
+-        d->opacityBuffer.create();
+-        d->opacityBuffer.setUsagePattern(QOpenGLBuffer::StreamDraw);
+-    }
+-    if (!d->indexBuffer.isCreated()) {
+-        d->indexBuffer.create();
+-        d->indexBuffer.setUsagePattern(QOpenGLBuffer::StreamDraw);
++            // Generate a new Vertex Buffer Object if we don't have one already
++            if (!d->vertexBuffer.isCreated()) {
++                d->vertexBuffer.create();
++                // Set its usage to StreamDraw, we will use this buffer only a few times before refilling it
++                d->vertexBuffer.setUsagePattern(QOpenGLBuffer::StreamDraw);
++            }
++            if (!d->texCoordBuffer.isCreated()) {
++                d->texCoordBuffer.create();
++                d->texCoordBuffer.setUsagePattern(QOpenGLBuffer::StreamDraw);
++            }
++            if (!d->opacityBuffer.isCreated()) {
++                d->opacityBuffer.create();
++                d->opacityBuffer.setUsagePattern(QOpenGLBuffer::StreamDraw);
++            }
++            if (!d->indexBuffer.isCreated()) {
++                d->indexBuffer.create();
++                d->indexBuffer.setUsagePattern(QOpenGLBuffer::StreamDraw);
++            }
++        }
+     }
+ 
+     for (int i = 0; i < QT_GL_VERTEX_ARRAY_TRACKED_COUNT; ++i)
+diff --git a/src/opengl/qopenglpaintengine_p.h b/src/opengl/qopenglpaintengine_p.h
+index 5d2bbbeb11..2548d9db94 100644
+--- a/src/opengl/qopenglpaintengine_p.h
++++ b/src/opengl/qopenglpaintengine_p.h
+@@ -307,32 +307,51 @@ void QOpenGL2PaintEngineExPrivate::uploadData(unsigned int arrayIndex, const GLf
+ {
+     Q_ASSERT(arrayIndex < 3);
+ 
+-    if (arrayIndex == QT_VERTEX_COORDS_ATTR) {
+-        vertexBuffer.bind();
+-        vertexBuffer.allocate(data, count * sizeof(float));
+-    }
+-    if (arrayIndex == QT_TEXTURE_COORDS_ATTR) {
+-        texCoordBuffer.bind();
+-        texCoordBuffer.allocate(data, count * sizeof(float));
+-    }
+-    if (arrayIndex == QT_OPACITY_ATTR) {
+-        opacityBuffer.bind();
+-        opacityBuffer.allocate(data, count * sizeof(float));
+-
+-        funcs.glVertexAttribPointer(arrayIndex, 1, GL_FLOAT, GL_FALSE, 0, nullptr);
++    // If a vertex array object is created we have a profile that supports them
++    // and we will upload the data via a QOpenGLBuffer. Otherwise we will use
++    // the legacy way of uploading the data via glVertexAttribPointer.
++    if (vao.isCreated()) {
++        if (arrayIndex == QT_VERTEX_COORDS_ATTR) {
++            vertexBuffer.bind();
++            vertexBuffer.allocate(data, count * sizeof(float));
++        }
++        if (arrayIndex == QT_TEXTURE_COORDS_ATTR) {
++            texCoordBuffer.bind();
++            texCoordBuffer.allocate(data, count * sizeof(float));
++        }
++        if (arrayIndex == QT_OPACITY_ATTR) {
++            opacityBuffer.bind();
++            opacityBuffer.allocate(data, count * sizeof(float));
++        }
++        if (arrayIndex == QT_OPACITY_ATTR)
++            funcs.glVertexAttribPointer(arrayIndex, 1, GL_FLOAT, GL_FALSE, 0, nullptr);
++        else
++            funcs.glVertexAttribPointer(arrayIndex, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+     } else {
+-        funcs.glVertexAttribPointer(arrayIndex, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
++        // If we already uploaded the data we don't have to do it again
++        if (data == vertexAttribPointers[arrayIndex])
++            return;
++
++        // Store the data in cache and upload it to the graphics card.
++        vertexAttribPointers[arrayIndex] = data;
++        if (arrayIndex == QT_OPACITY_ATTR)
++            funcs.glVertexAttribPointer(arrayIndex, 1, GL_FLOAT, GL_FALSE, 0, data);
++        else
++            funcs.glVertexAttribPointer(arrayIndex, 2, GL_FLOAT, GL_FALSE, 0, data);
+     }
+ }
+ 
+ bool QOpenGL2PaintEngineExPrivate::uploadIndexData(const void *data, GLenum indexValueType, GLuint count)
+ {
+-    Q_ASSERT(indexValueType == GL_UNSIGNED_SHORT || indexValueType == GL_UNSIGNED_INT);
+-    indexBuffer.bind();
+-    indexBuffer.allocate(
+-            data,
+-            count * (indexValueType == GL_UNSIGNED_SHORT ? sizeof(quint16) : sizeof(quint32)));
+-    return true;
++    // Follow the uploadData() logic: VBOs are used only when VAO support is available.
++    // Otherwise the legacy client-side pointer path is used.
++    if (vao.isCreated()) {
++        Q_ASSERT(indexValueType == GL_UNSIGNED_SHORT || indexValueType == GL_UNSIGNED_INT);
++        indexBuffer.bind();
++        indexBuffer.allocate(data, count * (indexValueType == GL_UNSIGNED_SHORT ? sizeof(quint16) : sizeof(quint32)));
++        return true;
++    }
++    return false;
+ }
+ 
+ QT_END_NAMESPACE
+-- 
+2.38.1
+
