@@ -1,0 +1,74 @@
+macOS: Remove hard-coded logic for determining if key event has text
+diff --git a/src/plugins/platforms/cocoa/qnsview.mm b/src/plugins/platforms/cocoa/qnsview.mm
+index d3f1a211de..2217b06d0b 100644
+--- a/src/plugins/platforms/cocoa/qnsview.mm
++++ b/src/plugins/platforms/cocoa/qnsview.mm
+@@ -136,6 +136,7 @@ QT_NAMESPACE_ALIAS_OBJC_CLASS(QNSViewMouseMoveHelper);
+     // Keys
+     bool m_lastKeyDead;
+     bool m_sendKeyEvent;
++    bool m_sendKeyEventWithoutText;
+     NSEvent *m_currentlyInterpretedKeyEvent;
+     QSet<quint32> m_acceptedKeyDowns;
+ 
+diff --git a/src/plugins/platforms/cocoa/qnsview_complextext.mm b/src/plugins/platforms/cocoa/qnsview_complextext.mm
+index c1e1364f32..93ab9025d4 100644
+--- a/src/plugins/platforms/cocoa/qnsview_complextext.mm
++++ b/src/plugins/platforms/cocoa/qnsview_complextext.mm
+@@ -398,8 +398,18 @@
+     // pass the originating key event up the responder chain if applicable.
+ 
+     qCDebug(lcQpaKeys) << "Trying to perform command" << selector;
+-    if (![self tryToPerform:selector with:self])
++    if (![self tryToPerform:selector with:self]) {
+         m_sendKeyEvent = true;
++
++        // The text input system determined that the key event was not
++        // meant for text insertion, and instead asked us to treat it
++        // as a (possibly noop) command. This typically happens for key
++        // events with either ⌘ or ⌃, function keys such as F1-F35,
++        // arrow keys, etc. We reflect that when sending the key event
++        // later on, by removing the text from the event, so that the
++        // event does not result in text insertion on the client side.
++        m_sendKeyEventWithoutText = true;
++    }
+ }
+ 
+ // ------------- Various text properties -------------
+diff --git a/src/plugins/platforms/cocoa/qnsview_keys.mm b/src/plugins/platforms/cocoa/qnsview_keys.mm
+index 185597538d..9e31ded933 100644
+--- a/src/plugins/platforms/cocoa/qnsview_keys.mm
++++ b/src/plugins/platforms/cocoa/qnsview_keys.mm
+@@ -52,6 +52,10 @@
+     // We will send a key event unless the input method handles it
+     QBoolBlocker sendKeyEventGuard(m_sendKeyEvent, true);
+ 
++    // Assume we should send key events with text, unless told
++    // otherwise by doCommandBySelector.
++    m_sendKeyEventWithoutText = false;
++
+     if (keyEvent.type == QEvent::KeyPress) {
+ 
+         if (m_composingText.isEmpty()) {
+@@ -112,6 +116,8 @@
+     bool accepted = true;
+     if (m_sendKeyEvent && m_composingText.isEmpty()) {
+         KeyEvent keyEvent(nsevent);
++        if (m_sendKeyEventWithoutText)
++            keyEvent.text = {};
+         qCDebug(lcQpaKeys) << "Sending as" << keyEvent;
+         accepted = keyEvent.sendWindowSystemEvent(window);
+     }
+@@ -265,11 +271,7 @@ KeyEvent::KeyEvent(NSEvent *nsevent)
+             key = QAppleKeyMapper::fromCocoaKey(character);
+         }
+ 
+-        // Ignore text for the U+F700-U+F8FF range. This is used by Cocoa when
+-        // delivering function keys (e.g. arrow keys, backspace, F1-F35, etc.)
+-        if (!(modifiers & (Qt::ControlModifier | Qt::MetaModifier))
+-            && (character.unicode() < 0xf700 || character.unicode() > 0xf8ff))
+-            text = QString::fromNSString(characters);
++        text = QString::fromNSString(characters);
+ 
+         isRepeat = nsevent.ARepeat;
+     }
