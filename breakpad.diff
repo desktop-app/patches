@@ -191,6 +191,21 @@ index 48a5c1d3..fbd84d48 100644
  
  namespace google_breakpad {
  
+diff --git a/src/tools/mac/dump_syms/dump_syms.xcodeproj/project.pbxproj b/src/tools/mac/dump_syms/dump_syms.xcodeproj/project.pbxproj
+index 5b644e24..1874d6e2 100644
+--- a/src/tools/mac/dump_syms/dump_syms.xcodeproj/project.pbxproj
++++ b/src/tools/mac/dump_syms/dump_syms.xcodeproj/project.pbxproj
+@@ -1663,6 +1663,10 @@
+ 			buildSettings = {
+ 				GCC_PREPROCESSOR_DEFINITIONS = HAVE_MACH_O_NLIST_H;
+ 				GCC_VERSION = "";
++				OTHER_CPLUSPLUSFLAGS = (
++					"$(OTHER_CFLAGS)",
++					"-Wno-deprecated-declarations",
++				);
+ 				PRODUCT_NAME = dump_syms;
+ 			};
+ 			name = Release;
 diff --git a/src/tools/windows/dump_syms/dump_syms.cc b/src/tools/windows/dump_syms/dump_syms.cc
 index 1b1797dc..0211ae6e 100644
 --- a/src/tools/windows/dump_syms/dump_syms.cc
