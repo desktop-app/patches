@@ -1,0 +1,12 @@
+diff --git a/src/gui/image/qimagereader.cpp b/src/gui/image/qimagereader.cpp
+index f50dd8bdb7..c9e152ddb3 100644
+--- a/src/gui/image/qimagereader.cpp
++++ b/src/gui/image/qimagereader.cpp
+@@ -1287,6 +1287,7 @@ bool QImageReader::read(QImage *image)
+     if (autoTransform())
+         qt_imageTransform(*image, transformation());
+ 
++    image->convertToColorSpace(QColorSpace::SRgb);
+     return true;
+ }
+ 
