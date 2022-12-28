@@ -1,10 +1,10 @@
 diff --git a/libs.mk b/libs.mk
-index 7cd973bd1..d96b50b46 100644
+index f65e99242..8c9bac33a 100644
 --- a/libs.mk
 +++ b/libs.mk
-@@ -280,6 +280,42 @@ PROJECTS-yes += vp9rc.$(VCPROJ_SFX)
- vp9rc.$(VCPROJ_SFX): vpx_config.asm
- vp9rc.$(VCPROJ_SFX): $(RTCD)
+@@ -293,6 +293,42 @@ PROJECTS-yes += vpxrc.$(VCPROJ_SFX)
+ vpxrc.$(VCPROJ_SFX): vpx_config.asm
+ vpxrc.$(VCPROJ_SFX): $(RTCD)
  
 +# List of all platforms supported for vpx.pc target
 +ifneq ($(findstring x86_64,$(TOOLCHAIN)),)

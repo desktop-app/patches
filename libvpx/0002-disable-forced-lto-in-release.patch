@@ -1,5 +1,5 @@
 diff --git a/build/make/gen_msvs_vcxproj.sh b/build/make/gen_msvs_vcxproj.sh
-index dffed7431..590833de9 100755
+index 58bb66b9e..28cd596eb 100755
 --- a/build/make/gen_msvs_vcxproj.sh
 +++ b/build/make/gen_msvs_vcxproj.sh
 @@ -348,9 +348,6 @@ generate_vcxproj() {
