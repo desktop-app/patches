@@ -1,0 +1,231 @@
+diff --git a/cmake/FindLCMS2.cmake b/cmake/FindLCMS2.cmake
+new file mode 100644
+index 0000000000..fd32d9a783
+--- /dev/null
++++ b/cmake/FindLCMS2.cmake
+@@ -0,0 +1,78 @@
++# - Find LCMS2
++# Find the LCMS2 includes and library
++# This module defines
++#  LCMS2_INCLUDE_DIR, where to find lcms.h
++#  LCMS2_LIBRARIES, the libraries needed to use LCMS2.
++#  LCMS2_VERSION, The value of LCMS_VERSION defined in lcms.h
++#  LCMS2_FOUND, If false, do not try to use LCMS2.
++
++
++# Copyright (c) 2008, Adrian Page, <adrian@pagenet.plus.com>
++# Copyright (c) 2009, Cyrille Berger, <cberger@cberger.net>
++#
++# Redistribution and use is allowed according to the terms of the BSD license.
++# For details see the accompanying COPYING-CMAKE-SCRIPTS file.
++
++if(TARGET LCMS2::LCMS2)
++    set(LCMS2_FOUND TRUE)
++    return()
++endif()
++
++# use pkg-config to get the directories and then use these values
++# in the FIND_PATH() and FIND_LIBRARY() calls
++if(NOT WIN32)
++   find_package(PkgConfig)
++   pkg_check_modules(PC_LCMS2 lcms2)
++   set(LCMS2_DEFINITIONS ${PC_LCMS2_CFLAGS_OTHER})
++endif()
++
++find_path(LCMS2_INCLUDE_DIR lcms2.h
++   PATHS
++   ${PC_LCMS2_INCLUDEDIR}
++   ${PC_LCMS2_INCLUDE_DIRS}
++   PATH_SUFFIXES lcms2 liblcms2
++)
++
++find_library(LCMS2_LIBRARIES NAMES lcms2 liblcms2 lcms-2 liblcms-2
++   PATHS
++   ${PC_LCMS2_LIBDIR}
++   ${PC_LCMS2_LIBRARY_DIRS}
++   PATH_SUFFIXES lcms2
++)
++
++if(LCMS2_INCLUDE_DIR AND LCMS2_LIBRARIES)
++   set(LCMS2_FOUND TRUE)
++else()
++   set(LCMS2_FOUND FALSE)
++endif()
++
++if(LCMS2_FOUND)
++   file(READ ${LCMS2_INCLUDE_DIR}/lcms2.h LCMS2_VERSION_CONTENT)
++   string(REGEX MATCH "#define LCMS_VERSION[ ]*[0-9]*\n" LCMS2_VERSION_MATCH ${LCMS2_VERSION_CONTENT})
++   if(LCMS2_VERSION_MATCH)
++      string(REGEX REPLACE "#define LCMS_VERSION[ ]*([0-9]*)\n" "\\1" LCMS2_VERSION ${LCMS2_VERSION_MATCH})
++      if(NOT LCMS2_FIND_QUIETLY)
++         string(SUBSTRING ${LCMS2_VERSION} 0 1 LCMS2_MAJOR_VERSION)
++         string(SUBSTRING ${LCMS2_VERSION} 1 2 LCMS2_MINOR_VERSION)
++         message(STATUS "Found lcms version ${LCMS2_MAJOR_VERSION}.${LCMS2_MINOR_VERSION}, ${LCMS2_LIBRARIES}")
++      endif()
++   else()
++      if(NOT LCMS2_FIND_QUIETLY)
++         message(STATUS "Found lcms2 but failed to find version ${LCMS2_LIBRARIES}")
++      endif()
++      set(LCMS2_VERSION NOTFOUND)
++   endif()
++   add_library(LCMS2::LCMS2 INTERFACE IMPORTED)
++   target_link_libraries(LCMS2::LCMS2 INTERFACE ${LCMS2_LIBRARIES})
++   target_include_directories(LCMS2::LCMS2 INTERFACE ${LCMS2_INCLUDE_DIR})
++else()
++   if(NOT LCMS2_FIND_QUIETLY)
++      if(LCMS2_FIND_REQUIRED)
++         message(FATAL_ERROR "Required package lcms2 NOT found")
++      else()
++         message(STATUS "lcms2 NOT found")
++      endif()
++   endif()
++endif()
++
++mark_as_advanced(LCMS2_INCLUDE_DIR LCMS2_LIBRARIES LCMS2_VERSION)
+diff --git a/src/gui/CMakeLists.txt b/src/gui/CMakeLists.txt
+index 36dae764d7..44f02a426b 100644
+--- a/src/gui/CMakeLists.txt
++++ b/src/gui/CMakeLists.txt
+@@ -1058,6 +1058,11 @@ qt_internal_extend_target(Gui CONDITION (QT_FEATURE_eglfs OR QT_FEATURE_xcb)
+         util/qedidvendortable_p.h
+ )
+ 
++qt_internal_extend_target(Gui CONDITION QT_FEATURE_lcms2
++    LIBRARIES
++        LCMS2::LCMS2
++)
++
+ 
+ qt_internal_create_tracepoints(Gui qtgui.tracepoints)
+ qt_internal_add_docs(Gui
+diff --git a/src/gui/configure.cmake b/src/gui/configure.cmake
+index 9844d778e6..c748127924 100644
+--- a/src/gui/configure.cmake
++++ b/src/gui/configure.cmake
+@@ -55,6 +55,7 @@ qt_find_package(WrapOpenGL PROVIDED_TARGETS WrapOpenGL::WrapOpenGL MODULE_NAME g
+ qt_find_package(GLESv2 PROVIDED_TARGETS GLESv2::GLESv2 MODULE_NAME gui QMAKE_LIB opengl_es2)
+ qt_find_package(Tslib PROVIDED_TARGETS PkgConfig::Tslib MODULE_NAME gui QMAKE_LIB tslib)
+ qt_find_package(WrapVulkanHeaders PROVIDED_TARGETS WrapVulkanHeaders::WrapVulkanHeaders MODULE_NAME gui QMAKE_LIB vulkan MARK_OPTIONAL) # special case
++qt_find_package(LCMS2 PROVIDED_TARGETS LCMS2::LCMS2 MODULE_NAME gui QMAKE_LIB lcms2)
+ if((LINUX) OR QT_FIND_ALL_PACKAGES_ALWAYS)
+     qt_find_package(Wayland PROVIDED_TARGETS Wayland::Server MODULE_NAME gui QMAKE_LIB wayland_server)
+ endif()
+@@ -664,6 +665,12 @@ qt_feature("fontconfig" PUBLIC PRIVATE
+     CONDITION NOT WIN32 AND QT_FEATURE_system_freetype AND Fontconfig_FOUND
+ )
+ qt_feature_definition("fontconfig" "QT_NO_FONTCONFIG" NEGATE VALUE "1")
++qt_feature("lcms2" PUBLIC
++    SECTION "Images"
++    LABEL "Little CMS"
++    PURPOSE "Supports the Little CMS color engine."
++    CONDITION LCMS2_FOUND
++)
+ qt_feature("gbm"
+     LABEL "GBM"
+     CONDITION gbm_FOUND
+@@ -1224,6 +1231,7 @@ qt_configure_add_summary_entry(ARGS "system-freetype")
+ qt_configure_add_summary_entry(ARGS "harfbuzz")
+ qt_configure_add_summary_entry(ARGS "system-harfbuzz")
+ qt_configure_add_summary_entry(ARGS "fontconfig")
++qt_configure_add_summary_entry(ARGS "lcms2")
+ qt_configure_add_summary_section(NAME "Image formats")
+ qt_configure_add_summary_entry(ARGS "gif")
+ qt_configure_add_summary_entry(ARGS "ico")
+diff --git a/src/gui/image/qimage.cpp b/src/gui/image/qimage.cpp
+index c1eb41a65d..08534cd47e 100644
+--- a/src/gui/image/qimage.cpp
++++ b/src/gui/image/qimage.cpp
+@@ -43,6 +43,10 @@
+ 
+ #include <memory>
+ 
++#if QT_CONFIG(lcms2)
++#include <lcms2.h>
++#endif
++
+ QT_BEGIN_NAMESPACE
+ 
+ using namespace Qt::StringLiterals;
+@@ -4960,6 +4964,43 @@ void QImage::setColorSpace(const QColorSpace &colorSpace)
+         d->colorSpace = colorSpace;
+ }
+ 
++#if QT_CONFIG(lcms2)
++/**
++* Convert from Qt format to lcms2 format
++*/
++static cmsUInt32Number toLcmsFormat(QImage::Format fmt)
++{
++    switch (fmt) {
++    case QImage::Format_ARGB32:  //  (0xAARRGGBB)
++    case QImage::Format_RGB32:   //  (0xffRRGGBB)
++        return TYPE_BGRA_8;
++
++    case QImage::Format_RGB888:
++        return TYPE_RGB_8;       // 24-bit RGB format (8-8-8).
++
++    case QImage::Format_RGBX8888:
++    case QImage::Format_RGBA8888:
++        return TYPE_RGBA_8;
++
++    case QImage::Format_Grayscale8:
++        return TYPE_GRAY_8;
++
++    case QImage::Format_Grayscale16:
++        return TYPE_GRAY_16;
++
++    case QImage::Format_RGBA64:
++    case QImage::Format_RGBX64:
++        return TYPE_RGBA_16;
++
++    case QImage::Format_BGR888:
++        return TYPE_BGR_8;
++
++    default:
++        return 0;
++    }
++}
++#endif
++
+ /*!
+     \since 5.14
+ 
+@@ -4973,6 +5014,30 @@ void QImage::convertToColorSpace(const QColorSpace &colorSpace)
+ {
+     if (!d)
+         return;
++#if QT_CONFIG(lcms2)
++    const auto profileFrom = d->colorSpace.iccProfile();
++    const auto profileTo = colorSpace.iccProfile();
++    if (profileFrom.isEmpty() || profileTo.isEmpty() || profileFrom == profileTo)
++        return;
++    const auto hProfileFrom = cmsOpenProfileFromMem(profileFrom.constData(), profileFrom.size());
++    const auto hProfileTo = cmsOpenProfileFromMem(profileTo.constData(), profileTo.size());
++    const auto lcmsFormat = toLcmsFormat(format());
++    if (hProfileFrom && hProfileTo && lcmsFormat) {
++        const auto xform = cmsCreateTransform(hProfileFrom, lcmsFormat, hProfileTo,
++                                              lcmsFormat, INTENT_PERCEPTUAL, 0);
++        if (xform) {
++            cmsDoTransformLineStride(xform, constBits(), bits(),
++                                     width(), height(), bytesPerLine(),
++                                     bytesPerLine(), 0, 0);
++            d->colorSpace = colorSpace;
++            cmsDeleteTransform(xform);
++        }
++    }
++    if (hProfileTo)
++        cmsCloseProfile(hProfileTo);
++    if (hProfileFrom)
++        cmsCloseProfile(hProfileFrom);
++#else
+     if (!d->colorSpace.isValid())
+         return;
+     if (!colorSpace.isValid()) {
+@@ -4983,6 +5048,7 @@ void QImage::convertToColorSpace(const QColorSpace &colorSpace)
+         return;
+     applyColorTransform(d->colorSpace.transformationToColorSpace(colorSpace));
+     d->colorSpace = colorSpace;
++#endif
+ }
+ 
+ /*!
