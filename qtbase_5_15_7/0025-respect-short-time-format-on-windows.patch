@@ -1,0 +1,21 @@
+diff --git a/src/corelib/text/qlocale_win.cpp b/src/corelib/text/qlocale_win.cpp
+index ce060cbe9a..56aefc5bcd 100644
+--- a/src/corelib/text/qlocale_win.cpp
++++ b/src/corelib/text/qlocale_win.cpp
+@@ -488,12 +488,12 @@ QVariant QSystemLocalePrivate::toString(QTime time, QLocale::FormatType type)
+     st.wMilliseconds = 0;
+ 
+     DWORD flags = 0;
+-    // keep the same conditional as timeFormat() above
+-    if (type == QLocale::ShortFormat)
+-        flags = TIME_NOSECONDS;
++    std::wstring format = type == QLocale::ShortFormat
++        ? getLocaleInfo(LOCALE_SSHORTTIME).toStdWString()
++        : std::wstring();
+ 
+     wchar_t buf[255];
+-    if (getTimeFormat(flags, &st, NULL, buf, 255)) {
++    if (getTimeFormat(flags, &st, !format.empty() ? format.c_str() : NULL, buf, 255)) {
+         QString format = QString::fromWCharArray(buf);
+         if (substitution() == SAlways)
+             substituteDigits(format);
