@@ -1,11 +1,11 @@
 diff --git a/src/gui/kernel/qshortcutmap.cpp b/src/gui/kernel/qshortcutmap.cpp
-index cf729d28c4..731bbe108d 100644
+index e3236a0086..e74640d88c 100644
 --- a/src/gui/kernel/qshortcutmap.cpp
 +++ b/src/gui/kernel/qshortcutmap.cpp
-@@ -528,7 +528,30 @@ void QShortcutMap::createNewSequences(QKeyEvent *e, QList<QKeySequence> &ksl, in
+@@ -492,7 +492,30 @@ void QShortcutMap::createNewSequences(QKeyEvent *e, QList<QKeySequence> &ksl, in
      qCDebug(lcShortcutMap) << "Creating new sequences for" << e
          << "with ignoredModifiers=" << Qt::KeyboardModifiers(ignoredModifiers);
-     int pkTotal = possibleKeys.count();
+     int pkTotal = possibleKeys.size();
 -    if (!pkTotal)
 +
 +    // Patch: Fix IMEs on macOS.
@@ -33,4 +33,4 @@ index cf729d28c4..731bbe108d 100644
 +    if (!pkTotal || (pkTotal == 1 && !possibleKeys[0]))
          return;
  
-     int ssActual = d->currentSequences.count();
+     int ssActual = d->currentSequences.size();
