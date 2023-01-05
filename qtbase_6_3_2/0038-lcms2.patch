@@ -132,7 +132,7 @@ index 42ab041f99..5166d80880 100644
  qt_configure_add_summary_entry(ARGS "gif")
  qt_configure_add_summary_entry(ARGS "ico")
 diff --git a/src/gui/image/qimage.cpp b/src/gui/image/qimage.cpp
-index 26fbb7205a..264bbcb882 100644
+index 26fbb7205a..1abb939046 100644
 --- a/src/gui/image/qimage.cpp
 +++ b/src/gui/image/qimage.cpp
 @@ -79,6 +79,10 @@
@@ -190,11 +190,12 @@ index 26fbb7205a..264bbcb882 100644
  /*!
      \since 5.14
  
-@@ -4963,6 +5004,30 @@ void QImage::convertToColorSpace(const QColorSpace &colorSpace)
+@@ -4963,6 +5004,34 @@ void QImage::convertToColorSpace(const QColorSpace &colorSpace)
  {
      if (!d)
          return;
 +#if QT_CONFIG(lcms2)
++    auto lcmsSuccess = false;
 +    const auto profileFrom = d->colorSpace.iccProfile();
 +    const auto profileTo = colorSpace.iccProfile();
 +    if (profileFrom.isEmpty() || profileTo.isEmpty() || profileFrom == profileTo)
@@ -210,6 +211,7 @@ index 26fbb7205a..264bbcb882 100644
 +                                     width(), height(), bytesPerLine(),
 +                                     bytesPerLine(), 0, 0);
 +            d->colorSpace = colorSpace;
++            lcmsSuccess = true;
 +            cmsDeleteTransform(xform);
 +        }
 +    }
@@ -217,15 +219,9 @@ index 26fbb7205a..264bbcb882 100644
 +        cmsCloseProfile(hProfileTo);
 +    if (hProfileFrom)
 +        cmsCloseProfile(hProfileFrom);
-+#else
++    if (lcmsSuccess)
++        return;
++#endif
      if (!d->colorSpace.isValid())
          return;
      if (!colorSpace.isValid()) {
-@@ -4973,6 +5038,7 @@ void QImage::convertToColorSpace(const QColorSpace &colorSpace)
-         return;
-     applyColorTransform(d->colorSpace.transformationToColorSpace(colorSpace));
-     d->colorSpace = colorSpace;
-+#endif
- }
- 
- /*!
