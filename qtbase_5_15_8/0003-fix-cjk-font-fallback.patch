@@ -1,8 +1,8 @@
 diff --git a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
-index 9e6e5d88c7..e6c8519a23 100644
+index 09d2d916fe..d48d61ad34 100644
 --- a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
 +++ b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
-@@ -1694,50 +1694,90 @@ HFONT QWindowsFontDatabase::systemFont()
+@@ -1710,51 +1710,90 @@ HFONT QWindowsFontDatabase::systemFont()
  
  static const char *other_tryFonts[] = {
      "Arial",
@@ -27,8 +27,8 @@ index 9e6e5d88c7..e6c8519a23 100644
  };
  
  static const char *jp_tryFonts [] = {
+     "Yu Gothic UI",
 -    "MS UI Gothic",
-+    "Yu Gothic UI",
 +    "Meiryo UI",
 +    "Yu Gothic",
 +    "Meiryo",
