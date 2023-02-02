@@ -1,0 +1,13 @@
+diff --git a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
+index d48d61ad34..d564538ded 100644
+--- a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
++++ b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
+@@ -2081,7 +2081,7 @@ QFontEngine *QWindowsFontDatabase::createEngine(const QFontDef &request, const Q
+ 
+ QFont QWindowsFontDatabase::systemDefaultFont()
+ {
+-#if QT_VERSION >= 0x060000
++#if 1
+     // Qt 6: Obtain default GUI font (typically "Segoe UI, 9pt", see QTBUG-58610)
+     NONCLIENTMETRICS ncm;
+     ncm.cbSize = FIELD_OFFSET(NONCLIENTMETRICS, lfMessageFont) + sizeof(LOGFONT);
