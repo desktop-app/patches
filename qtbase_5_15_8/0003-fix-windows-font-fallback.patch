@@ -1,8 +1,8 @@
 diff --git a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
-index 09d2d916fe..d48d61ad34 100644
+index 09d2d916fe..c43fa2b4fa 100644
 --- a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
 +++ b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
-@@ -1710,51 +1710,90 @@ HFONT QWindowsFontDatabase::systemFont()
+@@ -1710,51 +1710,75 @@ HFONT QWindowsFontDatabase::systemFont()
  
  static const char *other_tryFonts[] = {
      "Arial",
@@ -19,9 +19,6 @@ index 09d2d916fe..d48d61ad34 100644
 +    "Microsoft YaHei",
 +    "Microsoft JhengHei UI",
 +    "Microsoft JhengHei",
-+    "Nirmala UI",
-+    "Iskoola Pota",
-+    "Ebrima",
      "Arial Unicode MS",
      0
  };
@@ -41,9 +38,6 @@ index 09d2d916fe..d48d61ad34 100644
 +    "Microsoft YaHei",
 +    "Microsoft JhengHei UI",
 +    "Microsoft JhengHei",
-+    "Nirmala UI",
-+    "Iskoola Pota",
-+    "Ebrima",
      "Arial Unicode MS",
      0
  };
@@ -63,9 +57,6 @@ index 09d2d916fe..d48d61ad34 100644
 +    "Meiryo UI",
 +    "Yu Gothic",
 +    "Meiryo",
-+    "Nirmala UI",
-+    "Iskoola Pota",
-+    "Ebrima",
      "Arial Unicode MS",
      0
  };
@@ -85,9 +76,6 @@ index 09d2d916fe..d48d61ad34 100644
 +    "Meiryo UI",
 +    "Yu Gothic",
 +    "Meiryo",
-+    "Nirmala UI",
-+    "Iskoola Pota",
-+    "Ebrima",
      "Arial Unicode MS",
      0
  };
@@ -107,9 +95,17 @@ index 09d2d916fe..d48d61ad34 100644
 +    "Meiryo UI",
 +    "Yu Gothic",
 +    "Meiryo",
-+    "Nirmala UI",
-+    "Iskoola Pota",
-+    "Ebrima",
      "Arial Unicode MS",
      0
  };
+@@ -1892,6 +1916,10 @@ QStringList QWindowsFontDatabase::extraTryFontsForFamily(const QString &family)
+             ++tf;
+         }
+     }
++    result.prepend(QStringLiteral("Tahoma"));
++    result.append(QStringLiteral("Nirmala UI"));
++    result.append(QStringLiteral("Iskoola Pota"));
++    result.append(QStringLiteral("Ebrima"));
+     result.append(QStringLiteral("Segoe UI Emoji"));
+     result.append(QStringLiteral("Segoe UI Symbol"));
+     return result;
