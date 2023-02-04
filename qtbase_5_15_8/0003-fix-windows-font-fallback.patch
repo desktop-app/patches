@@ -1,5 +1,5 @@
 diff --git a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
-index 09d2d916fe..c43fa2b4fa 100644
+index 09d2d916fe..195f232354 100644
 --- a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
 +++ b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
 @@ -1710,51 +1710,75 @@ HFONT QWindowsFontDatabase::systemFont()
@@ -98,11 +98,13 @@ index 09d2d916fe..c43fa2b4fa 100644
      "Arial Unicode MS",
      0
  };
-@@ -1892,6 +1916,10 @@ QStringList QWindowsFontDatabase::extraTryFontsForFamily(const QString &family)
+@@ -1892,6 +1916,12 @@ QStringList QWindowsFontDatabase::extraTryFontsForFamily(const QString &family)
              ++tf;
          }
      }
-+    result.prepend(QStringLiteral("Tahoma"));
++    LOGFONT lf;
++    GetObject(QWindowsFontDatabase::systemFont(), sizeof(lf), &lf);
++    result.prepend(QString::fromWCharArray(lf.lfFaceName));
 +    result.append(QStringLiteral("Nirmala UI"));
 +    result.append(QStringLiteral("Iskoola Pota"));
 +    result.append(QStringLiteral("Ebrima"));
