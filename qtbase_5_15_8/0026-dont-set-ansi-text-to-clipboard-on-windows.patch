@@ -1,0 +1,29 @@
+diff --git a/src/plugins/platforms/windows/qwindowsmime.cpp b/src/plugins/platforms/windows/qwindowsmime.cpp
+index 6733ab9fed..5728deafbb 100644
+--- a/src/plugins/platforms/windows/qwindowsmime.cpp
++++ b/src/plugins/platforms/windows/qwindowsmime.cpp
+@@ -580,7 +580,7 @@ public:
+ bool QWindowsMimeText::canConvertFromMime(const FORMATETC &formatetc, const QMimeData *mimeData) const
+ {
+     int cf = getCf(formatetc);
+-    return (cf == CF_UNICODETEXT || cf == CF_TEXT) && mimeData->hasText();
++    return (cf == CF_UNICODETEXT) && mimeData->hasText();
+ }
+ 
+ /*
+@@ -593,6 +593,7 @@ bool QWindowsMimeText::convertFromMime(const FORMATETC &formatetc, const QMimeDa
+     if (canConvertFromMime(formatetc, mimeData)) {
+         QByteArray data;
+         int cf = getCf(formatetc);
++#if 0
+         if (cf == CF_TEXT) {
+             data = mimeData->text().toLocal8Bit();
+             // Anticipate required space for CRLFs at 1/40
+@@ -624,6 +625,7 @@ bool QWindowsMimeText::convertFromMime(const FORMATETC &formatetc, const QMimeDa
+             o[j]=0;
+             return setData(r, pmedium);
+         }
++#endif
+         if (cf == CF_UNICODETEXT) {
+             QString str = mimeData->text();
+             const QChar *u = str.unicode();
