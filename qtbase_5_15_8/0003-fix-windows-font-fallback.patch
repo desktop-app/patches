@@ -1,5 +1,5 @@
 diff --git a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
-index 09d2d916fe..195f232354 100644
+index 09d2d916fe..d89a82ef0c 100644
 --- a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
 +++ b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
 @@ -1710,51 +1710,75 @@ HFONT QWindowsFontDatabase::systemFont()
@@ -111,3 +111,12 @@ index 09d2d916fe..195f232354 100644
      result.append(QStringLiteral("Segoe UI Emoji"));
      result.append(QStringLiteral("Segoe UI Symbol"));
      return result;
+@@ -2042,7 +2072,7 @@ QFontEngine *QWindowsFontDatabase::createEngine(const QFontDef &request, const Q
+ 
+ QFont QWindowsFontDatabase::systemDefaultFont()
+ {
+-#if QT_VERSION >= 0x060000
++#if 1
+     // Qt 6: Obtain default GUI font (typically "Segoe UI, 9pt", see QTBUG-58610)
+     NONCLIENTMETRICS ncm;
+     ncm.cbSize = FIELD_OFFSET(NONCLIENTMETRICS, lfMessageFont) + sizeof(LOGFONT);
