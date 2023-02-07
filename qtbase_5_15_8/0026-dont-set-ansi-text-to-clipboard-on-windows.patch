@@ -1,5 +1,5 @@
 diff --git a/src/plugins/platforms/windows/qwindowsmime.cpp b/src/plugins/platforms/windows/qwindowsmime.cpp
-index 6733ab9fed..5728deafbb 100644
+index 6733ab9fed..b670ca3c05 100644
 --- a/src/plugins/platforms/windows/qwindowsmime.cpp
 +++ b/src/plugins/platforms/windows/qwindowsmime.cpp
 @@ -580,7 +580,7 @@ public:
@@ -27,3 +27,11 @@ index 6733ab9fed..5728deafbb 100644
          if (cf == CF_UNICODETEXT) {
              QString str = mimeData->text();
              const QChar *u = str.unicode();
+@@ -681,7 +683,6 @@ QVector<FORMATETC> QWindowsMimeText::formatsForMime(const QString &mimeType, con
+     QVector<FORMATETC> formatics;
+     if (mimeType.startsWith(u"text/plain") && mimeData->hasText()) {
+         formatics += setCf(CF_UNICODETEXT);
+-        formatics += setCf(CF_TEXT);
+     }
+     return formatics;
+ }
