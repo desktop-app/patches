@@ -1,0 +1,27 @@
+From 92ac6731a826021119cb56218443998cf4151112 Mon Sep 17 00:00:00 2001
+From: Ilya Fedin <fedin-ilja2010@ya.ru>
+Date: Sat, 11 Feb 2023 13:10:22 +0400
+Subject: [PATCH] Revert "Fix texture-based native child widget stretching"
+
+This reverts commit d1d8a21c530f0eb58f842d083c5a601927c51b78.
+---
+ src/gui/painting/qbackingstoredefaultcompositor.cpp | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/gui/painting/qbackingstoredefaultcompositor.cpp b/src/gui/painting/qbackingstoredefaultcompositor.cpp
+index 076ae3e984..8f624210da 100644
+--- a/src/gui/painting/qbackingstoredefaultcompositor.cpp
++++ b/src/gui/painting/qbackingstoredefaultcompositor.cpp
+@@ -508,7 +508,8 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+     if (m_texture) {
+         // The backingstore is for the entire tlw.
+         // In case of native children offset tells the position relative to the tlw.
+-        const QRect srcRect = toBottomLeftRect(deviceWindowRect.translated(deviceWindowOffset), m_texture->pixelSize().height());
++        const QRect textureRect = QRect(QPoint(), m_texture->pixelSize());
++        const QRect srcRect = toBottomLeftRect(textureRect.translated(deviceWindowOffset), m_texture->pixelSize().height());
+         const QMatrix3x3 source = sourceTransform(srcRect, m_texture->pixelSize(), origin);
+         QMatrix4x4 target; // identity
+         if (invertTargetY)
+-- 
+2.38.1
+
