@@ -1,0 +1,32 @@
+diff --git a/src/openglwidgets/qopenglwidget.cpp b/src/openglwidgets/qopenglwidget.cpp
+index 1e3f32e3eb..138b47b3ab 100644
+--- a/src/openglwidgets/qopenglwidget.cpp
++++ b/src/openglwidgets/qopenglwidget.cpp
+@@ -1314,6 +1314,7 @@ QImage QOpenGLWidget::grabFramebuffer()
+     return d->grabFramebuffer();
+ }
+ 
++#if 0
+ /*!
+   \reimp
+ */
+@@ -1383,6 +1384,7 @@ int QOpenGLWidget::metric(QPaintDevice::PaintDeviceMetric metric) const
+         return 0;
+     }
+ }
++#endif
+ 
+ /*!
+   \reimp
+diff --git a/src/openglwidgets/qopenglwidget.h b/src/openglwidgets/qopenglwidget.h
+index edd731ae8e..72db1535ba 100644
+--- a/src/openglwidgets/qopenglwidget.h
++++ b/src/openglwidgets/qopenglwidget.h
+@@ -62,7 +62,6 @@ protected:
+     void resizeEvent(QResizeEvent *e) override;
+     bool event(QEvent *e) override;
+ 
+-    int metric(QPaintDevice::PaintDeviceMetric metric) const override;
+     QPaintDevice *redirected(QPoint *p) const override;
+     QPaintEngine *paintEngine() const override;
+ 
