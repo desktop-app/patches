@@ -1,0 +1,15 @@
+diff --git a/src/plugins/platforms/cocoa/qnswindow.mm b/src/plugins/platforms/cocoa/qnswindow.mm
+index 7c9e0dce2d..4f7a51494d 100644
+--- a/src/plugins/platforms/cocoa/qnswindow.mm
++++ b/src/plugins/platforms/cocoa/qnswindow.mm
+@@ -331,8 +331,8 @@ OSStatus CGSClearWindowTags(const CGSConnectionID, const CGSWindowID, int *, int
+     // or a QWindow::backgroundColor() property. In the meantime
+     // we assume that if you have translucent content, without a
+     // frame then you intend to do all background drawing yourself.
+-    const QWindow *window = m_platformWindow ? m_platformWindow->window() : nullptr;
+-    if (!self.opaque && window && window->flags().testFlag(Qt::FramelessWindowHint))
++    //const QWindow *window = m_platformWindow ? m_platformWindow->window() : nullptr;
++    if (!self.opaque)
+         return [NSColor clearColor];
+ 
+     // This still allows you to have translucent content with a frame,
