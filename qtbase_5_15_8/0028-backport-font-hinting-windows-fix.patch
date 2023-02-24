@@ -1,0 +1,44 @@
+diff --git a/src/platformsupport/fontdatabases/windows/qwindowsfontenginedirectwrite.cpp b/src/platformsupport/fontdatabases/windows/qwindowsfontenginedirectwrite.cpp
+index c2cba0140d..6deccd4661 100644
+--- a/src/platformsupport/fontdatabases/windows/qwindowsfontenginedirectwrite.cpp
++++ b/src/platformsupport/fontdatabases/windows/qwindowsfontenginedirectwrite.cpp
+@@ -188,10 +188,16 @@ namespace {
+ 
+ }
+ 
+-static DWRITE_RENDERING_MODE hintingPreferenceToRenderingMode(QFont::HintingPreference hintingPreference)
++static DWRITE_RENDERING_MODE hintingPreferenceToRenderingMode(const QFontDef &fontDef)
+ {
+-    if (QHighDpiScaling::isActive() && hintingPreference == QFont::PreferDefaultHinting)
+-        hintingPreference = QFont::PreferVerticalHinting;
++    QFont::HintingPreference hintingPreference = QFont::HintingPreference(fontDef.hintingPreference);
++    if (QHighDpiScaling::isActive() && hintingPreference == QFont::PreferDefaultHinting) {
++        // Microsoft documentation recommends using asymmetric rendering for small fonts
++        // at pixel size 16 and less, and symmetric for larger fonts.
++        hintingPreference = fontDef.pixelSize > 16.0
++                ? QFont::PreferNoHinting
++                : QFont::PreferVerticalHinting;
++    }
+ 
+     switch (hintingPreference) {
+     case QFont::PreferNoHinting:
+@@ -714,8 +720,7 @@ QImage QWindowsFontEngineDirectWrite::imageForGlyph(glyph_t t,
+     transform.m21 = xform.m21();
+     transform.m22 = xform.m22();
+ 
+-    DWRITE_RENDERING_MODE renderMode =
+-            hintingPreferenceToRenderingMode(QFont::HintingPreference(fontDef.hintingPreference));
++    DWRITE_RENDERING_MODE renderMode = hintingPreferenceToRenderingMode(fontDef);
+ 
+     IDWriteGlyphRunAnalysis *glyphAnalysis = NULL;
+     HRESULT hr = m_fontEngineData->directWriteFactory->CreateGlyphRunAnalysis(
+@@ -1025,8 +1030,7 @@ glyph_metrics_t QWindowsFontEngineDirectWrite::alphaMapBoundingBox(glyph_t glyph
+     transform.m21 = matrix.m21();
+     transform.m22 = matrix.m22();
+ 
+-    DWRITE_RENDERING_MODE renderMode =
+-            hintingPreferenceToRenderingMode(QFont::HintingPreference(fontDef.hintingPreference));
++    DWRITE_RENDERING_MODE renderMode = hintingPreferenceToRenderingMode(fontDef);
+ 
+     IDWriteGlyphRunAnalysis *glyphAnalysis = NULL;
+     HRESULT hr = m_fontEngineData->directWriteFactory->CreateGlyphRunAnalysis(
