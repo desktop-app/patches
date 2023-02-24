@@ -1,8 +1,8 @@
 diff --git a/src/gui/platform/darwin/qapplekeymapper.mm b/src/gui/platform/darwin/qapplekeymapper.mm
-index bdf741573d..ae3e24fbbc 100644
+index f7dbc1990d..aad953326d 100644
 --- a/src/gui/platform/darwin/qapplekeymapper.mm
 +++ b/src/gui/platform/darwin/qapplekeymapper.mm
-@@ -608,8 +608,8 @@ QList<int> QAppleKeyMapper::possibleKeys(const QKeyEvent *event) const
+@@ -574,8 +574,8 @@ QList<int> QAppleKeyMapper::possibleKeys(const QKeyEvent *event) const
          if ((eventModifiers & candidateModifiers) == candidateModifiers) {
              // If the event includes more modifiers than the candidate they
              // will need to be included in the resulting key combination.
@@ -14,10 +14,10 @@ index bdf741573d..ae3e24fbbc 100644
      }
  
 diff --git a/src/plugins/platforms/cocoa/qnsview_keys.mm b/src/plugins/platforms/cocoa/qnsview_keys.mm
-index dbcab6c6d1..fd9988301a 100644
+index 118678ffa5..fae0003454 100644
 --- a/src/plugins/platforms/cocoa/qnsview_keys.mm
 +++ b/src/plugins/platforms/cocoa/qnsview_keys.mm
-@@ -161,6 +161,23 @@
+@@ -156,6 +156,23 @@ static bool isSpecialKey(const QString &text)
          [super keyUp:nsevent];
  }
  
@@ -42,12 +42,12 @@ index dbcab6c6d1..fd9988301a 100644
  {
      Q_UNUSED(sender);
 diff --git a/src/widgets/kernel/qwidget.cpp b/src/widgets/kernel/qwidget.cpp
-index f56fe8559d..200d8b2a3b 100644
+index 4da80073a8..5e359b38f8 100644
 --- a/src/widgets/kernel/qwidget.cpp
 +++ b/src/widgets/kernel/qwidget.cpp
-@@ -8712,7 +8712,8 @@ bool QWidget::event(QEvent *event)
+@@ -8927,7 +8927,8 @@ bool QWidget::event(QEvent *event)
      case QEvent::KeyPress: {
-         QKeyEvent *k = (QKeyEvent *)event;
+         QKeyEvent *k = static_cast<QKeyEvent *>(event);
          bool res = false;
 -        if (!(k->modifiers() & (Qt::ControlModifier | Qt::AltModifier))) {  //### Add MetaModifier?
 +        // Patch: Enable Ctrl+Tab and Ctrl+Shift+Tab / Ctrl+Backtab handle in-app.
