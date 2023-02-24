@@ -1,8 +1,8 @@
 diff --git a/src/corelib/kernel/qcore_mac.mm b/src/corelib/kernel/qcore_mac.mm
-index a46bf59a34..6b045ebb06 100644
+index 992713a374..9c1aeb038d 100644
 --- a/src/corelib/kernel/qcore_mac.mm
 +++ b/src/corelib/kernel/qcore_mac.mm
-@@ -253,7 +253,8 @@ QMacAutoReleasePool::QMacAutoReleasePool()
+@@ -255,7 +255,8 @@ QMacAutoReleasePool::QMacAutoReleasePool()
  {
      Class trackerClass = [QMacAutoReleasePoolTracker class];
  
@@ -10,5 +10,5 @@ index a46bf59a34..6b045ebb06 100644
 +// Patch: Disable this debug code because it is very slow.
 +#if 0
      void *poolFrame = nullptr;
-     void *frame;
-     if (backtrace_from_fp(__builtin_frame_address(0), &frame, 1))
+     void *frames[2];
+     if (backtrace_from_fp(__builtin_frame_address(0), frames, 2))
