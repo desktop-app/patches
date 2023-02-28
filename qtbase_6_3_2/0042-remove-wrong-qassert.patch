@@ -1,0 +1,15 @@
+diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms/cocoa/qcocoawindow.mm
+index 7f4bd0bb2c..ae4525aa5f 100644
+--- a/src/plugins/platforms/cocoa/qcocoawindow.mm
++++ b/src/plugins/platforms/cocoa/qcocoawindow.mm
+@@ -735,8 +735,8 @@ void QCocoaWindow::applyWindowState(Qt::WindowStates requestedState)
+     switch (currentState) {
+     case Qt::WindowMinimized:
+         [nsWindow deminiaturize:sender];
+-        Q_ASSERT_X(windowState() != Qt::WindowMinimized, "QCocoaWindow",
+-            "[NSWindow deminiaturize:] is synchronous");
++//        Q_ASSERT_X(windowState() != Qt::WindowMinimized, "QCocoaWindow",
++//            "[NSWindow deminiaturize:] is synchronous");
+         break;
+     case Qt::WindowFullScreen: {
+         toggleFullScreen();
