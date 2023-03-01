@@ -98,9 +98,9 @@ index 6ea1f5e645..bf9d66fa31 100644
  
      // Do not let the command buffer mess with the refcount of objects. We do
      // have a proper render loop and will manage lifetimes similarly to other
-@@ -1507,7 +1515,8 @@ QRhi::FrameOpResult QRhiMetal::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
-     QRhiProfilerPrivate *rhiP = profilerPrivateOrNull();
-     QRHI_PROF_F(endSwapChainFrame(swapChain, swapChainD->frameCount + 1));
+@@ -1556,7 +1556,8 @@ QRhi::FrameOpResult QRhiMetal::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
+ 
+     [swapChainD->cbWrapper.d->cb commit];
  
 -    [d->captureScope endScope];
 +    if (@available(macOS 10.13, iOS 11.0, *))

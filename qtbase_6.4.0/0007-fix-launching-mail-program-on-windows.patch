@@ -1,8 +1,8 @@
 diff --git a/src/plugins/platforms/windows/qwindowsservices.cpp b/src/plugins/platforms/windows/qwindowsservices.cpp
-index 9504513a5e..811f3d62bd 100644
+index f2bd90f4bd..3b4aecccd4 100644
 --- a/src/plugins/platforms/windows/qwindowsservices.cpp
 +++ b/src/plugins/platforms/windows/qwindowsservices.cpp
-@@ -125,6 +125,10 @@ static inline bool launchMail(const QUrl &url)
+@@ -164,6 +164,10 @@ static inline bool launchMail(const QUrl &url)
              command.prepend(doubleQuote);
          }
      }
@@ -12,4 +12,4 @@ index 9504513a5e..811f3d62bd 100644
 +
      // Pass the url as the parameter. Should use QProcess::startDetached(),
      // but that cannot handle a Windows command line [yet].
-     command.replace(QLatin1String("%1"), url.toString(QUrl::FullyEncoded));
+     command.replace("%1"_L1, url.toString(QUrl::FullyEncoded));

@@ -1,16 +1,3 @@
-diff --git a/src/corelib/text/qstringconverter.cpp b/src/corelib/text/qstringconverter.cpp
-index df9efe7f67..03f37b123d 100644
---- a/src/corelib/text/qstringconverter.cpp
-+++ b/src/corelib/text/qstringconverter.cpp
-@@ -1700,7 +1700,7 @@ QStringConverter::QStringConverter(const char *name, Flags f)
- {
-     auto e = encodingForName(name);
-     if (e)
--        iface = encodingInterfaces + int(e.value());
-+        iface = encodingInterfaces + int(*e);
- }
- 
- /*!
 diff --git a/src/xml/dom/qdom.cpp b/src/xml/dom/qdom.cpp
 index 85718cd5e0..5ef55b4f93 100644
 --- a/src/xml/dom/qdom.cpp

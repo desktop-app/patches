@@ -1,17 +1,17 @@
 diff --git a/src/plugins/platforms/cocoa/qcocoadrag.mm b/src/plugins/platforms/cocoa/qcocoadrag.mm
-index fa073e5e29..5cdb0454ff 100644
+index 50f094716f..3119bb793b 100644
 --- a/src/plugins/platforms/cocoa/qcocoadrag.mm
 +++ b/src/plugins/platforms/cocoa/qcocoadrag.mm
-@@ -130,7 +130,7 @@ Qt::DropAction QCocoaDrag::drag(QDrag *o)
+@@ -96,7 +96,7 @@
      m_drag = o;
      m_executed_drop_action = Qt::IgnoreAction;
  
 -    QMacPasteboard dragBoard(CFStringRef(NSPasteboardNameDrag), QMacInternalPasteboardMime::MIME_DND);
 +    QMacPasteboard dragBoard(CFStringRef(NSDragPboard), QMacInternalPasteboardMime::MIME_DND);
-     m_drag->mimeData()->setData(QLatin1String("application/x-qt-mime-type-name"), QByteArray("dummy"));
+     m_drag->mimeData()->setData("application/x-qt-mime-type-name"_L1, QByteArray("dummy"));
      dragBoard.setMimeData(m_drag->mimeData(), QMacPasteboard::LazyRequest);
  
-@@ -149,7 +149,7 @@ Qt::DropAction QCocoaDrag::drag(QDrag *o)
+@@ -115,7 +115,7 @@
      CGFloat flippedY = dragImage.size.height - hotSpot.y();
      event_location.y -= flippedY;
      NSSize mouseOffset_unused = NSMakeSize(0.0, 0.0);
@@ -20,7 +20,7 @@ index fa073e5e29..5cdb0454ff 100644
  
      [theWindow dragImage:dragImage
          at:event_location
-@@ -182,7 +182,7 @@ bool QCocoaDrag::maybeDragMultipleItems()
+@@ -148,7 +148,7 @@
      auto *sourceView = static_cast<NSView<NSDraggingSource>*>(view);
  
      const auto &qtUrls = m_drag->mimeData()->urls();

@@ -132,20 +132,20 @@ index 42ab041f99..5166d80880 100644
  qt_configure_add_summary_entry(ARGS "gif")
  qt_configure_add_summary_entry(ARGS "ico")
 diff --git a/src/gui/image/qimage.cpp b/src/gui/image/qimage.cpp
-index 26fbb7205a..1abb939046 100644
+index a9f9a98c2c..1a32b924a4 100644
 --- a/src/gui/image/qimage.cpp
 +++ b/src/gui/image/qimage.cpp
-@@ -79,6 +79,10 @@
+@@ -42,6 +42,10 @@
+ #include <qtgui_tracepoints_p.h>
  
  #include <memory>
- 
++
 +#if QT_CONFIG(lcms2)
 +#include <lcms2.h>
 +#endif
-+
+ 
  QT_BEGIN_NAMESPACE
  
- // MSVC 19.28 does show spurious warning "C4723: potential divide by 0" for code that divides
 @@ -4950,6 +4954,43 @@ void QImage::setColorSpace(const QColorSpace &colorSpace)
      d->colorSpace = colorSpace;
  }

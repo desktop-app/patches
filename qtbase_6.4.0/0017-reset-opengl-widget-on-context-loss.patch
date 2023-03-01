@@ -1,8 +1,8 @@
 diff --git a/src/openglwidgets/qopenglwidget.cpp b/src/openglwidgets/qopenglwidget.cpp
-index 2ae1a7f215..6ceca4df87 100644
+index a3ffa0c0fa..9eaaf4bf5a 100644
 --- a/src/openglwidgets/qopenglwidget.cpp
 +++ b/src/openglwidgets/qopenglwidget.cpp
-@@ -591,9 +591,11 @@ void QOpenGLWidgetPaintDevice::ensureActiveTarget()
+@@ -579,9 +579,11 @@ void QOpenGLWidgetPaintDevice::ensureActiveTarget()
      if (!wd->initialized)
          return;
  
@@ -29,7 +29,7 @@ index 2ae1a7f215..6ceca4df87 100644
  
      delete fbo;
      fbo = nullptr;
-@@ -714,6 +720,9 @@ void QOpenGLWidgetPrivate::beginCompose()
+@@ -739,6 +745,9 @@ void QOpenGLWidgetPrivate::beginCompose()
      if (flushPending) {
          flushPending = false;
          q->makeCurrent();
@@ -39,23 +39,23 @@ index 2ae1a7f215..6ceca4df87 100644
          static_cast<QOpenGLExtensions *>(context->functions())->flushShared();
      }
      hasBeenComposed = true;
-@@ -756,6 +765,7 @@ void QOpenGLWidgetPrivate::initialize()
+@@ -794,6 +803,7 @@ void QOpenGLWidgetPrivate::initialize()
      }
-     if (Q_UNLIKELY(!ctx->create())) {
+     if (Q_UNLIKELY(!context->create())) {
          qWarning("QOpenGLWidget: Failed to create context");
 +        reset();
          return;
      }
  
-@@ -786,6 +796,7 @@ void QOpenGLWidgetPrivate::initialize()
+@@ -804,6 +814,7 @@ void QOpenGLWidgetPrivate::initialize()
  
-     if (Q_UNLIKELY(!ctx->makeCurrent(surface))) {
+     if (Q_UNLIKELY(!context->makeCurrent(surface))) {
          qWarning("QOpenGLWidget: Failed to make context current");
 +        reset();
          return;
      }
  
-@@ -804,6 +815,9 @@ void QOpenGLWidgetPrivate::resolveSamples()
+@@ -838,6 +849,9 @@ void QOpenGLWidgetPrivate::resolveSamples()
      Q_Q(QOpenGLWidget);
      if (resolvedFbo) {
          q->makeCurrent();
@@ -65,16 +65,16 @@ index 2ae1a7f215..6ceca4df87 100644
          QRect rect(QPoint(0, 0), fbo->size());
          QOpenGLFramebufferObject::blitFramebuffer(resolvedFbo, rect, fbo, rect);
          flushPending = true;
-@@ -837,6 +851,8 @@ void QOpenGLWidgetPrivate::render()
+@@ -852,6 +866,8 @@ void QOpenGLWidgetPrivate::render()
          return;
  
      q->makeCurrent();
 +    if (!initialized)
 +        return; // Trying to fix a crash on context loss.
  
-     if (updateBehavior == QOpenGLWidget::NoPartialUpdate && hasBeenComposed) {
-         invalidateFbo();
-@@ -883,14 +899,21 @@ QImage QOpenGLWidgetPrivate::grabFramebuffer()
+     QOpenGLContext *ctx = QOpenGLContext::currentContext();
+     Q_ASSERT(ctx && fbo);
+@@ -910,14 +926,21 @@ QImage QOpenGLWidgetPrivate::grabFramebuffer()
      if (!fbo) // could be completely offscreen, without ever getting a resize event
          recreateFbo();
  
@@ -96,7 +96,7 @@ index 2ae1a7f215..6ceca4df87 100644
      }
  
      const bool hasAlpha = q->format().hasAlpha();
-@@ -1100,7 +1123,12 @@ void QOpenGLWidget::makeCurrent()
+@@ -1134,7 +1157,12 @@ void QOpenGLWidget::makeCurrent()
      if (!d->initialized)
          return;
  
@@ -110,10 +110,10 @@ index 2ae1a7f215..6ceca4df87 100644
  
      if (d->fbo) // there may not be one if we are in reset()
          d->fbo->bind();
-@@ -1230,6 +1258,9 @@ void QOpenGLWidget::resizeEvent(QResizeEvent *e)
-         return;
- 
-     d->recreateFbo();
+@@ -1267,6 +1295,9 @@ void QOpenGLWidget::resizeEvent(QResizeEvent *e)
+     // Make sure our own context is current before invoking user overrides. If
+     // the fbo was recreated then there's a chance something else is current now.
+     makeCurrent();
 +    if (!d->fbo)
 +        return; // Trying to fix a crash on context loss.
 +

@@ -112,17 +112,17 @@ index 74967aeac9..ddc4eb0b65 100644
  {
      if (preeditText.isEmpty()) {
 diff --git a/src/gui/text/qtextengine_p.h b/src/gui/text/qtextengine_p.h
-index 6ae3196963..e62125f289 100644
+index c653bfc92f..a7cc0ef51f 100644
 --- a/src/gui/text/qtextengine_p.h
 +++ b/src/gui/text/qtextengine_p.h
-@@ -621,6 +621,8 @@ private:
+@@ -585,6 +585,8 @@ private:
  
  public:
      bool atWordSeparator(int position) const;
 +    // Patch: Improved apostrophe processing.
 +    int toEdge(int pos, int len, bool isRightDirection);
  
-     QString elidedText(Qt::TextElideMode mode, const QFixed &width, int flags = 0, int from = 0, int count = -1) const;
+     QString elidedText(Qt::TextElideMode mode, QFixed width, int flags = 0, int from = 0, int count = -1) const;
  
 diff --git a/src/gui/text/qtextlayout.cpp b/src/gui/text/qtextlayout.cpp
 index 70e6043231..7b5f333829 100644
