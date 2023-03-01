@@ -1,26 +1,3 @@
-diff --git a/src/opengl/qplatformbackingstoreopenglsupport.cpp b/src/opengl/qplatformbackingstoreopenglsupport.cpp
-index 30532c5b4b..11d43fc67b 100644
---- a/src/opengl/qplatformbackingstoreopenglsupport.cpp
-+++ b/src/opengl/qplatformbackingstoreopenglsupport.cpp
-@@ -147,11 +147,13 @@ QPlatformBackingStoreOpenGLSupport::~QPlatformBackingStoreOpenGLSupport() {
-         QOffscreenSurface offscreenSurface;
-         offscreenSurface.setFormat(context->format());
-         offscreenSurface.create();
--        context->makeCurrent(&offscreenSurface);
--        if (textureId)
--            context->functions()->glDeleteTextures(1, &textureId);
--        if (blitter)
--            blitter->destroy();
-+        if (context->makeCurrent(&offscreenSurface)) {
-+            // Trying to fix a crash on context loss.
-+            if (textureId)
-+                context->functions()->glDeleteTextures(1, &textureId);
-+            if (blitter)
-+                blitter->destroy();
-+        }
-     }
-     delete blitter;
- }
 diff --git a/src/openglwidgets/qopenglwidget.cpp b/src/openglwidgets/qopenglwidget.cpp
 index 2ae1a7f215..6ceca4df87 100644
 --- a/src/openglwidgets/qopenglwidget.cpp
