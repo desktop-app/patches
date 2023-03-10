@@ -112,6 +112,7 @@ export PKG_CONFIG_PATH="$FullExecPath/../local/lib/pkgconfig:$PKG_CONFIG_PATH"
 --enable-decoder=wmav1 \
 --enable-decoder=wmav2 \
 --enable-decoder=wmavoice \
+--enable-filter=atempo \
 --enable-encoder=libopus \
 --enable-parser=aac \
 --enable-parser=aac_latm \
