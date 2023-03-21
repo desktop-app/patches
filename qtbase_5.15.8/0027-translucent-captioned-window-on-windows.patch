@@ -1,5 +1,5 @@
 diff --git a/src/plugins/platforms/windows/qwindowsbackingstore.cpp b/src/plugins/platforms/windows/qwindowsbackingstore.cpp
-index 4a391eaa55..a5dbcbbfcc 100644
+index 4a391eaa55..9b116b1c2d 100644
 --- a/src/plugins/platforms/windows/qwindowsbackingstore.cpp
 +++ b/src/plugins/platforms/windows/qwindowsbackingstore.cpp
 @@ -88,11 +88,17 @@ void QWindowsBackingStore::flush(QWindow *window, const QRegion &region,
@@ -11,8 +11,9 @@ index 4a391eaa55..a5dbcbbfcc 100644
 +    if (useBlending && QWindowsWindow::setWindowLayered(rw->handle(), flags, hasAlpha, rw->opacity()) && hasAlpha) {
          // Windows with alpha: Use blend function to update.
          QRect r = QHighDpi::toNativePixels(window->frameGeometry(), window);
-         QMargins frameMargins = rw->frameMargins();
+-        QMargins frameMargins = rw->frameMargins();
 -        QRect dirtyRect = br.translated(offset + QPoint(frameMargins.left(), frameMargins.top()));
++        QMargins frameMargins = QHighDpi::toNativePixels(window->frameMargins(), window);
 +        if (!(flags & Qt::FramelessWindowHint)) {
 +            r = r.marginsRemoved(frameMargins);
 +        }
