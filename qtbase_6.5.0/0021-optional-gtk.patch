@@ -1,8 +1,8 @@
 diff --git a/src/plugins/platformthemes/gtk3/CMakeLists.txt b/src/plugins/platformthemes/gtk3/CMakeLists.txt
-index 89acc84f07..e78b4b7df2 100644
+index 89acc84f07..f34c027ba1 100644
 --- a/src/plugins/platformthemes/gtk3/CMakeLists.txt
 +++ b/src/plugins/platformthemes/gtk3/CMakeLists.txt
-@@ -23,9 +23,13 @@ qt_internal_add_plugin(QGtk3ThemePlugin
+@@ -23,10 +23,15 @@ qt_internal_add_plugin(QGtk3ThemePlugin
          qgtk3interface.cpp qgtk3interface_p.h
          qgtk3storage.cpp qgtk3storage_p.h
          qgtk3json.cpp qgtk3json_p.h
@@ -11,16 +11,28 @@ index 89acc84f07..e78b4b7df2 100644
 +        GLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_40
 +        GLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_40
          GDK_VERSION_MIN_REQUIRED=GDK_VERSION_3_6
++    SYSTEM_INCLUDE_DIRECTORIES
++        ${GTK3_INCLUDE_DIRS}
      LIBRARIES
+-        PkgConfig::GTK3
 +        ${CMAKE_DL_LIBS}
-         PkgConfig::GTK3
          Qt::Core
          Qt::CorePrivate
+         Qt::Gui
+@@ -34,6 +39,6 @@ qt_internal_add_plugin(QGtk3ThemePlugin
+ )
+ 
+ qt_internal_extend_target(QGtk3ThemePlugin CONDITION QT_FEATURE_xlib
+-    LIBRARIES
+-        X11::X11
++    SYSTEM_INCLUDE_DIRECTORIES
++        ${X11_INCLUDE_DIRS}
+ )
 diff --git a/src/plugins/platformthemes/gtk3/main.cpp b/src/plugins/platformthemes/gtk3/main.cpp
-index 569c2d8744..779d380594 100644
+index 569c2d8744..fa01e10ab8 100644
 --- a/src/plugins/platformthemes/gtk3/main.cpp
 +++ b/src/plugins/platformthemes/gtk3/main.cpp
-@@ -4,8 +4,211 @@
+@@ -4,8 +4,214 @@
  #include <qpa/qplatformthemeplugin.h>
  #include "qgtk3theme.h"
  
@@ -74,7 +86,10 @@ index 569c2d8744..779d380594 100644
 +        LOAD_SYMBOL_OPT(lib, gdk_x11_display_get_xdisplay);
 +        LOAD_SYMBOL_OPT(lib, gdk_x11_window_get_type);
 +        LOAD_SYMBOL_OPT(lib, gdk_x11_window_get_xid);
-+        return LOAD_SYMBOL(lib, g_free)
++        return LOAD_SYMBOL(lib, g_file_info_get_icon)
++            && LOAD_SYMBOL(lib, g_file_new_for_path)
++            && LOAD_SYMBOL(lib, g_file_query_info)
++            && LOAD_SYMBOL(lib, g_free)
 +            && LOAD_SYMBOL(lib, g_log_default_handler)
 +            && LOAD_SYMBOL(lib, g_log_set_handler)
 +            && LOAD_SYMBOL(lib, g_slist_free)
@@ -232,7 +247,7 @@ index 569c2d8744..779d380594 100644
  class QGtk3ThemePlugin : public QPlatformThemePlugin
  {
     Q_OBJECT
-@@ -18,7 +221,7 @@ public:
+@@ -18,7 +224,7 @@ public:
  QPlatformTheme *QGtk3ThemePlugin::create(const QString &key, const QStringList &params)
  {
      Q_UNUSED(params);
@@ -242,19 +257,21 @@ index 569c2d8744..779d380594 100644
  
      return nullptr;
 diff --git a/src/plugins/platformthemes/gtk3/qgtk3dialoghelpers.cpp b/src/plugins/platformthemes/gtk3/qgtk3dialoghelpers.cpp
-index b8ba58d30e..525b5513dd 100644
+index b8ba58d30e..4461fc8a97 100644
 --- a/src/plugins/platformthemes/gtk3/qgtk3dialoghelpers.cpp
 +++ b/src/plugins/platformthemes/gtk3/qgtk3dialoghelpers.cpp
-@@ -29,6 +29,8 @@
+@@ -29,6 +29,10 @@
  #include <gdk/gdkwayland.h>
  #endif
  
++#include <dlfcn.h>
++
 +#include "qgtk3functions.h"
 +
  // The size of the preview we display for selected image files. We set height
  // larger than width because generally there is more free space vertically
  // than horizontally (setting the preview image will always expand the width of
-@@ -106,7 +108,7 @@ bool QGtk3Dialog::show(Qt::WindowFlags flags, Qt::WindowModality modality, QWind
+@@ -106,7 +110,7 @@ bool QGtk3Dialog::show(Qt::WindowFlags flags, Qt::WindowModality modality, QWind
      if (parent) {
          if (false) {
  #if defined(GDK_WINDOWING_WAYLAND) && GTK_CHECK_VERSION(3, 22, 0)
@@ -263,21 +280,38 @@ index b8ba58d30e..525b5513dd 100644
              const auto unixServices = dynamic_cast<QGenericUnixServices *>(
                      QGuiApplicationPrivate::platformIntegration()->services());
              if (unixServices) {
-@@ -118,7 +120,7 @@ bool QGtk3Dialog::show(Qt::WindowFlags flags, Qt::WindowModality modality, QWind
+@@ -118,11 +122,20 @@ bool QGtk3Dialog::show(Qt::WindowFlags flags, Qt::WindowModality modality, QWind
              }
  #endif
  #if QT_CONFIG(xlib) && defined(GDK_WINDOWING_X11)
 -        } else if (GDK_IS_X11_WINDOW(gdkWindow)) {
+-            GdkDisplay *gdkDisplay = gdk_window_get_display(gdkWindow);
+-            XSetTransientForHint(gdk_x11_display_get_xdisplay(gdkDisplay),
+-                                 gdk_x11_window_get_xid(gdkWindow),
+-                                 parent->winId());
 +        } else if (gdk_x11_window_get_type && gdk_x11_display_get_xdisplay && gdk_x11_window_get_xid && GDK_IS_X11_WINDOW(gdkWindow)) {
-             GdkDisplay *gdkDisplay = gdk_window_get_display(gdkWindow);
-             XSetTransientForHint(gdk_x11_display_get_xdisplay(gdkDisplay),
-                                  gdk_x11_window_get_xid(gdkWindow),
++            const auto xlib = dlopen("libX11.so.6", RTLD_LAZY);
++            (void) dlerror(); // Reset errors if any
++            if (xlib) {
++                const auto XSetTransientForHint = reinterpret_cast<decltype(&::XSetTransientForHint)>(dlsym(xlib, "XSetTransientForHint"));
++                (void) dlerror(); // Reset errors if any
++                if (XSetTransientForHint) {
++                    GdkDisplay *gdkDisplay = gdk_window_get_display(gdkWindow);
++                    XSetTransientForHint(gdk_x11_display_get_xdisplay(gdkDisplay),
++                                        gdk_x11_window_get_xid(gdkWindow),
++                                        parent->winId());
++                }
++                dlclose(xlib);
++            }
+ #endif
+         }
+     }
 diff --git a/src/plugins/platformthemes/gtk3/qgtk3functions.h b/src/plugins/platformthemes/gtk3/qgtk3functions.h
 new file mode 100644
-index 0000000000..2316ea2f98
+index 0000000000..02431bcef3
 --- /dev/null
 +++ b/src/plugins/platformthemes/gtk3/qgtk3functions.h
-@@ -0,0 +1,457 @@
+@@ -0,0 +1,468 @@
 +#pragma once
 +
 +#include <gtk/gtk.h>
@@ -285,6 +319,9 @@ index 0000000000..2316ea2f98
 +#include <gdk/gdkx.h>
 +#include <pango/pango.h>
 +
++#define g_file_info_get_icon ptr_g_file_info_get_icon
++#define g_file_new_for_path ptr_g_file_new_for_path
++#define g_file_query_info ptr_g_file_query_info
 +#define g_free ptr_g_free
 +#define g_log_default_handler ptr_g_log_default_handler
 +#define g_log_set_handler ptr_g_log_set_handler
@@ -441,6 +478,14 @@ index 0000000000..2316ea2f98
 +#define pango_font_face_get_type ptr_pango_font_face_get_type
 +#define pango_font_family_get_type ptr_pango_font_family_get_type
 +
++inline GIcon *(*g_file_info_get_icon)(GFileInfo *info);
++inline GFile *(*g_file_new_for_path)(const char *path);
++inline GFileInfo *(*g_file_query_info)(
++	GFile *file,
++	const char *attributes,
++	GFileQueryInfoFlags flags,
++	GCancellable *cancellable,
++	GError **error);
 +inline void (*g_free)(gpointer mem);
 +inline void (*g_log_default_handler)(
 +	const gchar *log_domain,
@@ -783,7 +828,7 @@ index c4ea0e5e33..93c7ae9ff9 100644
  
  #if QT_CONFIG(shortcut)
 diff --git a/src/plugins/platformthemes/gtk3/qgtk3theme.cpp b/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
-index cf5674a090..a2dbb6cbf7 100644
+index 1df4cf94a3..b3e1208894 100644
 --- a/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
 +++ b/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
 @@ -15,6 +15,8 @@
