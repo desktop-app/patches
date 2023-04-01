@@ -828,15 +828,52 @@ index c4ea0e5e33..93c7ae9ff9 100644
  
  #if QT_CONFIG(shortcut)
 diff --git a/src/plugins/platformthemes/gtk3/qgtk3theme.cpp b/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
-index 1df4cf94a3..b3e1208894 100644
+index 1df4cf94a3..f93b30b3cd 100644
 --- a/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
 +++ b/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
-@@ -15,6 +15,8 @@
+@@ -15,6 +15,10 @@
  #include <X11/Xlib.h>
  #endif
  
++#include <dlfcn.h>
++
 +#include "qgtk3functions.h"
 +
  QT_BEGIN_NAMESPACE
  
  using namespace Qt::StringLiterals;
+@@ -63,15 +67,32 @@ QGtk3Theme::QGtk3Theme()
+         gdk_set_allowed_backends("x11,wayland");
+ 
+ #if QT_CONFIG(xcb_xlib)
++    const auto xlib = dlopen("libX11.so.6", RTLD_LAZY);
++    (void) dlerror(); // Reset errors if any
++
++    decltype(&::XSetErrorHandler) XSetErrorHandler = nullptr;
++    if (xlib) {
++        XSetErrorHandler = reinterpret_cast<decltype(XSetErrorHandler)>(dlsym(xlib, "XSetErrorHandler"));
++        (void) dlerror(); // Reset errors if any
++    }
++
+     // gtk_init will reset the Xlib error handler, and that causes
+     // Qt applications to quit on X errors. Therefore, we need to manually restore it.
+-    int (*oldErrorHandler)(Display *, XErrorEvent *) = XSetErrorHandler(nullptr);
++    int (*oldErrorHandler)(Display *, XErrorEvent *) = nullptr;
++    if (XSetErrorHandler)
++        oldErrorHandler = XSetErrorHandler(nullptr);
+ #endif
+ 
+     gtk_init(nullptr, nullptr);
+ 
+ #if QT_CONFIG(xcb_xlib)
+-    XSetErrorHandler(oldErrorHandler);
++    if (XSetErrorHandler)
++        XSetErrorHandler(oldErrorHandler);
++
++    if (xlib) {
++        XSetErrorHandler = nullptr;
++        dlclose(xlib);
++    }
+ #endif
+ 
+     /* Initialize some types here so that Gtk+ does not crash when reading
