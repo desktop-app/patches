@@ -1,0 +1,19 @@
+diff --git a/src/widgets/kernel/qwidgetwindow.cpp b/src/widgets/kernel/qwidgetwindow.cpp
+index 7756893369..fe12fe8b0f 100644
+--- a/src/widgets/kernel/qwidgetwindow.cpp
++++ b/src/widgets/kernel/qwidgetwindow.cpp
+@@ -677,9 +677,12 @@ bool QWidgetWindow::updateSize()
+     if (m_widget->testAttribute(Qt::WA_DontShowOnScreen))
+         return changed;
+ 
+-    if (m_widget->data->crect.size() != geometry().size()) {
++    QWExtra *extra = m_widget->d_func()->extraData();
++    QSize boundedSize(qBound(extra->minw, geometry().width(), extra->maxw),
++                      qBound(extra->minh, geometry().height(), extra->maxh));
++    if (m_widget->data->crect.size() != boundedSize) {
+         changed = true;
+-        m_widget->data->crect.setSize(geometry().size());
++        m_widget->data->crect.setSize(boundedSize);
+     }
+ 
+     updateMargins();
