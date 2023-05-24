@@ -29,10 +29,10 @@ index 89acc84f07..f34c027ba1 100644
 +        ${X11_INCLUDE_DIRS}
  )
 diff --git a/src/plugins/platformthemes/gtk3/main.cpp b/src/plugins/platformthemes/gtk3/main.cpp
-index 569c2d8744..fa01e10ab8 100644
+index 569c2d8744..498e291dc7 100644
 --- a/src/plugins/platformthemes/gtk3/main.cpp
 +++ b/src/plugins/platformthemes/gtk3/main.cpp
-@@ -4,8 +4,214 @@
+@@ -4,8 +4,219 @@
  #include <qpa/qplatformthemeplugin.h>
  #include "qgtk3theme.h"
  
@@ -138,6 +138,8 @@ index 569c2d8744..fa01e10ab8 100644
 +            && LOAD_SYMBOL(lib, gtk_combo_box_text_new)
 +            && LOAD_SYMBOL(lib, gtk_container_get_type)
 +            && LOAD_SYMBOL(lib, gtk_container_remove)
++            && LOAD_SYMBOL(lib, gtk_css_provider_load_from_data)
++            && LOAD_SYMBOL(lib, gtk_css_provider_new)
 +            && LOAD_SYMBOL(lib, gtk_dialog_add_button)
 +            && LOAD_SYMBOL(lib, gtk_dialog_get_type)
 +            && LOAD_SYMBOL(lib, gtk_dialog_get_widget_for_response)
@@ -202,11 +204,14 @@ index 569c2d8744..fa01e10ab8 100644
 +            && LOAD_SYMBOL(lib, gtk_separator_menu_item_new)
 +            && LOAD_SYMBOL(lib, gtk_settings_get_default)
 +            && LOAD_SYMBOL(lib, gtk_statusbar_new)
++            && LOAD_SYMBOL(lib, gtk_style_context_add_provider)
 +            && LOAD_SYMBOL(lib, gtk_style_context_get_background_color)
 +            && LOAD_SYMBOL(lib, gtk_style_context_get_border_color)
 +            && LOAD_SYMBOL(lib, gtk_style_context_get_color)
 +            && LOAD_SYMBOL(lib, gtk_style_context_get_font)
 +            && LOAD_SYMBOL(lib, gtk_style_context_lookup_color)
++            && LOAD_SYMBOL(lib, gtk_style_context_remove_provider)
++            && LOAD_SYMBOL(lib, gtk_style_provider_get_type)
 +            && LOAD_SYMBOL(lib, gtk_toolbar_new)
 +            && LOAD_SYMBOL(lib, gtk_tree_view_new)
 +            && LOAD_SYMBOL(lib, gtk_widget_destroy)
@@ -247,7 +252,7 @@ index 569c2d8744..fa01e10ab8 100644
  class QGtk3ThemePlugin : public QPlatformThemePlugin
  {
     Q_OBJECT
-@@ -18,7 +224,7 @@ public:
+@@ -18,7 +229,7 @@ public:
  QPlatformTheme *QGtk3ThemePlugin::create(const QString &key, const QStringList &params)
  {
      Q_UNUSED(params);
@@ -308,10 +313,10 @@ index b8ba58d30e..4461fc8a97 100644
      }
 diff --git a/src/plugins/platformthemes/gtk3/qgtk3functions.h b/src/plugins/platformthemes/gtk3/qgtk3functions.h
 new file mode 100644
-index 0000000000..02431bcef3
+index 0000000000..56c96fd890
 --- /dev/null
 +++ b/src/plugins/platformthemes/gtk3/qgtk3functions.h
-@@ -0,0 +1,468 @@
+@@ -0,0 +1,487 @@
 +#pragma once
 +
 +#include <gtk/gtk.h>
@@ -377,6 +382,8 @@ index 0000000000..02431bcef3
 +#define gtk_combo_box_text_new ptr_gtk_combo_box_text_new
 +#define gtk_container_get_type ptr_gtk_container_get_type
 +#define gtk_container_remove ptr_gtk_container_remove
++#define gtk_css_provider_load_from_data ptr_gtk_css_provider_load_from_data
++#define gtk_css_provider_new ptr_gtk_css_provider_new
 +#define gtk_dialog_add_button ptr_gtk_dialog_add_button
 +#define gtk_dialog_get_type ptr_gtk_dialog_get_type
 +#define gtk_dialog_get_widget_for_response ptr_gtk_dialog_get_widget_for_response
@@ -441,11 +448,14 @@ index 0000000000..02431bcef3
 +#define gtk_separator_menu_item_new ptr_gtk_separator_menu_item_new
 +#define gtk_settings_get_default ptr_gtk_settings_get_default
 +#define gtk_statusbar_new ptr_gtk_statusbar_new
++#define gtk_style_context_add_provider ptr_gtk_style_context_add_provider
 +#define gtk_style_context_get_background_color ptr_gtk_style_context_get_background_color
 +#define gtk_style_context_get_border_color ptr_gtk_style_context_get_border_color
 +#define gtk_style_context_get_color ptr_gtk_style_context_get_color
 +#define gtk_style_context_get_font ptr_gtk_style_context_get_font
 +#define gtk_style_context_lookup_color ptr_gtk_style_context_lookup_color
++#define gtk_style_context_remove_provider ptr_gtk_style_context_remove_provider
++#define gtk_style_provider_get_type ptr_gtk_style_provider_get_type
 +#define gtk_toolbar_new ptr_gtk_toolbar_new
 +#define gtk_tree_view_new ptr_gtk_tree_view_new
 +#define gtk_widget_destroy ptr_gtk_widget_destroy
@@ -588,6 +598,12 @@ index 0000000000..02431bcef3
 +inline GtkWidget *(*gtk_combo_box_text_new)(void);
 +inline GType (*gtk_container_get_type)(void);
 +inline void (*gtk_container_remove)(GtkContainer *container, GtkWidget *widget);
++inline gboolean (*gtk_css_provider_load_from_data)(
++	GtkCssProvider *css_provider,
++	const gchar *data,
++	gssize length,
++	GError **error);
++inline GtkCssProvider *(*gtk_css_provider_new)(void);
 +inline GtkWidget *(*gtk_dialog_add_button)(
 +	GtkDialog *dialog,
 +	const gchar *button_text,
@@ -719,6 +735,10 @@ index 0000000000..02431bcef3
 +inline GtkWidget *(*gtk_separator_menu_item_new)(void);
 +inline GtkSettings *(*gtk_settings_get_default)(void);
 +inline GtkWidget *(*gtk_statusbar_new)(void);
++inline void (*gtk_style_context_add_provider)(
++	GtkStyleContext *context,
++	GtkStyleProvider *provider,
++	guint priority);
 +inline void (*gtk_style_context_get_background_color)(
 +	GtkStyleContext *context,
 +	GtkStateFlags state,
@@ -738,6 +758,10 @@ index 0000000000..02431bcef3
 +	GtkStyleContext *context,
 +	const gchar *color_name,
 +	GdkRGBA *color);
++inline void (*gtk_style_context_remove_provider)(
++	GtkStyleContext *context,
++	GtkStyleProvider *provider);
++inline GType (*gtk_style_provider_get_type)(void);
 +inline GtkWidget *(*gtk_toolbar_new)(void);
 +inline GtkWidget *(*gtk_tree_view_new)(void);
 +inline void (*gtk_widget_destroy)(GtkWidget *widget);
@@ -781,7 +805,7 @@ index 0000000000..02431bcef3
 +inline GType (*pango_font_face_get_type)(void);
 +inline GType (*pango_font_family_get_type)(void);
 diff --git a/src/plugins/platformthemes/gtk3/qgtk3interface.cpp b/src/plugins/platformthemes/gtk3/qgtk3interface.cpp
-index d802f2d1db..ed10c1f052 100644
+index 2789645fe0..de644f9fe8 100644
 --- a/src/plugins/platformthemes/gtk3/qgtk3interface.cpp
 +++ b/src/plugins/platformthemes/gtk3/qgtk3interface.cpp
 @@ -19,6 +19,8 @@
@@ -828,7 +852,7 @@ index c4ea0e5e33..93c7ae9ff9 100644
  
  #if QT_CONFIG(shortcut)
 diff --git a/src/plugins/platformthemes/gtk3/qgtk3theme.cpp b/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
-index 1df4cf94a3..f93b30b3cd 100644
+index 9d23ba7e48..eb00586ceb 100644
 --- a/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
 +++ b/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
 @@ -15,6 +15,10 @@
