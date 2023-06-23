@@ -83,11 +83,11 @@ index 0000000000..fd32d9a783
 +
 +mark_as_advanced(LCMS2_INCLUDE_DIR LCMS2_LIBRARIES LCMS2_VERSION)
 diff --git a/src/gui/CMakeLists.txt b/src/gui/CMakeLists.txt
-index 8eb4e5b605..3073a14a61 100644
+index 8eb4e5b605..259b0b62b1 100644
 --- a/src/gui/CMakeLists.txt
 +++ b/src/gui/CMakeLists.txt
-@@ -1044,6 +1044,11 @@ qt_internal_extend_target(Gui CONDITION (QT_FEATURE_eglfs OR QT_FEATURE_xcb)
-         util/qedidvendortable_p.h
+@@ -558,6 +558,11 @@ qt_internal_extend_target(Gui CONDITION QT_FEATURE_movie
+         image/qmovie.cpp image/qmovie.h
  )
  
 +qt_internal_extend_target(Gui CONDITION QT_FEATURE_lcms2
@@ -95,9 +95,9 @@ index 8eb4e5b605..3073a14a61 100644
 +        LCMS2::LCMS2
 +)
 +
- 
- qt_internal_create_tracepoints(Gui qtgui.tracepoints)
- qt_internal_add_docs(Gui
+ qt_internal_extend_target(Gui CONDITION QT_FEATURE_png
+     SOURCES
+         image/qpnghandler.cpp image/qpnghandler_p.h
 diff --git a/src/gui/configure.cmake b/src/gui/configure.cmake
 index 42ab041f99..5166d80880 100644
 --- a/src/gui/configure.cmake
@@ -225,3 +225,106 @@ index 26fbb7205a..1abb939046 100644
      if (!d->colorSpace.isValid())
          return;
      if (!colorSpace.isValid()) {
+diff --git a/src/plugins/imageformats/jpeg/CMakeLists.txt b/src/plugins/imageformats/jpeg/CMakeLists.txt
+index bb5a78fa40..f5a17d0ac1 100644
+--- a/src/plugins/imageformats/jpeg/CMakeLists.txt
++++ b/src/plugins/imageformats/jpeg/CMakeLists.txt
+@@ -20,6 +20,11 @@ qt_internal_add_plugin(QJpegPlugin
+         WrapJpeg::WrapJpeg
+ )
+ 
++qt_internal_extend_target(QJpegPlugin CONDITION QT_FEATURE_lcms2
++    LIBRARIES
++        LCMS2::LCMS2
++)
++
+ # Fails to build on Windows with a static Qt, PCH enabled and
+ # the vendored libjpeg sources, due to 'boolean'
+ # redefinition in jmorecfg.h and rpcndr.h.
+diff --git a/src/plugins/imageformats/jpeg/qjpeghandler.cpp b/src/plugins/imageformats/jpeg/qjpeghandler.cpp
+index 6d88438c47..3931059202 100644
+--- a/src/plugins/imageformats/jpeg/qjpeghandler.cpp
++++ b/src/plugins/imageformats/jpeg/qjpeghandler.cpp
+@@ -68,6 +68,10 @@ extern "C" {
+ #endif
+ }
+ 
++#if QT_CONFIG(lcms2)
++#include <lcms2.h>
++#endif
++
+ QT_BEGIN_NAMESPACE
+ 
+ Q_LOGGING_CATEGORY(lcJpeg, "qt.gui.imageio.jpeg")
+@@ -241,6 +245,7 @@ static bool read_jpeg_image(QImage *outImage,
+                             QSize scaledSize, QRect scaledClipRect,
+                             QRect clipRect, int quality,
+                             Rgb888ToRgb32Converter converter,
++                            QByteArray &iccProfile,
+                             j_decompress_ptr info, struct my_error_mgr* err  )
+ {
+     if (!setjmp(err->setjmp_buffer)) {
+@@ -368,6 +373,25 @@ static bool read_jpeg_image(QImage *outImage,
+ 
+             (void) jpeg_start_decompress(info);
+ 
++#if QT_CONFIG(lcms2)
++            cmsHPROFILE hProfileFrom = nullptr;
++            cmsHPROFILE hProfileTo = nullptr;
++            cmsHTRANSFORM xform = nullptr;
++            if (info->out_color_space == JCS_CMYK) {
++                hProfileFrom = cmsOpenProfileFromMem(iccProfile.constData(), iccProfile.size());
++                hProfileTo = cmsCreate_sRGBProfile();
++                if (hProfileFrom && hProfileTo) {
++                    xform = cmsCreateTransform(hProfileFrom,
++                                               info->saw_Adobe_marker ? TYPE_CMYK_8_REV : TYPE_CMYK_8,
++                                               hProfileTo, TYPE_BGRA_8, INTENT_PERCEPTUAL, 0);
++                    if (xform)
++                        iccProfile = {};
++                }
++            }
++#else
++            Q_UNUSED(iccProfile);
++#endif
++
+             while (info->output_scanline < info->output_height) {
+                 int y = int(info->output_scanline) - clip.y();
+                 if (y >= clip.height())
+@@ -386,6 +410,12 @@ static bool read_jpeg_image(QImage *outImage,
+                     // Convert CMYK->RGB.
+                     uchar *in = rows[0] + clip.x() * 4;
+                     QRgb *out = (QRgb*)outImage->scanLine(y);
++#if QT_CONFIG(lcms2)
++                    if (xform) {
++                        cmsDoTransform(xform, in, out, clip.width());
++                        continue;
++                    }
++#endif
+                     for (int i = 0; i < clip.width(); ++i) {
+                         int k = in[3];
+                         *out++ = qRgb(k * in[0] / 255, k * in[1] / 255,
+@@ -398,6 +428,15 @@ static bool read_jpeg_image(QImage *outImage,
+                            rows[0] + clip.x(), clip.width());
+                 }
+             }
++
++#if QT_CONFIG(lcms2)
++            if (xform)
++                cmsDeleteTransform(xform);
++            if (hProfileTo)
++                cmsCloseProfile(hProfileTo);
++            if (hProfileFrom)
++                cmsCloseProfile(hProfileFrom);
++#endif
+         } else {
+             // Load unclipped grayscale data directly into the QImage.
+             (void) jpeg_start_decompress(info);
+@@ -1003,7 +1042,7 @@ bool QJpegHandlerPrivate::read(QImage *image)
+ 
+     if (state == ReadHeader)
+     {
+-        bool success = read_jpeg_image(image, scaledSize, scaledClipRect, clipRect, quality, rgb888ToRgb32ConverterPtr, &info, &err);
++        bool success = read_jpeg_image(image, scaledSize, scaledClipRect, clipRect, quality, rgb888ToRgb32ConverterPtr, iccProfile, &info, &err);
+         if (success) {
+             for (int i = 0; i < readTexts.size()-1; i+=2)
+                 image->setText(readTexts.at(i), readTexts.at(i+1));
