@@ -1,5 +1,5 @@
 diff --git a/glib/glibmm/object.cc b/glib/glibmm/object.cc
-index 4dc73b31..f29f30bb 100644
+index 30703d7d..38a79a2e 100644
 --- a/glib/glibmm/object.cc
 +++ b/glib/glibmm/object.cc
 @@ -30,7 +30,7 @@ namespace Glib
@@ -102,7 +102,7 @@ index 4dc73b31..f29f30bb 100644
  
  Object::Object(GObject* castitem)
 diff --git a/glib/glibmm/object.h b/glib/glibmm/object.h
-index 6db4b5cb..66adc145 100644
+index 4cb6ad91..2a1f7f2f 100644
 --- a/glib/glibmm/object.h
 +++ b/glib/glibmm/object.h
 @@ -53,9 +53,8 @@ class GLIBMM_API GSigConnectionNode;
@@ -128,11 +128,11 @@ index 6db4b5cb..66adc145 100644
    explicit ConstructParams(const Glib::Class& glibmm_class_);
    ConstructParams(const Glib::Class& glibmm_class_, const char* first_property_name,
 diff --git a/meson.build b/meson.build
-index b73a1ccc..516947f7 100644
+index 2eefa135..0109a99d 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -107,12 +107,13 @@ sigcxx_req = '>= 3.0.0'
- glib_req = '>= 2.73.2'
+@@ -109,12 +109,13 @@ sigcxx_req = '>= 3.0.0'
+ glib_req = '>= 2.77.0'
  
  # There are pkg-config files for sigc++ and glib on MSVC, so just use that.
 +dl_dep = cpp_compiler.find_library('dl', required : false)
@@ -147,7 +147,7 @@ index b73a1ccc..516947f7 100644
    'sigc++-3.0', sigcxx_req,
    'glib-2.0', glib_req,
 diff --git a/tools/generate_wrap_init.pl.in b/tools/generate_wrap_init.pl.in
-index 50e08275..8ce0da9f 100644
+index 21b7b907..d03eec5e 100644
 --- a/tools/generate_wrap_init.pl.in
 +++ b/tools/generate_wrap_init.pl.in
 @@ -206,6 +206,7 @@ print << "EOF";
@@ -158,7 +158,7 @@ index 50e08275..8ce0da9f 100644
  #include <glibmm.h>
  #include <${parent_dir}/wrap_init.h>
  #include <glibmm/error.h>
-@@ -354,8 +355,8 @@ foreach my $sub_namespace (sort keys %extra_namespaces)
+@@ -361,8 +362,8 @@ foreach my $sub_namespace (sort keys %extra_namespaces)
        my ($cppname, $basename, @extra_namespace) = @{$i};
        if (@extra_namespace > 0 && $sub_namespace eq join("::", @extra_namespace))
        {
@@ -169,7 +169,7 @@ index 50e08275..8ce0da9f 100644
        }
      }
      print_with_guards($filename_header, $message) if $message;
-@@ -380,8 +381,8 @@ foreach my $filename_header (sort keys %exceptions)
+@@ -387,8 +388,8 @@ foreach my $filename_header (sort keys %exceptions)
      my ($cppname, $basename, @extra_namespace) = @{$i};
      if (@extra_namespace == 0)
      {
@@ -180,7 +180,7 @@ index 50e08275..8ce0da9f 100644
      }
    }
    print_with_guards($filename_header, $message) if $message;
-@@ -412,8 +413,8 @@ foreach my $filename_header (sort keys %objects)
+@@ -419,8 +420,8 @@ foreach my $filename_header (sort keys %objects)
    {
      my ($cppname, $basename, @extra_namespace) = @{$i};
      my $qualified_cppname = join("::", (@extra_namespace, $cppname));
@@ -252,10 +252,10 @@ index 544f772e..607ac795 100644
  }
  
 diff --git a/tools/m4/class_shared.m4 b/tools/m4/class_shared.m4
-index 1dab09d0..0c5db057 100644
+index 3ba0f32f..983f6924 100644
 --- a/tools/m4/class_shared.m4
 +++ b/tools/m4/class_shared.m4
-@@ -173,10 +173,12 @@ ifdef(`__BOOL_ABI_AS_WITH_DERIVED_GTYPE__',`dnl
+@@ -175,10 +175,12 @@ ifdef(`__BOOL_ABI_AS_WITH_DERIVED_GTYPE__',`dnl
      class_init_func_ = &__CPPNAME__`'_Class::class_init_function;
  
      // Do not derive a GType, or use a derived class:
@@ -270,7 +270,7 @@ index 1dab09d0..0c5db057 100644
  ')',`dnl not __BOOL_DO_NOT_DERIVE_GTYPE__
      // Glib::Class has to know the class init function to clone custom types.
      class_init_func_ = &__CPPNAME__`'_Class::class_init_function;
-@@ -186,7 +188,8 @@ ifdef(`__BOOL_ABI_AS_WITH_DERIVED_GTYPE__',`dnl
+@@ -188,7 +190,8 @@ ifdef(`__BOOL_ABI_AS_WITH_DERIVED_GTYPE__',`dnl
      //CppClassParent::CppObjectType::get_type();
  
      // Create the wrapper type, with the same class/instance size as the base type.
@@ -280,7 +280,7 @@ index 1dab09d0..0c5db057 100644
  
      // Add derived versions of interfaces, if the C type implements any interfaces:
  _IMPORT(SECTION_CC_IMPLEMENTS_INTERFACES)
-@@ -207,10 +210,12 @@ ifdef(`__BOOL_ABI_AS_WITH_DERIVED_GTYPE__',`dnl
+@@ -209,10 +212,12 @@ ifdef(`__BOOL_ABI_AS_WITH_DERIVED_GTYPE__',`dnl
      class_init_func_ = &__CPPNAME__`'_Class::class_init_function;
  
      // Do not derive a GType, or use a derived class:
@@ -295,7 +295,7 @@ index 1dab09d0..0c5db057 100644
  ')',`dnl
      // Glib::Class has to know the class init function to clone custom types.
      class_init_func_ = &__CPPNAME__`'_Class::class_init_function;
-@@ -220,7 +225,8 @@ ifdef(`__BOOL_ABI_AS_WITH_DERIVED_GTYPE__',`dnl
+@@ -222,7 +227,8 @@ ifdef(`__BOOL_ABI_AS_WITH_DERIVED_GTYPE__',`dnl
      //CppClassParent::CppObjectType::get_type();
  
      // Create the wrapper type, with the same class/instance size as the base type.
@@ -305,7 +305,7 @@ index 1dab09d0..0c5db057 100644
  
      // Add derived versions of interfaces, if the C type implements any interfaces:
  _IMPORT(SECTION_CC_IMPLEMENTS_INTERFACES)
-@@ -285,7 +291,9 @@ GType __CPPNAME__::get_type(GTypeModule* module)
+@@ -287,7 +293,9 @@ GType __CPPNAME__::get_type(GTypeModule* module)
  
  GType __CPPNAME__::get_base_type()
  {
