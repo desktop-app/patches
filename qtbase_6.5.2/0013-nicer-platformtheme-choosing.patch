@@ -1,8 +1,124 @@
+diff --git a/src/gui/kernel/qguiapplication.cpp b/src/gui/kernel/qguiapplication.cpp
+index 82475da9d7..2dad32d826 100644
+--- a/src/gui/kernel/qguiapplication.cpp
++++ b/src/gui/kernel/qguiapplication.cpp
+@@ -125,6 +125,7 @@ Q_CONSTINIT QGuiApplicationPrivate::QLastCursorPosition QGuiApplicationPrivate::
+ 
+ Q_CONSTINIT QWindow *QGuiApplicationPrivate::currentMouseWindow = nullptr;
+ 
++Q_CONSTINIT QString QGuiApplicationPrivate::platformThemeOverride;
+ Q_CONSTINIT QString QGuiApplicationPrivate::styleOverride;
+ 
+ Q_CONSTINIT Qt::ApplicationState QGuiApplicationPrivate::applicationState = Qt::ApplicationInactive;
+@@ -230,15 +231,6 @@ static void initThemeHints()
+     touchDoubleTapDistance = QGuiApplicationPrivate::platformTheme()->themeHint(QPlatformTheme::TouchDoubleTapDistance).toInt();
+ }
+ 
+-static bool checkNeedPortalSupport()
+-{
+-#if QT_CONFIG(dbus)
+-    return QFileInfo::exists("/.flatpak-info"_L1) || qEnvironmentVariableIsSet("SNAP");
+-#else
+-    return false;
+-#endif // QT_CONFIG(dbus)
+-}
+-
+ // Using aggregate initialization instead of ctor so we can have a POD global static
+ #define Q_WINDOW_GEOMETRY_SPECIFICATION_INITIALIZER { Qt::TopLeftCorner, -1, -1, -1, -1 }
+ 
+@@ -1207,12 +1199,11 @@ Q_LOGGING_CATEGORY(lcQpaPluginLoading, "qt.qpa.plugin");
+ Q_LOGGING_CATEGORY(lcQpaTheme, "qt.qpa.theme");
+ Q_LOGGING_CATEGORY(lcPtrDispatch, "qt.pointer.dispatch");
+ 
+-static void init_platform(const QString &pluginNamesWithArguments, const QString &platformPluginPath, const QString &platformThemeName, int &argc, char **argv)
++static void init_platform(const QString &pluginNamesWithArguments, const QString &platformPluginPath, int &argc, char **argv)
+ {
+     qCDebug(lcQpaPluginLoading) << "init_platform called with"
+         << "pluginNamesWithArguments" << pluginNamesWithArguments
+-        << "platformPluginPath" << platformPluginPath
+-        << "platformThemeName" << platformThemeName;
++        << "platformPluginPath" << platformPluginPath;
+ 
+     QStringList plugins = pluginNamesWithArguments.split(u';', Qt::SkipEmptyParts);
+     QStringList platformArguments;
+@@ -1273,21 +1264,23 @@ static void init_platform(const QString &pluginNamesWithArguments, const QString
+ 
+     // 1) Fetch the platform name from the environment if present.
+     QStringList themeNames;
+-    if (!platformThemeName.isEmpty()) {
+-        qCDebug(lcQpaTheme) << "Adding" << platformThemeName << "from environment to list of theme names";
+-        themeNames.append(platformThemeName);
++    if (!QGuiApplicationPrivate::platformThemeOverride.isEmpty()) {
++        qCDebug(lcQpaTheme) << "Adding" << QGuiApplicationPrivate::platformThemeOverride << "from environment to list of theme names";
++        themeNames.append(QGuiApplicationPrivate::platformThemeOverride);
+     }
+ 
+-    // 2) Special case - check whether it's a flatpak or snap app to use xdg-desktop-portal platform theme for portals support
+-    if (checkNeedPortalSupport()) {
+-        qCDebug(lcQpaTheme) << "Adding xdgdesktopportal to list of theme names";
+-        themeNames.append(QStringLiteral("xdgdesktopportal"));
+-    }
+-
+-    // 3) Ask the platform integration for a list of theme names
++    // 2) Ask the platform integration for a list of theme names
+     const auto platformIntegrationThemeNames = QGuiApplicationPrivate::platform_integration->themeNames();
+     qCDebug(lcQpaTheme) << "Adding platform integration's theme names to list of theme names:" << platformIntegrationThemeNames;
+     themeNames += platformIntegrationThemeNames;
++
++    // 3) Special case - prefer xdgdesktopportal
++    if (themeNames.indexOf(QStringLiteral("xdgdesktopportal")) > 0) {
++        qCDebug(lcQpaTheme) << "Moving xdgdesktopportal to the front of list of theme names";
++        themeNames.removeAll(QStringLiteral("xdgdesktopportal"));
++        themeNames.prepend(QStringLiteral("xdgdesktopportal"));
++    }
++
+     // 4) Look for a theme plugin.
+     for (const QString &themeName : std::as_const(themeNames)) {
+         qCDebug(lcQpaTheme) << "Attempting to create platform theme" << themeName << "via QPlatformThemeFactory::create";
+@@ -1461,7 +1454,7 @@ void QGuiApplicationPrivate::createPlatformIntegration()
+         platformExplicitlySelected = true;
+     }
+ 
+-    QString platformThemeName = QString::fromLocal8Bit(qgetenv("QT_QPA_PLATFORMTHEME"));
++    platformThemeOverride = QString::fromLocal8Bit(qgetenv("QT_QPA_PLATFORMTHEME"));
+ 
+     // Get command line params
+ 
+@@ -1489,7 +1482,7 @@ void QGuiApplicationPrivate::createPlatformIntegration()
+             }
+         } else if (strcmp(arg, "-platformtheme") == 0) {
+             if (++i < argc)
+-                platformThemeName = QString::fromLocal8Bit(argv[i]);
++                platformThemeOverride = QString::fromLocal8Bit(argv[i]);
+         } else if (strcmp(arg, "-qwindowgeometry") == 0 || (xcbIsDefault && strcmp(arg, "-geometry") == 0)) {
+             if (++i < argc)
+                 windowGeometrySpecification = QWindowGeometrySpecification::fromArgument(argv[i]);
+@@ -1512,7 +1505,7 @@ void QGuiApplicationPrivate::createPlatformIntegration()
+ 
+     Q_UNUSED(platformExplicitlySelected);
+ 
+-    init_platform(QLatin1StringView(platformName), platformPluginPath, platformThemeName, argc, argv);
++    init_platform(QLatin1StringView(platformName), platformPluginPath, argc, argv);
+     if (const QPlatformTheme *theme = platformTheme())
+         QStyleHintsPrivate::get(QGuiApplication::styleHints())->setColorScheme(theme->colorScheme());
+ 
+diff --git a/src/gui/kernel/qguiapplication_p.h b/src/gui/kernel/qguiapplication_p.h
+index 40caf3ba56..cdcf43ab29 100644
+--- a/src/gui/kernel/qguiapplication_p.h
++++ b/src/gui/kernel/qguiapplication_p.h
+@@ -263,6 +263,7 @@ public:
+ 
+     static QFont *app_font;
+ 
++    static QString platformThemeOverride;
+     static QString styleOverride;
+     static QStyleHints *styleHints;
+     static bool obey_desktop_settings;
 diff --git a/src/gui/platform/unix/qgenericunixthemes.cpp b/src/gui/platform/unix/qgenericunixthemes.cpp
-index 1efd759bcf..79dd168266 100644
+index af2307fd09..1e1ffdd293 100644
 --- a/src/gui/platform/unix/qgenericunixthemes.cpp
 +++ b/src/gui/platform/unix/qgenericunixthemes.cpp
-@@ -963,24 +963,13 @@ QStringList QGenericUnixTheme::themeNames()
+@@ -1315,24 +1315,13 @@ QStringList QGenericUnixTheme::themeNames()
      QStringList result;
      if (QGuiApplication::desktopSettingsAware()) {
          const QByteArray desktopEnvironment = QGuiApplicationPrivate::platformIntegration()->services()->desktopEnvironment();
@@ -28,7 +144,7 @@ index 1efd759bcf..79dd168266 100644
              } else {
                  // unknown, but lowercase the name (our standard practice) and
                  // remove any "x-" prefix
-@@ -988,6 +977,10 @@ QStringList QGenericUnixTheme::themeNames()
+@@ -1340,6 +1329,10 @@ QStringList QGenericUnixTheme::themeNames()
                  result.push_back(s.startsWith("x-"_L1) ? s.mid(2) : s);
              }
          }
@@ -39,15 +155,42 @@ index 1efd759bcf..79dd168266 100644
      } // desktopSettingsAware
      result.append(QLatin1StringView(QGenericUnixTheme::name));
      return result;
+diff --git a/src/plugins/platformthemes/xdgdesktopportal/main.cpp b/src/plugins/platformthemes/xdgdesktopportal/main.cpp
+index efbc16b3d2..f3e6d9c9ac 100644
+--- a/src/plugins/platformthemes/xdgdesktopportal/main.cpp
++++ b/src/plugins/platformthemes/xdgdesktopportal/main.cpp
+@@ -20,9 +20,7 @@ public:
+ QPlatformTheme *QXdgDesktopPortalThemePlugin::create(const QString &key, const QStringList &params)
+ {
+     Q_UNUSED(params);
+-    if (!key.compare("xdgdesktopportal"_L1, Qt::CaseInsensitive) ||
+-        !key.compare("flatpak"_L1, Qt::CaseInsensitive) ||
+-        !key.compare("snap"_L1, Qt::CaseInsensitive))
++    if (!key.compare("xdgdesktopportal"_L1, Qt::CaseInsensitive))
+         return new QXdgDesktopPortalTheme;
+ 
+     return nullptr;
 diff --git a/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp b/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
-index 552a78278f..fee08a548c 100644
+index a31c8b6105..ab78393fd3 100644
 --- a/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
 +++ b/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
-@@ -74,6 +74,7 @@ QXdgDesktopPortalTheme::QXdgDesktopPortalTheme()
+@@ -73,7 +73,10 @@ QXdgDesktopPortalTheme::QXdgDesktopPortalTheme()
+     Q_D(QXdgDesktopPortalTheme);
  
      QStringList themeNames;
++    if (!QGuiApplicationPrivate::platformThemeOverride.isEmpty())
++        themeNames += QGuiApplicationPrivate::platformThemeOverride;
      themeNames += QGuiApplicationPrivate::platform_integration->themeNames();
 +    themeNames.removeAll(QStringLiteral("xdgdesktopportal"));
      // 1) Look for a theme plugin.
      for (const QString &themeName : std::as_const(themeNames)) {
          d->baseTheme = QPlatformThemeFactory::create(themeName, nullptr);
+diff --git a/src/plugins/platformthemes/xdgdesktopportal/xdgdesktopportal.json b/src/plugins/platformthemes/xdgdesktopportal/xdgdesktopportal.json
+index c69062d9a1..c77ffddf45 100644
+--- a/src/plugins/platformthemes/xdgdesktopportal/xdgdesktopportal.json
++++ b/src/plugins/platformthemes/xdgdesktopportal/xdgdesktopportal.json
+@@ -1,3 +1,3 @@
+ {
+-    "Keys": [ "xdgdesktopportal", "flatpak", "snap" ]
++    "Keys": [ "xdgdesktopportal" ]
+ }
