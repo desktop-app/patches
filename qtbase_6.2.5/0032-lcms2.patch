@@ -83,10 +83,10 @@ index 0000000000..fd32d9a783
 +
 +mark_as_advanced(LCMS2_INCLUDE_DIR LCMS2_LIBRARIES LCMS2_VERSION)
 diff --git a/src/gui/CMakeLists.txt b/src/gui/CMakeLists.txt
-index 8eb4e5b605..259b0b62b1 100644
+index 9901938445..0bfa4395c1 100644
 --- a/src/gui/CMakeLists.txt
 +++ b/src/gui/CMakeLists.txt
-@@ -558,6 +558,11 @@ qt_internal_extend_target(Gui CONDITION QT_FEATURE_movie
+@@ -557,6 +557,11 @@ qt_internal_extend_target(Gui CONDITION QT_FEATURE_movie
          image/qmovie.cpp image/qmovie.h
  )
  
@@ -99,7 +99,7 @@ index 8eb4e5b605..259b0b62b1 100644
      SOURCES
          image/qpnghandler.cpp image/qpnghandler_p.h
 diff --git a/src/gui/configure.cmake b/src/gui/configure.cmake
-index 42ab041f99..5166d80880 100644
+index f3412f9a44..b3453475fa 100644
 --- a/src/gui/configure.cmake
 +++ b/src/gui/configure.cmake
 @@ -55,6 +55,7 @@ qt_find_package(WrapOpenGL PROVIDED_TARGETS WrapOpenGL::WrapOpenGL MODULE_NAME g
@@ -110,7 +110,7 @@ index 42ab041f99..5166d80880 100644
  if((LINUX) OR QT_FIND_ALL_PACKAGES_ALWAYS)
      qt_find_package(Wayland PROVIDED_TARGETS Wayland::Server MODULE_NAME gui QMAKE_LIB wayland_server)
  endif()
-@@ -664,6 +665,12 @@ qt_feature("fontconfig" PUBLIC PRIVATE
+@@ -647,6 +648,12 @@ qt_feature("fontconfig" PUBLIC PRIVATE
      CONDITION NOT WIN32 AND QT_FEATURE_system_freetype AND FONTCONFIG_FOUND
  )
  qt_feature_definition("fontconfig" "QT_NO_FONTCONFIG" NEGATE VALUE "1")
@@ -123,7 +123,7 @@ index 42ab041f99..5166d80880 100644
  qt_feature("gbm"
      LABEL "GBM"
      CONDITION gbm_FOUND
-@@ -1225,6 +1232,7 @@ qt_configure_add_summary_entry(ARGS "system-freetype")
+@@ -1203,6 +1210,7 @@ qt_configure_add_summary_entry(ARGS "system-freetype")
  qt_configure_add_summary_entry(ARGS "harfbuzz")
  qt_configure_add_summary_entry(ARGS "system-harfbuzz")
  qt_configure_add_summary_entry(ARGS "fontconfig")
@@ -226,11 +226,11 @@ index 26fbb7205a..1abb939046 100644
          return;
      if (!colorSpace.isValid()) {
 diff --git a/src/plugins/imageformats/jpeg/CMakeLists.txt b/src/plugins/imageformats/jpeg/CMakeLists.txt
-index bb5a78fa40..f5a17d0ac1 100644
+index a5ce61b5a0..9dde122bf2 100644
 --- a/src/plugins/imageformats/jpeg/CMakeLists.txt
 +++ b/src/plugins/imageformats/jpeg/CMakeLists.txt
-@@ -20,6 +20,11 @@ qt_internal_add_plugin(QJpegPlugin
-         WrapJpeg::WrapJpeg
+@@ -19,6 +19,11 @@ qt_internal_add_plugin(QJpegPlugin
+         Qt::GuiPrivate
  )
  
 +qt_internal_extend_target(QJpegPlugin CONDITION QT_FEATURE_lcms2

@@ -1,5 +1,5 @@
 diff --git a/src/gui/rhi/qrhimetal.mm b/src/gui/rhi/qrhimetal.mm
-index 6ea1f5e645..bf9d66fa31 100644
+index e169550ee4..4c97dd15b7 100644
 --- a/src/gui/rhi/qrhimetal.mm
 +++ b/src/gui/rhi/qrhimetal.mm
 @@ -40,6 +40,7 @@
@@ -21,7 +21,7 @@ index 6ea1f5e645..bf9d66fa31 100644
  
      static const int TEXBUF_ALIGN = 256; // probably not accurate
  
-@@ -379,7 +380,8 @@ bool QRhiMetal::create(QRhi::Flags flags)
+@@ -377,7 +378,8 @@ bool QRhiMetal::create(QRhi::Flags flags)
      const QString deviceName = QString::fromNSString([d->dev name]);
      qCDebug(QRHI_LOG_INFO, "Metal device: %s", qPrintable(deviceName));
      driverInfoStruct.deviceName = deviceName.toUtf8();
@@ -31,7 +31,7 @@ index 6ea1f5e645..bf9d66fa31 100644
  #ifdef Q_OS_IOS
      driverInfoStruct.deviceType = QRhiDriverInfo::IntegratedDevice;
  #else
-@@ -406,14 +408,15 @@ bool QRhiMetal::create(QRhi::Flags flags)
+@@ -404,14 +406,15 @@ bool QRhiMetal::create(QRhi::Flags flags)
      else
          d->cmdQueue = [d->dev newCommandQueue];
  
@@ -55,7 +55,7 @@ index 6ea1f5e645..bf9d66fa31 100644
  #if defined(Q_OS_MACOS)
      caps.maxTextureSize = 16384;
      caps.baseVertexAndInstance = true;
-@@ -463,8 +466,10 @@ void QRhiMetal::destroy()
+@@ -455,8 +458,10 @@ void QRhiMetal::destroy()
          s.destroy();
      d->shaderCache.clear();
  
@@ -68,7 +68,7 @@ index 6ea1f5e645..bf9d66fa31 100644
  
      [d->cmdQueue release];
      if (!importedCmdQueue)
-@@ -1387,7 +1392,8 @@ void QRhiMetal::debugMarkBegin(QRhiCommandBuffer *cb, const QByteArray &name)
+@@ -1367,7 +1372,8 @@ void QRhiMetal::debugMarkBegin(QRhiCommandBuffer *cb, const QByteArray &name)
      if (cbD->recordingPass != QMetalCommandBuffer::NoPass)
          [cbD->d->currentRenderPassEncoder pushDebugGroup: str];
      else
@@ -78,7 +78,7 @@ index 6ea1f5e645..bf9d66fa31 100644
  }
  
  void QRhiMetal::debugMarkEnd(QRhiCommandBuffer *cb)
-@@ -1399,7 +1405,8 @@ void QRhiMetal::debugMarkEnd(QRhiCommandBuffer *cb)
+@@ -1379,7 +1385,8 @@ void QRhiMetal::debugMarkEnd(QRhiCommandBuffer *cb)
      if (cbD->recordingPass != QMetalCommandBuffer::NoPass)
          [cbD->d->currentRenderPassEncoder popDebugGroup];
      else
@@ -88,7 +88,7 @@ index 6ea1f5e645..bf9d66fa31 100644
  }
  
  void QRhiMetal::debugMarkMsg(QRhiCommandBuffer *cb, const QByteArray &msg)
-@@ -1450,7 +1457,8 @@ QRhi::FrameOpResult QRhiMetal::beginFrame(QRhiSwapChain *swapChain, QRhi::BeginF
+@@ -1430,7 +1437,8 @@ QRhi::FrameOpResult QRhiMetal::beginFrame(QRhiSwapChain *swapChain, QRhi::BeginF
      if (swapChainD->ds)
          swapChainD->ds->lastActiveFrameSlot = currentFrameSlot;
  
@@ -98,7 +98,7 @@ index 6ea1f5e645..bf9d66fa31 100644
  
      // Do not let the command buffer mess with the refcount of objects. We do
      // have a proper render loop and will manage lifetimes similarly to other
-@@ -1507,7 +1515,8 @@ QRhi::FrameOpResult QRhiMetal::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
+@@ -1487,7 +1495,8 @@ QRhi::FrameOpResult QRhiMetal::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
      QRhiProfilerPrivate *rhiP = profilerPrivateOrNull();
      QRHI_PROF_F(endSwapChainFrame(swapChain, swapChainD->frameCount + 1));
  
@@ -108,23 +108,7 @@ index 6ea1f5e645..bf9d66fa31 100644
  
      if (needsPresent)
          swapChainD->currentFrameSlot = (swapChainD->currentFrameSlot + 1) % QMTL_FRAMES_IN_FLIGHT;
-@@ -2762,7 +2771,14 @@ bool QMetalTexture::create()
-         }
-         desc.textureType = MTLTextureType2DArray;
- #else
--        desc.textureType = samples > 1 ? MTLTextureType2DMultisampleArray : MTLTextureType2DArray;
-+        if (@available(macOS 10.14, *)) {
-+            desc.textureType = samples > 1 ? MTLTextureType2DMultisampleArray : MTLTextureType2DArray;
-+        } else {
-+            if (samples > 1) {
-+                qWarning("Multisample 2D texture array is not supported on macOS before 10.14.");
-+            }
-+            desc.textureType = MTLTextureType2DArray;
-+        }
- #endif
-     } else {
-         desc.textureType = samples > 1 ? MTLTextureType2DMultisample : MTLTextureType2D;
-@@ -3320,7 +3336,10 @@ static inline MTLVertexFormat toMetalAttributeFormat(QRhiVertexInputAttribute::F
+@@ -3244,7 +3253,10 @@ static inline MTLVertexFormat toMetalAttributeFormat(QRhiVertexInputAttribute::F
      case QRhiVertexInputAttribute::UNormByte2:
          return MTLVertexFormatUChar2Normalized;
      case QRhiVertexInputAttribute::UNormByte:
@@ -136,7 +120,7 @@ index 6ea1f5e645..bf9d66fa31 100644
      case QRhiVertexInputAttribute::UInt4:
          return MTLVertexFormatUInt4;
      case QRhiVertexInputAttribute::UInt3:
-@@ -3510,9 +3529,10 @@ static inline MTLCullMode toMetalCullMode(QRhiGraphicsPipeline::CullMode c)
+@@ -3434,9 +3446,10 @@ static inline MTLCullMode toMetalCullMode(QRhiGraphicsPipeline::CullMode c)
  id<MTLLibrary> QRhiMetalData::createMetalLib(const QShader &shader, QShader::Variant shaderVariant,
                                               QString *error, QByteArray *entryPoint, QShaderKey *activeKey)
  {
@@ -148,7 +132,7 @@ index 6ea1f5e645..bf9d66fa31 100644
          key.setSourceVersion(12);
          mtllib = shader.shader(key);
      }
-@@ -3536,7 +3556,7 @@ id<MTLLibrary> QRhiMetalData::createMetalLib(const QShader &shader, QShader::Var
+@@ -3460,7 +3473,7 @@ id<MTLLibrary> QRhiMetalData::createMetalLib(const QShader &shader, QShader::Var
  
      key = { QShader::MslShader, 20, shaderVariant };
      QShaderCode mslSource = shader.shader(key);
@@ -157,7 +141,7 @@ index 6ea1f5e645..bf9d66fa31 100644
          key.setSourceVersion(12);
          mslSource = shader.shader(key);
      }
-@@ -3547,7 +3567,11 @@ id<MTLLibrary> QRhiMetalData::createMetalLib(const QShader &shader, QShader::Var
+@@ -3471,7 +3484,11 @@ id<MTLLibrary> QRhiMetalData::createMetalLib(const QShader &shader, QShader::Var
  
      NSString *src = [NSString stringWithUTF8String: mslSource.shader().constData()];
      MTLCompileOptions *opts = [[MTLCompileOptions alloc] init];
@@ -170,7 +154,7 @@ index 6ea1f5e645..bf9d66fa31 100644
      NSError *err = nil;
      id<MTLLibrary> lib = [dev newLibraryWithSource: src options: opts error: &err];
      [opts release];
-@@ -4075,7 +4099,8 @@ bool QMetalSwapChain::createOrResize()
+@@ -3998,7 +4015,8 @@ bool QMetalSwapChain::createOrResize()
  
  #ifdef Q_OS_MACOS
      if (m_flags.testFlag(NoVSync))
