@@ -1,8 +1,8 @@
 diff --git a/src/corelib/text/qlocale_win.cpp b/src/corelib/text/qlocale_win.cpp
-index cdae432160..bac5cc004b 100644
+index d8322e0582..3291f4d49e 100644
 --- a/src/corelib/text/qlocale_win.cpp
 +++ b/src/corelib/text/qlocale_win.cpp
-@@ -519,11 +519,13 @@ QVariant QSystemLocalePrivate::toString(QTime time, QLocale::FormatType type)
+@@ -456,11 +456,13 @@ QVariant QSystemLocalePrivate::toString(QTime time, QLocale::FormatType type)
  
      DWORD flags = 0;
      // keep the same conditional as timeFormat() above
@@ -16,14 +16,14 @@ index cdae432160..bac5cc004b 100644
      wchar_t buf[255];
 -    if (getTimeFormat(flags, &st, NULL, buf, 255)) {
 +    if (getTimeFormat(flags, &st, formatStr, buf, int(std::size(buf)))) {
-         QString text = QString::fromWCharArray(buf);
+         QString format = QString::fromWCharArray(buf);
          if (substitution() == SAlways)
-             text = substituteDigits(std::move(text));
+             format = substituteDigits(std::move(format));
 diff --git a/tests/auto/corelib/text/qlocale/tst_qlocale.cpp b/tests/auto/corelib/text/qlocale/tst_qlocale.cpp
-index 076d80d17e..a665be1f0d 100644
+index 8a81151ea6..ada0adf6ec 100644
 --- a/tests/auto/corelib/text/qlocale/tst_qlocale.cpp
 +++ b/tests/auto/corelib/text/qlocale/tst_qlocale.cpp
-@@ -2265,7 +2265,7 @@ void tst_QLocale::windowsDefaultLocale()
+@@ -2206,7 +2206,7 @@ void tst_QLocale::windowsDefaultLocale()
               locale.toString(QDate(1974, 12, 1), QLocale::ShortFormat));
      QCOMPARE(locale.toString(QDate(1974, 12, 1), QLocale::LongFormat),
               QStringView(u"\u3021@\u3021\u3022@\u3021\u3029\u3027\u3024"));

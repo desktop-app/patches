@@ -1,10 +1,10 @@
 diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms/cocoa/qcocoawindow.mm
-index 70cfa42974..bc1b47b55c 100644
+index d4c1593936..2b7df1078a 100644
 --- a/src/plugins/platforms/cocoa/qcocoawindow.mm
 +++ b/src/plugins/platforms/cocoa/qcocoawindow.mm
-@@ -556,6 +556,15 @@ NSUInteger QCocoaWindow::windowStyleMask(Qt::WindowFlags flags)
-         }
-     }();
+@@ -526,6 +526,15 @@ NSUInteger QCocoaWindow::windowStyleMask(Qt::WindowFlags flags)
+     // Select base window type. Note that the value of NSBorderlessWindowMask is 0.
+     NSUInteger styleMask = (frameless || !resizable) ? NSWindowStyleMaskBorderless : NSWindowStyleMaskResizable;
  
 +    // Patch: allow creating panels floating on all spaces in macOS.
 +    // If you call "setCollectionBehavior:NSWindowCollectionBehaviorFullScreenAuxiliary" before
@@ -15,6 +15,6 @@ index 70cfa42974..bc1b47b55c 100644
 +        styleMask |= NSWindowStyleMaskNonactivatingPanel;
 +    }
 +
-     // We determine which buttons to show in updateTitleBarButtons,
-     // so we can enable all the relevant style masks here to ensure
-     // that behaviors that don't involve the title bar buttons are
+     if (frameless) {
+         // Frameless windows do not display the traffic lights buttons for
+         // e.g. minimize, however StyleMaskMiniaturizable is required to allow
