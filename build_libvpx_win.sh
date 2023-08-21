@@ -17,7 +17,8 @@ pacman --noconfirm -S diffutils
 --enable-static-msvcrt \
 --enable-vp8 \
 --enable-vp9 \
---enable-webm-io
+--enable-webm-io \
+--size-limit=4096x4096
 
 make -j8
 make -j8 install
