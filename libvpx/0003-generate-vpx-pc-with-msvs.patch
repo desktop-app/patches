@@ -1,10 +1,10 @@
 diff --git a/libs.mk b/libs.mk
-index 7cd973bd1..d96b50b46 100644
+index f6f6cc94c..ea31c00ea 100644
 --- a/libs.mk
 +++ b/libs.mk
-@@ -280,6 +280,42 @@ PROJECTS-yes += vp9rc.$(VCPROJ_SFX)
- vp9rc.$(VCPROJ_SFX): vpx_config.asm
- vp9rc.$(VCPROJ_SFX): $(RTCD)
+@@ -294,6 +294,42 @@ PROJECTS-yes += vpxrc.$(VCPROJ_SFX)
+ vpxrc.$(VCPROJ_SFX): vpx_config.asm
+ vpxrc.$(VCPROJ_SFX): $(RTCD)
  
 +# List of all platforms supported for vpx.pc target
 +ifneq ($(findstring x86_64,$(TOOLCHAIN)),)
@@ -35,7 +35,7 @@ index 7cd973bd1..d96b50b46 100644
 +	$(qexec)echo 'Version: $(VERSION_MAJOR).$(VERSION_MINOR).$(VERSION_PATCH)' >> $@
 +	$(qexec)echo 'Requires:' >> $@
 +	$(qexec)echo 'Conflicts:' >> $@
-+	$(qexec)echo 'Libs: -L$${libdir} -l$(CODEC_LIB)' >> $@
++	$(qexec)echo 'Libs: -L$${libdir} -lvpx' >> $@
 +	$(qexec)echo 'Libs.private:' >> $@
 +	$(qexec)echo 'Cflags: -I$${includedir}' >> $@
 +INSTALL-LIBS-yes += $(LIBSUBDIR)/pkgconfig/vpx.pc
