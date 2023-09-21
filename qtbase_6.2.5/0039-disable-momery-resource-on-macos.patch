@@ -1,0 +1,49 @@
+diff --git a/src/corelib/tools/qduplicatetracker_p.h b/src/corelib/tools/qduplicatetracker_p.h
+index 3cbd48c364..2ab810a84e 100644
+--- a/src/corelib/tools/qduplicatetracker_p.h
++++ b/src/corelib/tools/qduplicatetracker_p.h
+@@ -52,7 +52,7 @@
+ 
+ #include <qglobal.h>
+ 
+-#if __has_include(<memory_resource>) && __cplusplus > 201402L
++#if !defined(__APPLE__) && __has_include(<memory_resource>) && __cplusplus > 201402L
+ #  include <unordered_set>
+ #  include <memory_resource>
+ #  include <qhash.h> // for the hashing helpers
+@@ -64,7 +64,7 @@ QT_BEGIN_NAMESPACE
+ 
+ template <typename T, size_t Prealloc = 32>
+ class QDuplicateTracker {
+-#ifdef __cpp_lib_memory_resource
++#if !defined(__APPLE__) && defined __cpp_lib_memory_resource
+     template <typename HT>
+     struct QHasher {
+         size_t storedSeed = QHashSeed::globalSeed();
+@@ -90,7 +90,7 @@ class QDuplicateTracker {
+     Q_DISABLE_COPY_MOVE(QDuplicateTracker);
+ public:
+     static constexpr inline bool uses_pmr =
+-        #ifdef __cpp_lib_memory_resource
++        #if !defined(__APPLE__) && defined __cpp_lib_memory_resource
+             true
+         #else
+             false
+@@ -101,7 +101,7 @@ public:
+     [[nodiscard]] bool hasSeen(const T &s)
+     {
+         bool inserted;
+-#ifdef __cpp_lib_memory_resource
++#if !defined(__APPLE__) && defined __cpp_lib_memory_resource
+         inserted = set.insert(s).second;
+ #else
+         set.insert(s);
+@@ -113,7 +113,7 @@ public:
+     [[nodiscard]] bool hasSeen(T &&s)
+     {
+         bool inserted;
+-#ifdef __cpp_lib_memory_resource
++#if !defined(__APPLE__) && defined __cpp_lib_memory_resource
+         inserted = set.insert(std::move(s)).second;
+ #else
+         set.insert(std::move(s));
