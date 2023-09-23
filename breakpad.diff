@@ -1,5 +1,5 @@
 diff --git a/src/build/common.gypi b/src/build/common.gypi
-index 29990c65..4929c6a5 100644
+index 29990c65..82afe440 100644
 --- a/src/build/common.gypi
 +++ b/src/build/common.gypi
 @@ -123,8 +123,8 @@
@@ -8,8 +8,8 @@ index 29990c65..4929c6a5 100644
      # these defaults.
 -    'mac_sdk%': '10.5',
 -    'mac_deployment_target%': '10.5',
-+    'mac_sdk%': '10.12',
-+    'mac_deployment_target%': '10.12',
++    'mac_sdk%': '10.13',
++    'mac_deployment_target%': '10.13',
  
      # Set to 1 to enable code coverage.  In addition to build changes
      # (e.g. extra CFLAGS), also creates a new target in the src/chrome
@@ -74,14 +74,14 @@ index 0b8077d2..8397d366 100755
  
    run_gyp(args)
 diff --git a/src/client/mac/Breakpad.xcodeproj/project.pbxproj b/src/client/mac/Breakpad.xcodeproj/project.pbxproj
-index ed782c91..0145e20e 100644
+index ed782c91..b3ccc4e8 100644
 --- a/src/client/mac/Breakpad.xcodeproj/project.pbxproj
 +++ b/src/client/mac/Breakpad.xcodeproj/project.pbxproj
 @@ -2198,6 +2198,7 @@
  			buildSettings = {
  				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
  				GCC_TREAT_WARNINGS_AS_ERRORS = NO;
-+				MACOSX_DEPLOYMENT_TARGET = 10.12;
++				MACOSX_DEPLOYMENT_TARGET = 10.13;
  				SDKROOT = macosx;
  			};
  			name = Debug;
@@ -89,7 +89,7 @@ index ed782c91..0145e20e 100644
  			buildSettings = {
  				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
  				GCC_TREAT_WARNINGS_AS_ERRORS = NO;
-+				MACOSX_DEPLOYMENT_TARGET = 10.12;
++				MACOSX_DEPLOYMENT_TARGET = 10.13;
  			};
  			name = Release;
  		};
@@ -97,7 +97,7 @@ index ed782c91..0145e20e 100644
  			buildSettings = {
  				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
  				GCC_TREAT_WARNINGS_AS_ERRORS = NO;
-+				MACOSX_DEPLOYMENT_TARGET = 10.12;
++				MACOSX_DEPLOYMENT_TARGET = 10.13;
  			};
  			name = "Debug With Code Coverage";
  		};
