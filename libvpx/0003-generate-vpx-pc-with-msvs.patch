@@ -1,5 +1,5 @@
 diff --git a/libs.mk b/libs.mk
-index f6f6cc94c..ea31c00ea 100644
+index f6f6cc94c..e43a8ae7f 100644
 --- a/libs.mk
 +++ b/libs.mk
 @@ -294,6 +294,42 @@ PROJECTS-yes += vpxrc.$(VCPROJ_SFX)
@@ -35,7 +35,7 @@ index f6f6cc94c..ea31c00ea 100644
 +	$(qexec)echo 'Version: $(VERSION_MAJOR).$(VERSION_MINOR).$(VERSION_PATCH)' >> $@
 +	$(qexec)echo 'Requires:' >> $@
 +	$(qexec)echo 'Conflicts:' >> $@
-+	$(qexec)echo 'Libs: -L$${libdir} -lvpx' >> $@
++	$(qexec)echo 'Libs: -L$${libdir} -l$(CODEC_LIB)' >> $@
 +	$(qexec)echo 'Libs.private:' >> $@
 +	$(qexec)echo 'Cflags: -I$${includedir}' >> $@
 +INSTALL-LIBS-yes += $(LIBSUBDIR)/pkgconfig/vpx.pc
