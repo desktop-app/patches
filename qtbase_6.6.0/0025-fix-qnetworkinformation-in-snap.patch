@@ -1,0 +1,67 @@
+diff --git a/src/plugins/networkinformation/networkmanager/qnetworkmanagernetworkinformationbackend.cpp b/src/plugins/networkinformation/networkmanager/qnetworkmanagernetworkinformationbackend.cpp
+index 6ee84e06f8..f2ef41b6b3 100644
+--- a/src/plugins/networkinformation/networkmanager/qnetworkmanagernetworkinformationbackend.cpp
++++ b/src/plugins/networkinformation/networkmanager/qnetworkmanagernetworkinformationbackend.cpp
+@@ -167,6 +167,9 @@ private:
+ 
+ QNetworkManagerNetworkInformationBackend::QNetworkManagerNetworkInformationBackend()
+ {
++    if (!iface.isValid())
++        return;
++
+     auto updateReachability = [this](QNetworkManagerInterface::NMState newState) {
+         setReachability(reachabilityFromNMState(newState));
+     };
+diff --git a/src/plugins/networkinformation/networkmanager/qnetworkmanagerservice.cpp b/src/plugins/networkinformation/networkmanager/qnetworkmanagerservice.cpp
+index 4c0ea14151..7edfaec430 100644
+--- a/src/plugins/networkinformation/networkmanager/qnetworkmanagerservice.cpp
++++ b/src/plugins/networkinformation/networkmanager/qnetworkmanagerservice.cpp
+@@ -41,7 +41,7 @@ bool QNetworkManagerInterfaceBase::networkManagerAvailable()
+ QNetworkManagerInterface::QNetworkManagerInterface(QObject *parent)
+     : QNetworkManagerInterfaceBase(parent)
+ {
+-    if (!isValid())
++    if (!QDBusAbstractInterface::isValid())
+         return;
+ 
+     PropertiesDBusInterface managerPropertiesInterface(
+@@ -53,11 +53,14 @@ QNetworkManagerInterface::QNetworkManagerInterface(QObject *parent)
+             QDBus::Block, "GetAll"_L1, argumentList);
+     if (!propsReply.isError()) {
+         propertyMap = propsReply.value();
++        validDBusConnection = true;
+     } else {
+-        qWarning() << "propsReply" << propsReply.error().message();
++        qDebug() << "propsReply" << propsReply.error().message();
++        validDBusConnection = false;
++        return;
+     }
+ 
+-    QDBusConnection::systemBus().connect(NM_DBUS_SERVICE ""_L1, NM_DBUS_PATH ""_L1,
++    validDBusConnection = QDBusConnection::systemBus().connect(NM_DBUS_SERVICE ""_L1, NM_DBUS_PATH ""_L1,
+             DBUS_PROPERTIES_INTERFACE""_L1, "PropertiesChanged"_L1, this,
+             SLOT(setProperties(QString,QMap<QString,QVariant>,QList<QString>)));
+ }
+diff --git a/src/plugins/networkinformation/networkmanager/qnetworkmanagerservice.h b/src/plugins/networkinformation/networkmanager/qnetworkmanagerservice.h
+index 9ca862d398..01f97ede1d 100644
+--- a/src/plugins/networkinformation/networkmanager/qnetworkmanagerservice.h
++++ b/src/plugins/networkinformation/networkmanager/qnetworkmanagerservice.h
+@@ -136,6 +136,10 @@ public:
+     NMDeviceType deviceType() const;
+     NMMetered meteredState() const;
+ 
++    bool isValid() const {
++        return QDBusAbstractInterface::isValid() && validDBusConnection;
++    }
++
+ Q_SIGNALS:
+     void stateChanged(NMState);
+     void connectivityChanged(NMConnectivityState);
+@@ -155,6 +159,7 @@ private:
+     std::optional<QDBusObjectPath> primaryConnectionDevicePath() const;
+ 
+     QVariantMap propertyMap;
++    bool validDBusConnection = true;
+ };
+ 
+ class PropertiesDBusInterface : public QDBusAbstractInterface
