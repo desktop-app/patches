@@ -13,7 +13,7 @@ index 6ee84e06f8..f2ef41b6b3 100644
          setReachability(reachabilityFromNMState(newState));
      };
 diff --git a/src/plugins/networkinformation/networkmanager/qnetworkmanagerservice.cpp b/src/plugins/networkinformation/networkmanager/qnetworkmanagerservice.cpp
-index 4c0ea14151..7edfaec430 100644
+index 4c0ea14151..f6119e9cb3 100644
 --- a/src/plugins/networkinformation/networkmanager/qnetworkmanagerservice.cpp
 +++ b/src/plugins/networkinformation/networkmanager/qnetworkmanagerservice.cpp
 @@ -41,7 +41,7 @@ bool QNetworkManagerInterfaceBase::networkManagerAvailable()
@@ -25,14 +25,15 @@ index 4c0ea14151..7edfaec430 100644
          return;
  
      PropertiesDBusInterface managerPropertiesInterface(
-@@ -53,11 +53,14 @@ QNetworkManagerInterface::QNetworkManagerInterface(QObject *parent)
+@@ -53,11 +53,15 @@ QNetworkManagerInterface::QNetworkManagerInterface(QObject *parent)
              QDBus::Block, "GetAll"_L1, argumentList);
      if (!propsReply.isError()) {
          propertyMap = propsReply.value();
 +        validDBusConnection = true;
      } else {
 -        qWarning() << "propsReply" << propsReply.error().message();
-+        qDebug() << "propsReply" << propsReply.error().message();
++        if (auto error = propsReply.error(); error.type() != QDBusError::AccessDenied)
++            qWarning() << "Failed to query NetworkManager properties:" << error.message();
 +        validDBusConnection = false;
 +        return;
      }
