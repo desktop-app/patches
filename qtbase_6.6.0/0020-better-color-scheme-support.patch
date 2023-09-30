@@ -1,20 +1,18 @@
 This patch allows to subscribe to color-scheme changes in application code and force Qt to update the value with QWindowSystemInterface::handleThemeChange().
 
-This also adds mapping for the no preference value which most applications would like to handle the same as light.
+This also fixes mapping for the no preference value which most applications would like to handle the same as light.
 ---
 diff --git a/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp b/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
-index a31c8b6105..8717a69df2 100644
+index a31c8b6105..a82003caed 100644
 --- a/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
 +++ b/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
-@@ -57,14 +57,15 @@ public:
+@@ -57,14 +57,12 @@ public:
      {
          switch (colorschemePref) {
              case PreferDark: return Qt::ColorScheme::Dark;
 -            case PreferLight: return Qt::ColorScheme::Light;
-+            case PreferLight:
-+            case None:
-+                return Qt::ColorScheme::Light;
-             default: return Qt::ColorScheme::Unknown;
+-            default: return Qt::ColorScheme::Unknown;
++            default: return Qt::ColorScheme::Light;
          }
      }
  
@@ -24,7 +22,7 @@ index a31c8b6105..8717a69df2 100644
  };
  
  QXdgDesktopPortalTheme::QXdgDesktopPortalTheme()
-@@ -111,21 +112,6 @@ QXdgDesktopPortalTheme::QXdgDesktopPortalTheme()
+@@ -111,21 +109,6 @@ QXdgDesktopPortalTheme::QXdgDesktopPortalTheme()
          }
          watcher->deleteLater();
      });
@@ -46,7 +44,7 @@ index a31c8b6105..8717a69df2 100644
  }
  
  QPlatformMenuItem* QXdgDesktopPortalTheme::createPlatformMenuItem() const
-@@ -208,9 +194,26 @@ QVariant QXdgDesktopPortalTheme::themeHint(ThemeHint hint) const
+@@ -208,9 +191,26 @@ QVariant QXdgDesktopPortalTheme::themeHint(ThemeHint hint) const
  Qt::ColorScheme QXdgDesktopPortalTheme::colorScheme() const
  {
      Q_D(const QXdgDesktopPortalTheme);
