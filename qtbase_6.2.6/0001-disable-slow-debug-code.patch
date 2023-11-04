@@ -10,5 +10,5 @@ index 266faca0ed..38a559877e 100644
 +// Patch: Disable this debug code because it is very slow.
 +#if 0
      void *poolFrame = nullptr;
-     if (__builtin_available(macOS 10.14, iOS 12.0, tvOS 12.0, watchOS 5.0, *)) {
-         void *frame;
+     void *frame;
+     if (backtrace_from_fp(__builtin_frame_address(0), &frame, 1))
