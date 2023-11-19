@@ -1,0 +1,41 @@
+diff --git a/src/client/qwaylandscreen.cpp b/src/client/qwaylandscreen.cpp
+index 7c4f1bdf..4f21f6c8 100644
+--- a/src/client/qwaylandscreen.cpp
++++ b/src/client/qwaylandscreen.cpp
+@@ -104,12 +104,12 @@ QString QWaylandScreen::model() const
+ 
+ QRect QWaylandScreen::geometry() const
+ {
+-    if (zxdg_output_v1::isInitialized()) {
++    if (zxdg_output_v1::isInitialized() && (!mWaylandDisplay->fractionalScaleManager() || QGuiApplication::highDpiScaleFactorRoundingPolicy() == Qt::HighDpiScaleFactorRoundingPolicy::PassThrough || !qApp->property("_q_force_wayland_fractional_scale").toBool())) {
+         return mXdgGeometry;
+     } else {
+         // Scale geometry for QScreen. This makes window and screen
+         // geometry be in the same coordinate system.
+-        return QRect(mGeometry.topLeft(), mGeometry.size() / mScale);
++        return QRect(mGeometry.topLeft(), mGeometry.size() / devicePixelRatio());
+     }
+ }
+ 
+@@ -175,6 +175,8 @@ int QWaylandScreen::scale() const
+ 
+ qreal QWaylandScreen::devicePixelRatio() const
+ {
++    if (mWaylandDisplay->fractionalScaleManager() && QGuiApplication::highDpiScaleFactorRoundingPolicy() != Qt::HighDpiScaleFactorRoundingPolicy::PassThrough && qApp->property("_q_force_wayland_fractional_scale").toBool())
++        return 1.0;
+     return qreal(mScale);
+ }
+ 
+diff --git a/src/client/qwaylandwindow.cpp b/src/client/qwaylandwindow.cpp
+index f7c70048..436afbc5 100644
+--- a/src/client/qwaylandwindow.cpp
++++ b/src/client/qwaylandwindow.cpp
+@@ -102,7 +102,7 @@ void QWaylandWindow::initWindow()
+         initializeWlSurface();
+     }
+ 
+-    if (mDisplay->fractionalScaleManager() && qApp->highDpiScaleFactorRoundingPolicy() == Qt::HighDpiScaleFactorRoundingPolicy::PassThrough) {
++    if (mDisplay->fractionalScaleManager() && (qApp->highDpiScaleFactorRoundingPolicy() == Qt::HighDpiScaleFactorRoundingPolicy::PassThrough || qApp->property("_q_force_wayland_fractional_scale").toBool())) {
+         mFractionalScale.reset(new QWaylandFractionalScale(mDisplay->fractionalScaleManager()->get_fractional_scale(mSurface->object())));
+ 
+         connect(mFractionalScale.data(), &QWaylandFractionalScale::preferredScaleChanged, this, [this](qreal preferredScale) {
