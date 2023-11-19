@@ -1,0 +1,75 @@
+diff --git a/src/gui/kernel/qwindow.cpp b/src/gui/kernel/qwindow.cpp
+index 0d524b8692..fb6fa37cfb 100644
+--- a/src/gui/kernel/qwindow.cpp
++++ b/src/gui/kernel/qwindow.cpp
+@@ -227,6 +227,7 @@ void QWindowPrivate::init(QScreen *targetScreen)
+ 
+     requestedFormat = QSurfaceFormat::defaultFormat();
+     devicePixelRatio = connectScreen->devicePixelRatio();
++    scaleFactor = QHighDpiScaling::factor(q);
+ 
+     QObject::connect(q, &QWindow::screenChanged, q, [q, this](QScreen *){
+         // We may have changed scaling; trigger resize event if needed,
+@@ -1362,11 +1363,22 @@ void QWindowPrivate::updateDevicePixelRatio()
+ {
+     Q_Q(QWindow);
+ 
++    const auto so = QHighDpiScaling::scaleAndOrigin(q);
++
+     // If there is no platform window use the associated screen's devicePixelRatio,
+     // which typically is the primary screen and will be correct for single-display
+     // systems (a very common case).
+     const qreal newDevicePixelRatio = platformWindow ?
+-        platformWindow->devicePixelRatio() * QHighDpiScaling::factor(q) : q->screen()->devicePixelRatio();
++        platformWindow->devicePixelRatio() * so.factor : q->screen()->devicePixelRatio();
++
++    if (so.factor != scaleFactor) {
++        const auto newGeometry = QHighDpi::scale(q->geometry(), so.factor / scaleFactor, so.origin);
++        scaleFactor = so.factor;
++        if (platformWindow && q->isTopLevel())
++            platformWindow->propagateSizeHints();
++        if (!(q->windowStates() & Qt::WindowFullScreen))
++            q->setGeometry(newGeometry);
++    }
+ 
+     if (newDevicePixelRatio == devicePixelRatio)
+         return;
+@@ -2538,9 +2550,12 @@ bool QWindow::event(QEvent *ev)
+         break;
+     }
+ 
+-    case QEvent::Expose:
++    case QEvent::Expose: {
++        Q_D(QWindow);
++        d->updateDevicePixelRatio();
+         exposeEvent(static_cast<QExposeEvent *>(ev));
+         break;
++    }
+ 
+     case QEvent::Paint:
+         paintEvent(static_cast<QPaintEvent *>(ev));
+diff --git a/src/gui/kernel/qwindow_p.h b/src/gui/kernel/qwindow_p.h
+index 96beb17bec..efc4c8a6fa 100644
+--- a/src/gui/kernel/qwindow_p.h
++++ b/src/gui/kernel/qwindow_p.h
+@@ -109,6 +109,7 @@ public:
+     QIcon windowIcon;
+     QRect geometry;
+     qreal devicePixelRatio = 1.0;
++    qreal scaleFactor = 1.0;
+     Qt::WindowStates windowState = Qt::WindowNoState;
+     QWindow::Visibility visibility = QWindow::Hidden;
+     bool resizeEventPending = true;
+diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
+index 63c271a79c..aac1fbde2c 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.cpp
++++ b/src/plugins/platforms/windows/qwindowswindow.cpp
+@@ -2021,7 +2021,7 @@ void QWindowsWindow::handleDpiChanged(HWND hwnd, WPARAM wParam, LPARAM lParam)
+     // to the already scaled window size. Since there is no need to set the
+     // window geometry again, and the provided geometry is incorrect, we omit
+     // making the SetWindowPos() call.
+-    if (!m_inSetgeometry) {
++    if (false && !m_inSetgeometry) {
+         updateFullFrameMargins();
+         const auto prcNewWindow = reinterpret_cast<RECT *>(lParam);
+         SetWindowPos(hwnd, nullptr, prcNewWindow->left, prcNewWindow->top,

@@ -1,0 +1,44 @@
+diff --git a/src/gui/kernel/qhighdpiscaling_p.h b/src/gui/kernel/qhighdpiscaling_p.h
+index 189f31fd0a..d6deb8a72a 100644
+--- a/src/gui/kernel/qhighdpiscaling_p.h
++++ b/src/gui/kernel/qhighdpiscaling_p.h
+@@ -172,7 +172,7 @@ inline QMargins scale(const QMargins &margins, qreal scaleFactor, QPoint origin
+ template<typename T>
+ QList<T> scale(const QList<T> &list, qreal scaleFactor, QPoint origin = QPoint(0, 0))
+ {
+-    if (!QHighDpiScaling::isActive())
++    if (qFuzzyCompare(scaleFactor, qreal(1)))
+         return list;
+ 
+     QList<T> scaled;
+@@ -184,7 +184,7 @@ QList<T> scale(const QList<T> &list, qreal scaleFactor, QPoint origin = QPoint(0
+ 
+ inline QRegion scale(const QRegion &region, qreal scaleFactor, QPoint origin = QPoint(0, 0))
+ {
+-    if (!QHighDpiScaling::isActive())
++    if (qFuzzyCompare(scaleFactor, qreal(1)))
+         return region;
+ 
+     QRegion scaled = region.translated(-origin);
+diff --git a/src/gui/painting/qbackingstore.cpp b/src/gui/painting/qbackingstore.cpp
+index f609cddd3c..b94a2e4148 100644
+--- a/src/gui/painting/qbackingstore.cpp
++++ b/src/gui/painting/qbackingstore.cpp
+@@ -131,7 +131,7 @@ void QBackingStore::beginPaint(const QRegion &region)
+     // the image data to avoid having the new devicePixelRatio be propagated
+     // back to the platform plugin.
+     QPaintDevice *device = platformBackingStore->paintDevice();
+-    if (QHighDpiScaling::isActive() && device->devType() == QInternal::Image) {
++    if ((QHighDpiScaling::isActive() || d_ptr->downscale) && device->devType() == QInternal::Image) {
+         QImage *source = static_cast<QImage *>(device);
+         const bool needsNewImage = d_ptr->highDpiBackingstore.isNull()
+             || source->data_ptr() != d_ptr->highDpiBackingstore->data_ptr()
+@@ -156,7 +156,7 @@ QPaintDevice *QBackingStore::paintDevice()
+ {
+     QPaintDevice *device = handle()->paintDevice();
+ 
+-    if (QHighDpiScaling::isActive() && device->devType() == QInternal::Image)
++    if ((QHighDpiScaling::isActive() || d_ptr->downscale) && device->devType() == QInternal::Image)
+         return d_ptr->highDpiBackingstore.data();
+ 
+     return device;
