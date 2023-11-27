@@ -1,5 +1,5 @@
 diff --git a/src/gui/kernel/qwindow.cpp b/src/gui/kernel/qwindow.cpp
-index 0d524b8692..fb6fa37cfb 100644
+index 1bc35e9524..fa9cd253eb 100644
 --- a/src/gui/kernel/qwindow.cpp
 +++ b/src/gui/kernel/qwindow.cpp
 @@ -227,6 +227,7 @@ void QWindowPrivate::init(QScreen *targetScreen)
@@ -10,7 +10,7 @@ index 0d524b8692..fb6fa37cfb 100644
  
      QObject::connect(q, &QWindow::screenChanged, q, [q, this](QScreen *){
          // We may have changed scaling; trigger resize event if needed,
-@@ -1362,11 +1363,22 @@ void QWindowPrivate::updateDevicePixelRatio()
+@@ -1372,11 +1373,22 @@ bool QWindowPrivate::updateDevicePixelRatio()
  {
      Q_Q(QWindow);
  
@@ -33,8 +33,8 @@ index 0d524b8692..fb6fa37cfb 100644
 +    }
  
      if (newDevicePixelRatio == devicePixelRatio)
-         return;
-@@ -2538,9 +2550,12 @@ bool QWindow::event(QEvent *ev)
+         return false;
+@@ -2549,9 +2561,12 @@ bool QWindow::event(QEvent *ev)
          break;
      }
  
@@ -49,7 +49,7 @@ index 0d524b8692..fb6fa37cfb 100644
      case QEvent::Paint:
          paintEvent(static_cast<QPaintEvent *>(ev));
 diff --git a/src/gui/kernel/qwindow_p.h b/src/gui/kernel/qwindow_p.h
-index 96beb17bec..efc4c8a6fa 100644
+index 7b1aad4838..37c379d9cd 100644
 --- a/src/gui/kernel/qwindow_p.h
 +++ b/src/gui/kernel/qwindow_p.h
 @@ -109,6 +109,7 @@ public:
@@ -61,10 +61,10 @@ index 96beb17bec..efc4c8a6fa 100644
      QWindow::Visibility visibility = QWindow::Hidden;
      bool resizeEventPending = true;
 diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
-index 63c271a79c..aac1fbde2c 100644
+index e7fc6d0622..be8e11ce53 100644
 --- a/src/plugins/platforms/windows/qwindowswindow.cpp
 +++ b/src/plugins/platforms/windows/qwindowswindow.cpp
-@@ -2021,7 +2021,7 @@ void QWindowsWindow::handleDpiChanged(HWND hwnd, WPARAM wParam, LPARAM lParam)
+@@ -2020,7 +2020,7 @@ void QWindowsWindow::handleDpiChanged(HWND hwnd, WPARAM wParam, LPARAM lParam)
      // to the already scaled window size. Since there is no need to set the
      // window geometry again, and the provided geometry is incorrect, we omit
      // making the SetWindowPos() call.
