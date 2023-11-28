@@ -1,13 +1,26 @@
 diff --git a/src/client/qwaylandscreen.cpp b/src/client/qwaylandscreen.cpp
-index 7c4f1bdf..4f21f6c8 100644
+index 7c4f1bdf..3c833580 100644
 --- a/src/client/qwaylandscreen.cpp
 +++ b/src/client/qwaylandscreen.cpp
-@@ -104,12 +104,12 @@ QString QWaylandScreen::model() const
+@@ -17,6 +17,12 @@ QT_BEGIN_NAMESPACE
+ 
+ namespace QtWaylandClient {
+ 
++static bool fractionalScaleFixNeeded(QWaylandDisplay* display) {
++    return display->fractionalScaleManager()
++        && QGuiApplication::highDpiScaleFactorRoundingPolicy() != Qt::HighDpiScaleFactorRoundingPolicy::PassThrough
++        && qApp->property("_q_force_wayland_fractional_scale").toBool();
++}
++
+ QWaylandXdgOutputManagerV1::QWaylandXdgOutputManagerV1(QWaylandDisplay* display, uint id, uint version)
+     : QtWayland::zxdg_output_manager_v1(display->wl_registry(), id, qMin(3u, version))
+ {
+@@ -104,12 +110,12 @@ QString QWaylandScreen::model() const
  
  QRect QWaylandScreen::geometry() const
  {
 -    if (zxdg_output_v1::isInitialized()) {
-+    if (zxdg_output_v1::isInitialized() && (!mWaylandDisplay->fractionalScaleManager() || QGuiApplication::highDpiScaleFactorRoundingPolicy() == Qt::HighDpiScaleFactorRoundingPolicy::PassThrough || !qApp->property("_q_force_wayland_fractional_scale").toBool())) {
++    if (zxdg_output_v1::isInitialized() && !fractionalScaleFixNeeded(mWaylandDisplay)) {
          return mXdgGeometry;
      } else {
          // Scale geometry for QScreen. This makes window and screen
@@ -17,17 +30,49 @@ index 7c4f1bdf..4f21f6c8 100644
      }
  }
  
-@@ -175,6 +175,8 @@ int QWaylandScreen::scale() const
+@@ -133,15 +139,12 @@ QSizeF QWaylandScreen::physicalSize() const
+ 
+ QDpi QWaylandScreen::logicalDpi() const
+ {
+-    static bool physicalDpi = qEnvironmentVariable("QT_WAYLAND_FORCE_DPI") == QStringLiteral("physical");
+-    if (physicalDpi)
+-        return QPlatformScreen::logicalDpi();
++    if (zxdg_output_v1::isInitialized() && fractionalScaleFixNeeded(mWaylandDisplay))
++        return QDpi(
++            qreal(mGeometry.width()) / qreal(mXdgGeometry.width()) * qreal(96),
++            qreal(mGeometry.height()) / qreal(mXdgGeometry.height()) * qreal(96));
+ 
+-    static int forceDpi = qgetenv("QT_WAYLAND_FORCE_DPI").toInt();
+-    if (forceDpi)
+-        return QDpi(forceDpi, forceDpi);
+-
+-    return QDpi(96, 96);
++    return QPlatformScreen::logicalDpi();
+ }
+ 
+ QList<QPlatformScreen *> QWaylandScreen::virtualSiblings() const
+@@ -175,6 +178,9 @@ int QWaylandScreen::scale() const
  
  qreal QWaylandScreen::devicePixelRatio() const
  {
-+    if (mWaylandDisplay->fractionalScaleManager() && QGuiApplication::highDpiScaleFactorRoundingPolicy() != Qt::HighDpiScaleFactorRoundingPolicy::PassThrough && qApp->property("_q_force_wayland_fractional_scale").toBool())
-+        return 1.0;
++    if (fractionalScaleFixNeeded(mWaylandDisplay))
++        return QPlatformScreen::devicePixelRatio();
++
      return qreal(mScale);
  }
  
+@@ -324,7 +330,9 @@ void QWaylandScreen::zxdg_output_v1_name(const QString &name)
+ void QWaylandScreen::updateXdgOutputProperties()
+ {
+     Q_ASSERT(zxdg_output_v1::isInitialized());
++    const QDpi dpi = logicalDpi();
+     QWindowSystemInterface::handleScreenGeometryChange(screen(), geometry(), geometry());
++    QWindowSystemInterface::handleScreenLogicalDotsPerInchChange(screen(), dpi.first, dpi.second);
+ }
+ 
+ } // namespace QtWaylandClient
 diff --git a/src/client/qwaylandwindow.cpp b/src/client/qwaylandwindow.cpp
-index f7c70048..436afbc5 100644
+index b81e00ef..d9c78520 100644
 --- a/src/client/qwaylandwindow.cpp
 +++ b/src/client/qwaylandwindow.cpp
 @@ -102,7 +102,7 @@ void QWaylandWindow::initWindow()
