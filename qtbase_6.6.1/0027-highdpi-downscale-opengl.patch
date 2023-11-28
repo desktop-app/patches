@@ -1,0 +1,111 @@
+diff --git a/src/gui/painting/qbackingstoredefaultcompositor.cpp b/src/gui/painting/qbackingstoredefaultcompositor.cpp
+index 13a8bdb157..d9f5d0b7d1 100644
+--- a/src/gui/painting/qbackingstoredefaultcompositor.cpp
++++ b/src/gui/painting/qbackingstoredefaultcompositor.cpp
+@@ -338,10 +338,14 @@ static QRhiGraphicsPipeline *createGraphicsPipeline(QRhi *rhi,
+ 
+ static const int UBUF_SIZE = 120;
+ 
+-QBackingStoreDefaultCompositor::PerQuadData QBackingStoreDefaultCompositor::createPerQuadData(QRhiTexture *texture, QRhiTexture *textureExtra)
++QBackingStoreDefaultCompositor::PerQuadData QBackingStoreDefaultCompositor::createPerQuadData(QRhiTexture *texture, QRhiTexture *textureExtra,
++                                                                                              UpdateQuadDataOptions options)
+ {
+     PerQuadData d;
+ 
++    const QRhiSampler::Filter filter = options.testFlag(NeedsLinearFiltering) ? QRhiSampler::Linear : QRhiSampler::Nearest;
++    QRhiSampler *sampler = filter == QRhiSampler::Linear ? m_samplerLinear : m_samplerNearest;
++
+     d.ubuf = m_rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, UBUF_SIZE);
+     if (!d.ubuf->create())
+         qWarning("QBackingStoreDefaultCompositor: Failed to create uniform buffer");
+@@ -349,7 +353,7 @@ QBackingStoreDefaultCompositor::PerQuadData QBackingStoreDefaultCompositor::crea
+     d.srb = m_rhi->newShaderResourceBindings();
+     d.srb->setBindings({
+         QRhiShaderResourceBinding::uniformBuffer(0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, d.ubuf, 0, UBUF_SIZE),
+-        QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, texture, m_samplerNearest)
++        QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, texture, sampler)
+     });
+     if (!d.srb->create())
+         qWarning("QBackingStoreDefaultCompositor: Failed to create srb");
+@@ -359,7 +363,7 @@ QBackingStoreDefaultCompositor::PerQuadData QBackingStoreDefaultCompositor::crea
+         d.srbExtra = m_rhi->newShaderResourceBindings();
+         d.srbExtra->setBindings({
+             QRhiShaderResourceBinding::uniformBuffer(0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, d.ubuf, 0, UBUF_SIZE),
+-            QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, textureExtra, m_samplerNearest)
++            QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, textureExtra, sampler)
+         });
+         if (!d.srbExtra->create())
+             qWarning("QBackingStoreDefaultCompositor: Failed to create srb");
+@@ -546,28 +550,31 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+     const bool invertTargetY = !rhi->isYUpInNDC();
+     const bool invertSource = !rhi->isYUpInFramebuffer();
+ 
++    // The backingstore is for the entire tlw. In case of native children, offset tells the position
++    // relative to the tlw. The window rect is scaled by the source device pixel ratio to get
++    // the source rect.
++    const QRect sourceWindowRect = scaledRect(QRect(QPoint(), window->size()), sourceDevicePixelRatio);
++    const QPoint sourceWindowOffset = scaledOffset(offset, sourceDevicePixelRatio);
++
++    // If sourceWindowRect is larger than deviceWindowRect, we are doing
++    // high DPI downscaling. In that case Linear filtering is a must,
++    // whereas for the 1:1 case Nearest must be used for Qt 5 visual
++    // compatibility.
++    const bool needLinearFiltering = sourceWindowRect.width() > deviceWindowRect.width()
++        && sourceWindowRect.height() > deviceWindowRect.height();
++    const UpdateQuadDataOptions updateQuadDataOptions = needLinearFiltering
++        ? NeedsLinearFiltering
++        : UpdateQuadDataOptions();
++
+     if (m_texture) {
+-        // The backingstore is for the entire tlw. In case of native children, offset tells the position
+-        // relative to the tlw. The window rect is scaled by the source device pixel ratio to get
+-        // the source rect.
+-        const QRect sourceWindowRect = scaledRect(QRect(QPoint(), window->size()), sourceDevicePixelRatio);
+-        const QPoint sourceWindowOffset = scaledOffset(offset, sourceDevicePixelRatio);
+         const QRect srcRect = toBottomLeftRect(sourceWindowRect.translated(sourceWindowOffset), m_texture->pixelSize().height());
+         const QMatrix3x3 source = sourceTransform(srcRect, m_texture->pixelSize(), origin);
+         QMatrix4x4 target; // identity
+         if (invertTargetY)
+             target.data()[5] = -1.0f;
+         updateUniforms(&m_widgetQuadData, resourceUpdates, target, source, uniformOptions);
+-
+-        // If sourceWindowRect is larger than deviceWindowRect, we are doing
+-        // high DPI downscaling. In that case Linear filtering is a must,
+-        // whereas for the 1:1 case Nearest must be used for Qt 5 visual
+-        // compatibility.
+-        if (sourceWindowRect.width() > deviceWindowRect.width()
+-            && sourceWindowRect.height() > deviceWindowRect.height())
+-        {
+-            updatePerQuadData(&m_widgetQuadData, m_texture, nullptr, NeedsLinearFiltering);
+-        }
++        if (needLinearFiltering)
++            updatePerQuadData(&m_widgetQuadData, m_texture, nullptr, updateQuadDataOptions);
+     }
+ 
+     const int textureWidgetCount = textures->count();
+@@ -591,9 +598,9 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+         QRhiTexture *tExtra = textures->textureExtra(i);
+         if (t) {
+             if (!m_textureQuadData[i].isValid())
+-                m_textureQuadData[i] = createPerQuadData(t, tExtra);
++                m_textureQuadData[i] = createPerQuadData(t, tExtra, updateQuadDataOptions);
+             else
+-                updatePerQuadData(&m_textureQuadData[i], t, tExtra);
++                updatePerQuadData(&m_textureQuadData[i], t, tExtra, updateQuadDataOptions);
+             updateUniforms(&m_textureQuadData[i], resourceUpdates, target, source);
+         } else {
+             m_textureQuadData[i].reset();
+diff --git a/src/gui/painting/qbackingstoredefaultcompositor_p.h b/src/gui/painting/qbackingstoredefaultcompositor_p.h
+index 2f835e5d35..f1cc412b97 100644
+--- a/src/gui/painting/qbackingstoredefaultcompositor_p.h
++++ b/src/gui/painting/qbackingstoredefaultcompositor_p.h
+@@ -97,7 +97,8 @@ private:
+     PerQuadData m_widgetQuadData;
+     QVarLengthArray<PerQuadData, 8> m_textureQuadData;
+ 
+-    PerQuadData createPerQuadData(QRhiTexture *texture, QRhiTexture *textureExtra = nullptr);
++    PerQuadData createPerQuadData(QRhiTexture *texture, QRhiTexture *textureExtra = nullptr,
++                                  UpdateQuadDataOptions options = {});
+     void updatePerQuadData(PerQuadData *d, QRhiTexture *texture, QRhiTexture *textureExtra = nullptr,
+                            UpdateQuadDataOptions options = {});
+     void updateUniforms(PerQuadData *d, QRhiResourceUpdateBatch *resourceUpdates,
