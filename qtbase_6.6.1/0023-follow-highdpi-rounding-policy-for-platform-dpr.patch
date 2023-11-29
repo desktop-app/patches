@@ -1,5 +1,5 @@
 diff --git a/src/gui/kernel/qhighdpiscaling.cpp b/src/gui/kernel/qhighdpiscaling.cpp
-index a0e1b48dcb..7b6dd30049 100644
+index a0e1b48dcb..2437039333 100644
 --- a/src/gui/kernel/qhighdpiscaling.cpp
 +++ b/src/gui/kernel/qhighdpiscaling.cpp
 @@ -475,7 +475,7 @@ void QHighDpiScaling::initHighDpiScaling()
@@ -40,7 +40,7 @@ index a0e1b48dcb..7b6dd30049 100644
          const qreal screenScaleFactor = screenSubfactor(screen->handle());
          const QDpi dpi = QPlatformScreen::overrideDpi(screen->handle()->logicalDpi());
 -        return QDpi{ dpi.first / screenScaleFactor, dpi.second / screenScaleFactor };
-+        return QDpi{ dpi.first / screenScaleFactor * (devicePixelRatio / roundedDevicePixelRatio), dpi.second / screenScaleFactor * (devicePixelRatio / roundedDevicePixelRatio) };
++        return QDpi{ dpi.first / (screenScaleFactor * devicePixelRatio / roundedDevicePixelRatio), dpi.second / (screenScaleFactor * devicePixelRatio / roundedDevicePixelRatio) };
      }
  
      const qreal scaleFactor = rawScaleFactor(screen->handle());
