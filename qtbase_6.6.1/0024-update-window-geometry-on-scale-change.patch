@@ -1,5 +1,5 @@
 diff --git a/src/gui/kernel/qwindow.cpp b/src/gui/kernel/qwindow.cpp
-index 1bc35e9524..fa9cd253eb 100644
+index 1bc35e9524..1727a6143b 100644
 --- a/src/gui/kernel/qwindow.cpp
 +++ b/src/gui/kernel/qwindow.cpp
 @@ -227,6 +227,7 @@ void QWindowPrivate::init(QScreen *targetScreen)
@@ -34,20 +34,6 @@ index 1bc35e9524..fa9cd253eb 100644
  
      if (newDevicePixelRatio == devicePixelRatio)
          return false;
-@@ -2549,9 +2561,12 @@ bool QWindow::event(QEvent *ev)
-         break;
-     }
- 
--    case QEvent::Expose:
-+    case QEvent::Expose: {
-+        Q_D(QWindow);
-+        d->updateDevicePixelRatio();
-         exposeEvent(static_cast<QExposeEvent *>(ev));
-         break;
-+    }
- 
-     case QEvent::Paint:
-         paintEvent(static_cast<QPaintEvent *>(ev));
 diff --git a/src/gui/kernel/qwindow_p.h b/src/gui/kernel/qwindow_p.h
 index 7b1aad4838..37c379d9cd 100644
 --- a/src/gui/kernel/qwindow_p.h
