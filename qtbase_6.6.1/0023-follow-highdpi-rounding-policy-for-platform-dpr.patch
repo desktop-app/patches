@@ -1,77 +1,24 @@
 diff --git a/src/gui/kernel/qhighdpiscaling.cpp b/src/gui/kernel/qhighdpiscaling.cpp
-index a0e1b48dcb..2437039333 100644
+index a0e1b48dcb..f01b989711 100644
 --- a/src/gui/kernel/qhighdpiscaling.cpp
 +++ b/src/gui/kernel/qhighdpiscaling.cpp
-@@ -475,7 +475,7 @@ void QHighDpiScaling::initHighDpiScaling()
-     }
+@@ -630,7 +630,7 @@ qreal QHighDpiScaling::screenSubfactor(const QPlatformScreen *screen)
+     if (!screenPropertyUsed && m_usePlatformPluginDpi)
+         factor = roundScaleFactor(rawScaleFactor(screen));
  
-     // Set initial active state
--    m_active = m_globalScalingActive || m_usePlatformPluginDpi;
-+    m_active = m_globalScalingActive || m_usePlatformPluginDpi || QGuiApplication::highDpiScaleFactorRoundingPolicy() != Qt::HighDpiScaleFactorRoundingPolicy::PassThrough;
- 
-     qCDebug(lcHighDpi) << "Initialization done, high-DPI scaling is"
-                        << (m_active ? "active" : "inactive");
-@@ -523,7 +523,7 @@ void QHighDpiScaling::updateHighDpiScaling()
-         }
-     }
- 
--    m_active = m_globalScalingActive || m_screenFactorSet || m_platformPluginDpiScalingActive;
-+    m_active = m_globalScalingActive || m_screenFactorSet || m_platformPluginDpiScalingActive || QGuiApplication::highDpiScaleFactorRoundingPolicy() != Qt::HighDpiScaleFactorRoundingPolicy::PassThrough;
- 
-     qCDebug(lcHighDpi) << "Update done, high-DPI scaling is"
-                        << (m_active ? "active" : "inactive");
-@@ -549,7 +549,7 @@ void QHighDpiScaling::setGlobalFactor(qreal factor)
- 
-     m_globalScalingActive = !qFuzzyCompare(factor, qreal(1));
-     m_factor = m_globalScalingActive ? factor : qreal(1);
--    m_active = m_globalScalingActive || m_screenFactorSet || m_platformPluginDpiScalingActive ;
-+    m_active = m_globalScalingActive || m_screenFactorSet || m_platformPluginDpiScalingActive || QGuiApplication::highDpiScaleFactorRoundingPolicy() != Qt::HighDpiScaleFactorRoundingPolicy::PassThrough;
-     for (QScreen *screen : screens)
-         screen->d_func()->updateGeometry();
+-    return factor;
++    return factor * (roundScaleFactor(screen->devicePixelRatio()) / screen->devicePixelRatio());
  }
-@@ -639,15 +639,18 @@ QDpi QHighDpiScaling::logicalDpi(const QScreen *screen)
-     if (!screen || !screen->handle())
-         return QDpi(96, 96);
  
-+    const qreal devicePixelRatio = screen->handle()->devicePixelRatio();
-+    const qreal roundedDevicePixelRatio = roundScaleFactor(devicePixelRatio);
-+
-     if (!m_usePlatformPluginDpi) {
-         const qreal screenScaleFactor = screenSubfactor(screen->handle());
-         const QDpi dpi = QPlatformScreen::overrideDpi(screen->handle()->logicalDpi());
--        return QDpi{ dpi.first / screenScaleFactor, dpi.second / screenScaleFactor };
-+        return QDpi{ dpi.first / (screenScaleFactor * devicePixelRatio / roundedDevicePixelRatio), dpi.second / (screenScaleFactor * devicePixelRatio / roundedDevicePixelRatio) };
-     }
+ QDpi QHighDpiScaling::logicalDpi(const QScreen *screen)
+@@ -647,7 +647,9 @@ QDpi QHighDpiScaling::logicalDpi(const QScreen *screen)
  
      const qreal scaleFactor = rawScaleFactor(screen->handle());
      const qreal roundedScaleFactor = roundScaleFactor(scaleFactor);
 -    return effectiveLogicalDpi(screen->handle(), scaleFactor, roundedScaleFactor);
++    const qreal devicePixelRatio = screen->handle()->devicePixelRatio();
++    const qreal roundedDevicePixelRatio = roundScaleFactor(devicePixelRatio);
 +    return effectiveLogicalDpi(screen->handle(), scaleFactor * devicePixelRatio, roundedScaleFactor * roundedDevicePixelRatio);
  }
  
  // Returns the screen containing \a position, using \a guess as a starting point
-@@ -727,7 +730,7 @@ QHighDpiScaling::ScaleAndOrigin QHighDpiScaling::scaleAndOrigin(const QPlatformS
-         return { qreal(1), QPoint() };
-     if (!platformScreen)
-         return { m_factor, QPoint() }; // the global factor
--    return { m_factor * screenSubfactor(platformScreen), platformScreen->geometry().topLeft() };
-+    return { m_factor * screenSubfactor(platformScreen) * (roundScaleFactor(platformScreen->devicePixelRatio()) / platformScreen->devicePixelRatio()), platformScreen->geometry().topLeft() };
- }
- 
- QHighDpiScaling::ScaleAndOrigin QHighDpiScaling::scaleAndOrigin(const QScreen *screen, QHighDpiScaling::Point position)
-@@ -750,7 +753,14 @@ QHighDpiScaling::ScaleAndOrigin QHighDpiScaling::scaleAndOrigin(const QWindow *w
-     QScreen *screen = window ? window->screen() : QGuiApplication::primaryScreen();
-     QScreen *overrideScreen = QHighDpiScaling::screenForPosition(position, screen);
-     QScreen *targetScreen = overrideScreen ? overrideScreen : screen;
--    return scaleAndOrigin(targetScreen, position);
-+    auto result = scaleAndOrigin(targetScreen, position);
-+    if (window && window->handle()) {
-+        result.factor = m_factor;
-+        if (targetScreen)
-+            result.factor *= screenSubfactor(targetScreen->handle());
-+        result.factor *= roundScaleFactor(window->handle()->devicePixelRatio()) / window->handle()->devicePixelRatio();
-+    }
-+    return result;
- }
- 
- #ifndef QT_NO_DEBUG_STREAM
