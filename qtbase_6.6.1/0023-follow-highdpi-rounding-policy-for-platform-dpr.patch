@@ -1,17 +1,105 @@
 diff --git a/src/gui/kernel/qhighdpiscaling.cpp b/src/gui/kernel/qhighdpiscaling.cpp
-index a0e1b48dcb..f01b989711 100644
+index a0e1b48dcb..96d0bc404a 100644
 --- a/src/gui/kernel/qhighdpiscaling.cpp
 +++ b/src/gui/kernel/qhighdpiscaling.cpp
-@@ -630,7 +630,7 @@ qreal QHighDpiScaling::screenSubfactor(const QPlatformScreen *screen)
+@@ -241,6 +241,7 @@ qreal QHighDpiScaling::m_factor = 1.0;
+ bool QHighDpiScaling::m_active = false; //"overall active" - is there any scale factor set.
+ bool QHighDpiScaling::m_usePlatformPluginDpi = false; // use scale factor based on platform plugin DPI
+ bool QHighDpiScaling::m_platformPluginDpiScalingActive  = false; // platform plugin DPI gives a scale factor > 1
++bool QHighDpiScaling::m_devicePixelRatioRoundingActive = false; // QPlatform{Screen,Window}::devicePixelRatio should be rounded
+ bool QHighDpiScaling::m_globalScalingActive = false; // global scale factor is active
+ bool QHighDpiScaling::m_screenFactorSet = false; // QHighDpiScaling::setScreenFactor has been used
+ bool QHighDpiScaling::m_usePhysicalDpi = false;
+@@ -432,6 +433,7 @@ void QHighDpiScaling::initHighDpiScaling()
+     // High-dpi scaling is enabled by default; check for global disable.
+     m_usePlatformPluginDpi = envEnableHighDpiScaling.value_or(1) > 0;
+     m_platformPluginDpiScalingActive = false; // see updateHighDpiScaling()
++    m_devicePixelRatioRoundingActive = false; // see updateHighDpiScaling()
+ 
+     // Check for glabal scale factor (different from 1)
+     m_factor = envScaleFactor.value_or(qreal(1));
+@@ -475,7 +477,7 @@ void QHighDpiScaling::initHighDpiScaling()
+     }
+ 
+     // Set initial active state
+-    m_active = m_globalScalingActive || m_usePlatformPluginDpi;
++    m_active = m_globalScalingActive || m_usePlatformPluginDpi || QGuiApplication::highDpiScaleFactorRoundingPolicy() != Qt::HighDpiScaleFactorRoundingPolicy::PassThrough;
+ 
+     qCDebug(lcHighDpi) << "Initialization done, high-DPI scaling is"
+                        << (m_active ? "active" : "inactive");
+@@ -511,19 +513,24 @@ void QHighDpiScaling::updateHighDpiScaling()
+         }
+     }
+ 
++    const bool devicePixelRatioRounding = QGuiApplication::highDpiScaleFactorRoundingPolicy() != Qt::HighDpiScaleFactorRoundingPolicy::PassThrough;
++
+     // Check if any screens (now) has a scale factor != 1 and set
+     // m_platformPluginDpiScalingActive if so.
+-    if (m_usePlatformPluginDpi && !m_platformPluginDpiScalingActive ) {
++    if ((m_usePlatformPluginDpi && !m_platformPluginDpiScalingActive) || (devicePixelRatioRounding && !m_devicePixelRatioRoundingActive)) {
+         const auto screens = QGuiApplication::screens();
+         for (QScreen *screen : screens) {
+             if (!qFuzzyCompare(screenSubfactor(screen->handle()), qreal(1))) {
+-                m_platformPluginDpiScalingActive  = true;
++                if (m_usePlatformPluginDpi)
++                    m_platformPluginDpiScalingActive = true;
++                if (devicePixelRatioRounding)
++                    m_devicePixelRatioRoundingActive = true;
+                 break;
+             }
+         }
+     }
+ 
+-    m_active = m_globalScalingActive || m_screenFactorSet || m_platformPluginDpiScalingActive;
++    m_active = m_globalScalingActive || m_screenFactorSet || m_platformPluginDpiScalingActive || m_devicePixelRatioRoundingActive;
+ 
+     qCDebug(lcHighDpi) << "Update done, high-DPI scaling is"
+                        << (m_active ? "active" : "inactive");
+@@ -549,7 +556,7 @@ void QHighDpiScaling::setGlobalFactor(qreal factor)
+ 
+     m_globalScalingActive = !qFuzzyCompare(factor, qreal(1));
+     m_factor = m_globalScalingActive ? factor : qreal(1);
+-    m_active = m_globalScalingActive || m_screenFactorSet || m_platformPluginDpiScalingActive ;
++    m_active = m_globalScalingActive || m_screenFactorSet || m_platformPluginDpiScalingActive || m_devicePixelRatioRoundingActive;
+     for (QScreen *screen : screens)
+         screen->d_func()->updateGeometry();
+ }
+@@ -581,6 +588,15 @@ void QHighDpiScaling::setScreenFactor(QScreen *screen, qreal factor)
+     screen->d_func()->updateGeometry();
+ }
+ 
++void QHighDpiScaling::checkDevicePixelRatioRounding(QPlatformWindow *platformWindow)
++{
++    const qreal factor = roundScaleFactor(platformWindow->devicePixelRatio()) / platformWindow->devicePixelRatio();
++    if (!qFuzzyCompare(factor, qreal(1))) {
++        m_devicePixelRatioRoundingActive = true;
++        m_active = true;
++    }
++}
++
+ QPoint QHighDpiScaling::mapPositionToNative(const QPoint &pos, const QPlatformScreen *platformScreen)
+ {
+     if (!platformScreen)
+@@ -599,7 +615,7 @@ QPoint QHighDpiScaling::mapPositionFromNative(const QPoint &pos, const QPlatform
+     return (pos - topLeft) / scaleFactor + topLeft;
+ }
+ 
+-qreal QHighDpiScaling::screenSubfactor(const QPlatformScreen *screen)
++qreal QHighDpiScaling::screenSubfactor(const QPlatformScreen *screen, bool dprFix)
+ {
+     auto factor = qreal(1.0);
+     if (!screen)
+@@ -630,6 +646,9 @@ qreal QHighDpiScaling::screenSubfactor(const QPlatformScreen *screen)
      if (!screenPropertyUsed && m_usePlatformPluginDpi)
          factor = roundScaleFactor(rawScaleFactor(screen));
  
--    return factor;
-+    return factor * (roundScaleFactor(screen->devicePixelRatio()) / screen->devicePixelRatio());
++    if (dprFix)
++        factor *= roundScaleFactor(screen->devicePixelRatio()) / screen->devicePixelRatio();
++
+     return factor;
  }
  
- QDpi QHighDpiScaling::logicalDpi(const QScreen *screen)
-@@ -647,7 +647,9 @@ QDpi QHighDpiScaling::logicalDpi(const QScreen *screen)
+@@ -647,7 +666,9 @@ QDpi QHighDpiScaling::logicalDpi(const QScreen *screen)
  
      const qreal scaleFactor = rawScaleFactor(screen->handle());
      const qreal roundedScaleFactor = roundScaleFactor(scaleFactor);
@@ -22,3 +110,70 @@ index a0e1b48dcb..f01b989711 100644
  }
  
  // Returns the screen containing \a position, using \a guess as a starting point
+@@ -750,7 +771,14 @@ QHighDpiScaling::ScaleAndOrigin QHighDpiScaling::scaleAndOrigin(const QWindow *w
+     QScreen *screen = window ? window->screen() : QGuiApplication::primaryScreen();
+     QScreen *overrideScreen = QHighDpiScaling::screenForPosition(position, screen);
+     QScreen *targetScreen = overrideScreen ? overrideScreen : screen;
+-    return scaleAndOrigin(targetScreen, position);
++    auto result = scaleAndOrigin(targetScreen, position);
++    if (window && window->handle()) {
++        result.factor = m_factor;
++        if (targetScreen)
++            result.factor *= screenSubfactor(targetScreen->handle(), false);
++        result.factor *= roundScaleFactor(window->handle()->devicePixelRatio()) / window->handle()->devicePixelRatio();
++    }
++    return result;
+ }
+ 
+ #ifndef QT_NO_DEBUG_STREAM
+diff --git a/src/gui/kernel/qhighdpiscaling_p.h b/src/gui/kernel/qhighdpiscaling_p.h
+index 189f31fd0a..0308bac606 100644
+--- a/src/gui/kernel/qhighdpiscaling_p.h
++++ b/src/gui/kernel/qhighdpiscaling_p.h
+@@ -32,6 +32,7 @@ Q_DECLARE_LOGGING_CATEGORY(lcHighDpi);
+ 
+ class QScreen;
+ class QPlatformScreen;
++class QPlatformWindow;
+ typedef QPair<qreal, qreal> QDpi;
+ 
+ #ifndef QT_NO_HIGHDPISCALING
+@@ -57,6 +58,7 @@ public:
+     static void updateHighDpiScaling();
+     static void setGlobalFactor(qreal factor);
+     static void setScreenFactor(QScreen *screen, qreal factor);
++    static void checkDevicePixelRatioRounding(QPlatformWindow *platformWindow);
+ 
+     static bool isActive() { return m_active; }
+ 
+@@ -100,7 +102,7 @@ private:
+ 
+     static qreal rawScaleFactor(const QPlatformScreen *screen);
+     static QDpi effectiveLogicalDpi(const QPlatformScreen *screen, qreal rawFactor, qreal roundedFactor);
+-    static qreal screenSubfactor(const QPlatformScreen *screen);
++    static qreal screenSubfactor(const QPlatformScreen *screen, bool dprFix = true);
+     static QScreen *screenForPosition(Point position, QScreen *guess);
+     static QVector<QHighDpiScaling::ScreenFactor> parseScreenScaleFactorsSpec(const QStringView &screenScaleFactors);
+ 
+@@ -108,6 +110,7 @@ private:
+     static bool m_active;
+     static bool m_usePlatformPluginDpi;
+     static bool m_platformPluginDpiScalingActive;
++    static bool m_devicePixelRatioRoundingActive;
+     static bool m_globalScalingActive;
+     static bool m_screenFactorSet;
+     static bool m_usePhysicalDpi;
+diff --git a/src/gui/kernel/qwindow.cpp b/src/gui/kernel/qwindow.cpp
+index 1bc35e9524..3e7cfa25bb 100644
+--- a/src/gui/kernel/qwindow.cpp
++++ b/src/gui/kernel/qwindow.cpp
+@@ -1372,6 +1372,9 @@ bool QWindowPrivate::updateDevicePixelRatio()
+ {
+     Q_Q(QWindow);
+ 
++    if (platformWindow)
++        QHighDpiScaling::checkDevicePixelRatioRounding(platformWindow);
++
+     // If there is no platform window use the associated screen's devicePixelRatio,
+     // which typically is the primary screen and will be correct for single-display
+     // systems (a very common case).
