@@ -1,5 +1,5 @@
 diff --git a/src/client/qwaylandinputdevice.cpp b/src/client/qwaylandinputdevice.cpp
-index a4f8757e..1585ecfa 100644
+index a4f8757e..68938a4a 100644
 --- a/src/client/qwaylandinputdevice.cpp
 +++ b/src/client/qwaylandinputdevice.cpp
 @@ -216,7 +216,7 @@ public:
@@ -7,12 +7,12 @@ index a4f8757e..1585ecfa 100644
          int scale = 0;
          for (auto *screen : m_screens)
 -            scale = qMax(scale, screen->scale());
-+            scale = qMax(scale, int(std::ceil(screen->scale())));
++            scale = qMax(scale, qCeil(screen->scale()));
          return scale;
      }
  
 diff --git a/src/client/qwaylandintegration.cpp b/src/client/qwaylandintegration.cpp
-index 88a2fa7e..2e9496ad 100644
+index 88a2fa7e..604ccff0 100644
 --- a/src/client/qwaylandintegration.cpp
 +++ b/src/client/qwaylandintegration.cpp
 @@ -36,6 +36,7 @@
@@ -23,37 +23,11 @@ index 88a2fa7e..2e9496ad 100644
  
  #include <qpa/qplatforminputcontextfactory_p.h>
  #include <qpa/qplatformaccessibility.h>
-@@ -194,6 +195,14 @@ void QWaylandIntegration::initialize()
- 
-     // Qt does not support running with no screens
-     mDisplay->ensureScreen();
-+
-+    QTimer::singleShot(0, qApp, [this] {
-+        if (mDisplay->viewporter() && qApp->property("_q_force_wayland_fractional_scale").toBool()) {
-+            for (QWaylandScreen *screen : mDisplay->screens())
-+                screen->maybeInitialize();
-+            QWindowSystemInterface::flushWindowSystemEvents();
-+        }
-+    });
- }
- 
- QPlatformFontDatabase *QWaylandIntegration::fontDatabase() const
 diff --git a/src/client/qwaylandscreen.cpp b/src/client/qwaylandscreen.cpp
-index 7c4f1bdf..970e4374 100644
+index 7c4f1bdf..c4efe3d6 100644
 --- a/src/client/qwaylandscreen.cpp
 +++ b/src/client/qwaylandscreen.cpp
-@@ -17,6 +17,10 @@ QT_BEGIN_NAMESPACE
- 
- namespace QtWaylandClient {
- 
-+static bool fractionalScaleFixNeeded(QWaylandDisplay* display) {
-+    return display->viewporter() && qApp->property("_q_force_wayland_fractional_scale").toBool();
-+}
-+
- QWaylandXdgOutputManagerV1::QWaylandXdgOutputManagerV1(QWaylandDisplay* display, uint id, uint version)
-     : QtWayland::zxdg_output_manager_v1(display->wl_registry(), id, qMin(3u, version))
- {
-@@ -168,7 +172,7 @@ Qt::ScreenOrientation QWaylandScreen::orientation() const
+@@ -168,7 +168,7 @@ Qt::ScreenOrientation QWaylandScreen::orientation() const
      return m_orientation;
  }
  
@@ -62,21 +36,21 @@ index 7c4f1bdf..970e4374 100644
  {
      return mScale;
  }
-@@ -238,7 +242,8 @@ void QWaylandScreen::output_geometry(int32_t x, int32_t y,
+@@ -238,7 +238,8 @@ void QWaylandScreen::output_geometry(int32_t x, int32_t y,
  
  void QWaylandScreen::output_scale(int32_t factor)
  {
 -    mScale = factor;
-+    if (!zxdg_output_v1::isInitialized() || !fractionalScaleFixNeeded(mWaylandDisplay))
++    if (!zxdg_output_v1::isInitialized() || !mWaylandDisplay->fractionalScaleManager())
 +        mScale = factor;
  }
  
  void QWaylandScreen::output_done()
-@@ -324,7 +329,12 @@ void QWaylandScreen::zxdg_output_v1_name(const QString &name)
+@@ -324,7 +325,12 @@ void QWaylandScreen::zxdg_output_v1_name(const QString &name)
  void QWaylandScreen::updateXdgOutputProperties()
  {
      Q_ASSERT(zxdg_output_v1::isInitialized());
-+    if (fractionalScaleFixNeeded(mWaylandDisplay))
++    if (mWaylandDisplay->fractionalScaleManager())
 +        mScale = (qreal(mGeometry.width()) / qreal(mXdgGeometry.width())
 +            + qreal(mGeometry.height()) / qreal(mXdgGeometry.height())) * qreal(0.5);
 +    const QDpi dpi = logicalDpi();
@@ -108,7 +82,7 @@ index 4499f0ee..10efc284 100644
      int mRefreshRate = 60000;
      int mTransform = -1;
 diff --git a/src/client/qwaylandwindow.cpp b/src/client/qwaylandwindow.cpp
-index b81e00ef..5ccc17af 100644
+index b81e00ef..de11b82a 100644
 --- a/src/client/qwaylandwindow.cpp
 +++ b/src/client/qwaylandwindow.cpp
 @@ -56,7 +56,7 @@ QWaylandWindow::QWaylandWindow(QWindow *window, QWaylandDisplay *display)
@@ -120,6 +94,15 @@ index b81e00ef..5ccc17af 100644
  
      static WId id = 1;
      mWindowId = id++;
+@@ -102,7 +102,7 @@ void QWaylandWindow::initWindow()
+         initializeWlSurface();
+     }
+ 
+-    if (mDisplay->fractionalScaleManager() && qApp->highDpiScaleFactorRoundingPolicy() == Qt::HighDpiScaleFactorRoundingPolicy::PassThrough) {
++    if (mDisplay->fractionalScaleManager()) {
+         mFractionalScale.reset(new QWaylandFractionalScale(mDisplay->fractionalScaleManager()->get_fractional_scale(mSurface->object())));
+ 
+         connect(mFractionalScale.data(), &QWaylandFractionalScale::preferredScaleChanged, this, [this](qreal preferredScale) {
 @@ -1395,7 +1395,7 @@ void QWaylandWindow::handleScreensChanged()
      if (mFractionalScale)
          return;
@@ -134,7 +117,7 @@ index b81e00ef..5ccc17af 100644
  void QWaylandWindow::setMouseCursor(QWaylandInputDevice *device, const QCursor &cursor)
  {
 -    int fallbackBufferScale = int(devicePixelRatio());
-+    int fallbackBufferScale = int(std::ceil(devicePixelRatio()));
++    int fallbackBufferScale = qCeil(devicePixelRatio());
      device->setCursor(&cursor, {}, fallbackBufferScale);
  }
  
