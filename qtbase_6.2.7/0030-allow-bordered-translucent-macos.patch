@@ -1,0 +1,22 @@
+diff --git a/src/plugins/platforms/cocoa/qnswindow.mm b/src/plugins/platforms/cocoa/qnswindow.mm
+index a35f8cf22a..a0acc540d2 100644
+--- a/src/plugins/platforms/cocoa/qnswindow.mm
++++ b/src/plugins/platforms/cocoa/qnswindow.mm
+@@ -327,6 +327,9 @@ - (NSColor *)backgroundColor
+     // or a QWindow::backgroundColor() property. In the meantime
+     // we assume that if you have translucent content, without a
+     // frame then you intend to do all background drawing yourself.
++    if (!self.opaque)
++        return [NSColor clearColor];
++#if 0
+     const QWindow *window = m_platformWindow ? m_platformWindow->window() : nullptr;
+     if (!self.opaque && window) {
+         // Qt::Popup also requires clearColor - in qmacstyle
+@@ -335,6 +338,7 @@ - (NSColor *)backgroundColor
+             || (window->flags() & Qt::WindowType_Mask) == Qt::Popup)
+             return [NSColor clearColor];
+     }
++#endif
+ 
+     // This still allows you to have translucent content with a frame,
+     // where the system background (or color set via NSWindow) will
