@@ -11,48 +11,36 @@ index a4f8757e..68938a4a 100644
          return scale;
      }
  
-diff --git a/src/client/qwaylandintegration.cpp b/src/client/qwaylandintegration.cpp
-index 88a2fa7e..604ccff0 100644
---- a/src/client/qwaylandintegration.cpp
-+++ b/src/client/qwaylandintegration.cpp
-@@ -36,6 +36,7 @@
- #include <QtGui/QOpenGLContext>
- #endif // QT_CONFIG(opengl)
- #include <QSocketNotifier>
-+#include <QTimer>
- 
- #include <qpa/qplatforminputcontextfactory_p.h>
- #include <qpa/qplatformaccessibility.h>
 diff --git a/src/client/qwaylandscreen.cpp b/src/client/qwaylandscreen.cpp
-index 7c4f1bdf..c4efe3d6 100644
+index 7c4f1bdf..e0afd4d5 100644
 --- a/src/client/qwaylandscreen.cpp
 +++ b/src/client/qwaylandscreen.cpp
-@@ -168,7 +168,7 @@ Qt::ScreenOrientation QWaylandScreen::orientation() const
+@@ -168,14 +168,16 @@ Qt::ScreenOrientation QWaylandScreen::orientation() const
      return m_orientation;
  }
  
 -int QWaylandScreen::scale() const
 +qreal QWaylandScreen::scale() const
  {
-     return mScale;
+-    return mScale;
++    return devicePixelRatio();
  }
-@@ -238,7 +238,8 @@ void QWaylandScreen::output_geometry(int32_t x, int32_t y,
  
- void QWaylandScreen::output_scale(int32_t factor)
+ qreal QWaylandScreen::devicePixelRatio() const
  {
--    mScale = factor;
-+    if (!zxdg_output_v1::isInitialized() || !mWaylandDisplay->fractionalScaleManager())
-+        mScale = factor;
+-    return qreal(mScale);
++    return (mWaylandDisplay->fractionalScaleManager() && std::fmod(mFractionalScale, qreal(1)) != 0)
++        ? mFractionalScale
++        : qreal(mScale);
  }
  
- void QWaylandScreen::output_done()
-@@ -324,7 +325,12 @@ void QWaylandScreen::zxdg_output_v1_name(const QString &name)
+ qreal QWaylandScreen::refreshRate() const
+@@ -324,7 +326,11 @@ void QWaylandScreen::zxdg_output_v1_name(const QString &name)
  void QWaylandScreen::updateXdgOutputProperties()
  {
      Q_ASSERT(zxdg_output_v1::isInitialized());
-+    if (mWaylandDisplay->fractionalScaleManager())
-+        mScale = (qreal(mGeometry.width()) / qreal(mXdgGeometry.width())
-+            + qreal(mGeometry.height()) / qreal(mXdgGeometry.height())) * qreal(0.5);
++    mFractionalScale = (qreal(mGeometry.width()) / qreal(mXdgGeometry.width())
++        + qreal(mGeometry.height()) / qreal(mXdgGeometry.height())) * qreal(0.5);
 +    const QDpi dpi = logicalDpi();
      QWindowSystemInterface::handleScreenGeometryChange(screen(), geometry(), geometry());
 +    QWindowSystemInterface::handleScreenLogicalDotsPerInchChange(screen(), dpi.first, dpi.second);
@@ -60,7 +48,7 @@ index 7c4f1bdf..c4efe3d6 100644
  
  } // namespace QtWaylandClient
 diff --git a/src/client/qwaylandscreen_p.h b/src/client/qwaylandscreen_p.h
-index 4499f0ee..10efc284 100644
+index 4499f0ee..f1e761e7 100644
 --- a/src/client/qwaylandscreen_p.h
 +++ b/src/client/qwaylandscreen_p.h
 @@ -63,7 +63,7 @@ public:
@@ -72,12 +60,11 @@ index 4499f0ee..10efc284 100644
      qreal devicePixelRatio() const override;
      qreal refreshRate() const override;
  
-@@ -114,7 +114,7 @@ protected:
-     QString mModel;
+@@ -115,6 +115,7 @@ protected:
      QRect mGeometry;
      QRect mXdgGeometry;
--    int mScale = 1;
-+    qreal mScale = 1;
+     int mScale = 1;
++    qreal mFractionalScale = 1;
      int mDepth = 32;
      int mRefreshRate = 60000;
      int mTransform = -1;
