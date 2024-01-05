@@ -1,0 +1,18 @@
+diff --git a/src/client/qwaylandshmbackingstore.cpp b/src/client/qwaylandshmbackingstore.cpp
+index 02d830ad..01b1a569 100644
+--- a/src/client/qwaylandshmbackingstore.cpp
++++ b/src/client/qwaylandshmbackingstore.cpp
+@@ -370,7 +370,12 @@ QImage QWaylandShmBackingStore::toImage() const
+     // instead of flush() for widgets that have renderToTexture children
+     // (QOpenGLWidget, QQuickWidget).
+ 
+-    return *contentSurface();
++    QImage &image = *contentSurface();
++
++    // Return an image that does not share QImageData with the original image,
++    // even if they both point to the same data, otherwise painting to
++    // the image would detach it from the data.
++    return QImage(image.bits(), image.width(), image.height(), image.bytesPerLine(), image.format());
+ }
+ #endif  // opengl
+ 
