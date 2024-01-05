@@ -1,0 +1,19 @@
+diff --git a/src/plugins/platforms/xcb/qxcbbackingstore.cpp b/src/plugins/platforms/xcb/qxcbbackingstore.cpp
+index 0659cf9fc4..9e4442af45 100644
+--- a/src/plugins/platforms/xcb/qxcbbackingstore.cpp
++++ b/src/plugins/platforms/xcb/qxcbbackingstore.cpp
+@@ -815,12 +815,12 @@ QImage QXcbBackingStore::toImage() const
+ 
+     m_image->flushScrolledRegion(true);
+ 
+-    QImage image = *m_image->image();
++    QImage &image = *m_image->image();
+ 
+     // Return an image that does not share QImageData with the original image,
+     // even if they both point to the same data of the m_xcb_image, otherwise
+     // painting to m_qimage would detach it from the m_xcb_image data.
+-    return QImage(image.constBits(), image.width(), image.height(), image.format());
++    return QImage(image.bits(), image.width(), image.height(), image.format());
+ }
+ 
+ QPlatformGraphicsBuffer *QXcbBackingStore::graphicsBuffer() const
