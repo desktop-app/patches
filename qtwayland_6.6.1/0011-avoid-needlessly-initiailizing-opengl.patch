@@ -1,0 +1,16 @@
+diff --git a/src/client/qwaylanddisplay.cpp b/src/client/qwaylanddisplay.cpp
+index eb43313f..3317f520 100644
+--- a/src/client/qwaylanddisplay.cpp
++++ b/src/client/qwaylanddisplay.cpp
+@@ -885,7 +885,10 @@ bool QWaylandDisplay::supportsWindowDecoration() const
+     if (disabled)
+         return false;
+ 
+-    static bool integrationSupport = clientBufferIntegration() && clientBufferIntegration()->supportsWindowDecoration();
++    if (!mWaylandIntegration->mClientBufferIntegrationInitialized)
++        return true;
++
++    static bool integrationSupport = !clientBufferIntegration() || clientBufferIntegration()->supportsWindowDecoration();
+     return integrationSupport;
+ }
+ 
