@@ -1,5 +1,5 @@
 diff --git a/src/gui/painting/qbackingstoredefaultcompositor.cpp b/src/gui/painting/qbackingstoredefaultcompositor.cpp
-index 13a8bdb157..af5d88fe66 100644
+index 13a8bdb157..2a28f41e0e 100644
 --- a/src/gui/painting/qbackingstoredefaultcompositor.cpp
 +++ b/src/gui/painting/qbackingstoredefaultcompositor.cpp
 @@ -46,7 +46,7 @@ QRhiTexture *QBackingStoreDefaultCompositor::toTexture(const QPlatformBackingSto
@@ -20,7 +20,16 @@ index 13a8bdb157..af5d88fe66 100644
      bool needsConversion = false;
      *flags = {};
  
-@@ -515,7 +513,7 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+@@ -106,8 +104,6 @@ QRhiTexture *QBackingStoreDefaultCompositor::toTexture(const QImage &sourceImage
+ 
+     if (needsConversion)
+         image = image.convertToFormat(QImage::Format_RGBA8888);
+-    else
+-        image.detach(); // if it was just wrapping data, that's no good, we need ownership, so detach
+ 
+     if (resized) {
+         if (!m_texture)
+@@ -515,7 +511,7 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
              const QImage::Format format = QImage::toImageFormat(graphicsBuffer->format());
              const QSize size = graphicsBuffer->size();
              QImage wrapperImage(graphicsBuffer->data(), size.width(), size.height(), graphicsBuffer->bytesPerLine(), format);
