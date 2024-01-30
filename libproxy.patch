@@ -12,10 +12,10 @@ index 8264b33..35022ca 100644
              module_manager.hpp
              module_manager.cpp)
 diff --git a/libproxy/CMakeLists.txt b/libproxy/CMakeLists.txt
-index 0430895..44ee750 100644
+index 0bd7148..14abfb3 100644
 --- a/libproxy/CMakeLists.txt
 +++ b/libproxy/CMakeLists.txt
-@@ -6,6 +6,7 @@ set_project_version(0 4 17)
+@@ -6,6 +6,7 @@ set_project_version(0 4 18)
  if (WIN32)
    add_definitions(-D_CRT_SECURE_NO_WARNINGS=1)
  else(WIN32)
@@ -34,10 +34,10 @@ index de68e5c..489f40c 100644
    target_link_libraries(libproxy modman;ws2_32;${LIBPROXY_LIBRARIES})
  else()
 diff --git a/libproxy/cmake/modules.cmk b/libproxy/cmake/modules.cmk
-index 11d2d43..c4f7e54 100644
+index 6eaaa01..cec0b9a 100644
 --- a/libproxy/cmake/modules.cmk
 +++ b/libproxy/cmake/modules.cmk
-@@ -29,12 +29,12 @@ endif()
+@@ -32,12 +32,12 @@ endif()
  ## Module definition
  #
  message("MODULES TO BUILD:")
@@ -55,21 +55,25 @@ index 11d2d43..c4f7e54 100644
  px_module(config_macosx            "${SC_FOUND}"     1       ${SC_LIBRARIES} ${CF_LIBRARIES})
  px_module(config_w32reg            "${WIN32}"        1)
  px_module(ignore_domain            1                 1)
-@@ -43,9 +43,9 @@ px_module(ignore_ip                1                 1)
+@@ -46,11 +46,11 @@ px_module(ignore_ip                1                 1)
  if(NM_FOUND OR NMold_FOUND)
    set(NM_BUILD 1)
  endif(NM_FOUND OR NMold_FOUND)
 -px_module(network_networkmanager   "${NM_BUILD}"     0       ${NM_LIBRARIES}${NMold_LIBRARIES})
-+px_module(network_networkmanager   "${NM_BUILD}"     1       ${NM_LIBRARIES}${NMold_LIBRARIES})
- px_module(pacrunner_mozjs          0                 ${BIPR} ${MOZJS_LIBRARIES})
+-px_module(pacrunner_mozjs          "${MOZJS_FOUND}"  ${BIPR} ${MOZJS_LIBRARIES})
 -px_module(pacrunner_natus          "${NATUS_FOUND}"  ${BIPR} ${NATUS_LIBRARIES})
 -px_module(pacrunner_webkit         "${WEBKIT_FOUND}" ${BIPR} ${WEBKIT_LIBRARIES})
+-px_module(pacrunner_duktape        "${DUKTAPE_FOUND}" ${BIPR} ${DUKTAPE_LIBRARIES})
++px_module(network_networkmanager   "${NM_BUILD}"     1       ${NM_LIBRARIES}${NMold_LIBRARIES})
++px_module(pacrunner_mozjs          0                 ${BIPR} ${MOZJS_LIBRARIES})
 +px_module(pacrunner_natus          0                 ${BIPR} ${NATUS_LIBRARIES})
 +px_module(pacrunner_webkit         0                 ${BIPR} ${WEBKIT_LIBRARIES})
++px_module(pacrunner_duktape        0                 ${BIPR} ${DUKTAPE_LIBRARIES})
  px_module(wpad_dns_alias           1                 1)
+ message("${NUM_PACRUNNER} pacrunner(s) are enabled")
  message("")
 diff --git a/libproxy/modules/config_gnome3.cpp b/libproxy/modules/config_gnome3.cpp
-index b4424e6..1f2dd2a 100644
+index 15b9dd2..32421c7 100644
 --- a/libproxy/modules/config_gnome3.cpp
 +++ b/libproxy/modules/config_gnome3.cpp
 @@ -27,12 +27,79 @@
@@ -152,7 +156,7 @@ index b4424e6..1f2dd2a 100644
  #define PROXY_MODE			"org.gnome.system.proxy/mode"
  #define PROXY_USE_AUTHENTICATION	"org.gnome.system.proxy.http/use-authentication"
  #define PROXY_AUTH_PASSWORD		"org.gnome.system.proxy.http/authentication-password"
-@@ -131,11 +141,25 @@ public:
+@@ -131,11 +198,25 @@ public:
  		// Build the command
  		int count;
  		struct stat st;
@@ -183,15 +187,16 @@ index b4424e6..1f2dd2a 100644
  
  		if (stat(cmd.c_str(), &st))
  			throw runtime_error ("Unable to open gsettings helper!");
-@@ -156,7 +180,7 @@ public:
+@@ -156,8 +237,7 @@ public:
  		}
  
  		// Read in our initial data
 -		while (!this->had_initial_values)
-+		//while (!this->had_initial_values)
- 			this->read_data();
+-			this->read_data();
++		this->read_data();
  	}
  
+ 	~gnome_config_extension() {
 diff --git a/libproxy/proxy.cpp b/libproxy/proxy.cpp
 index 5db3033..c1bddab 100644
 --- a/libproxy/proxy.cpp
@@ -211,3 +216,37 @@ index 5db3033..c1bddab 100644
  
  	this->debug  = (getenv("_PX_DEBUG") != NULL);
  
+diff --git a/libproxy/url.cpp b/libproxy/url.cpp
+index 6925745..00bbadb 100644
+--- a/libproxy/url.cpp
++++ b/libproxy/url.cpp
+@@ -76,7 +76,7 @@ static inline string to_string_ (const T& t) {
+ 	return ss.str();
+ }
+ 
+-#define _copyaddr_t(type, addr) (sockaddr*) memcpy(new type, &(addr), sizeof(type))
++#define _copyaddr_t(type, addr) (sockaddr*) memcpy(malloc(sizeof(type)), &(addr), sizeof(type))
+ static inline sockaddr* copyaddr(const struct sockaddr& addr) {
+ 	switch (addr.sa_family) {
+ 	case (AF_INET):
+@@ -290,9 +290,10 @@ url& url::operator=(const url& url) {
+ 
+ 		// Copy the new ip cache
+ 		for (i=0 ; url.m_ips[i] ; i++) {};
+-		m_ips = new sockaddr*[i];
++		m_ips = new sockaddr*[++i];
+ 		for (i=0 ; url.m_ips[i] ; i++)
+ 			m_ips[i] = copyaddr(*url.m_ips[i]);
++		m_ips[i] = NULL;
+ 	}
+ 
+ 	return *this;
+@@ -551,7 +552,7 @@ void url::empty_cache()
+ 	if (m_ips) {
+ 		// Free any existing ip cache
+ 		for (int i=0 ; m_ips[i] ; i++)
+-			delete m_ips[i];
++			free(m_ips[i]);
+ 		delete[] m_ips;
+ 		m_ips = NULL;
+ 	}
