@@ -1,8 +1,8 @@
 diff --git a/src/network/CMakeLists.txt b/src/network/CMakeLists.txt
-index f1eb9fe5f7..6bdc3674ca 100644
+index f1eb9fe5f7..992fe08c9d 100644
 --- a/src/network/CMakeLists.txt
 +++ b/src/network/CMakeLists.txt
-@@ -262,7 +262,14 @@ qt_internal_extend_target(Network CONDITION APPLE
+@@ -262,7 +262,15 @@ qt_internal_extend_target(Network CONDITION APPLE
          kernel/qnetworkproxy_darwin.cpp
  )
  
@@ -11,6 +11,7 @@ index f1eb9fe5f7..6bdc3674ca 100644
 +    SOURCES
 +        kernel/qnetworkproxy_glib.cpp
 +    LIBRARIES
++        GLIB2::GLIB2
 +        GLIB2::GIO
 +)
 +
@@ -18,7 +19,7 @@ index f1eb9fe5f7..6bdc3674ca 100644
      SOURCES
          kernel/qnetworkproxy_libproxy.cpp
      LIBRARIES
-@@ -275,7 +282,7 @@ qt_internal_extend_target(Network CONDITION ANDROID
+@@ -275,7 +283,7 @@ qt_internal_extend_target(Network CONDITION ANDROID
          kernel/qnetworkproxy_android.cpp
  )
  
@@ -29,10 +30,10 @@ index f1eb9fe5f7..6bdc3674ca 100644
  )
 diff --git a/src/network/kernel/qnetworkproxy_glib.cpp b/src/network/kernel/qnetworkproxy_glib.cpp
 new file mode 100644
-index 0000000000..b78dd095e1
+index 0000000000..bdd1fa5503
 --- /dev/null
 +++ b/src/network/kernel/qnetworkproxy_glib.cpp
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,69 @@
 +// Copyright (C) 2016 The Qt Company Ltd.
 +// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
 +
@@ -59,11 +60,12 @@ index 0000000000..b78dd095e1
 +{
 +    QList<QNetworkProxy> proxyList;
 +
-+    const QByteArray queryUrl = query.url().toEncoded();
++    QUrl queryUrl = query.url();
++    if (queryUrl.scheme().isEmpty())
++        queryUrl.setScheme("none");
++
 +    gchar **proxies = g_proxy_resolver_lookup(g_proxy_resolver_get_default(),
-+                                              !queryUrl.isEmpty()
-+                                                  ? queryUrl.constData()
-+                                                  : "none://",
++                                              queryUrl.toEncoded().constData(),
 +                                              nullptr,
 +                                              nullptr);
 +
