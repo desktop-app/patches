@@ -12,7 +12,7 @@ index a4f8757e..68938a4a 100644
      }
  
 diff --git a/src/client/qwaylandscreen.cpp b/src/client/qwaylandscreen.cpp
-index 7c4f1bdf..f3433f4a 100644
+index 5c88f8cb..95a4ac7d 100644
 --- a/src/client/qwaylandscreen.cpp
 +++ b/src/client/qwaylandscreen.cpp
 @@ -168,14 +168,16 @@ Qt::ScreenOrientation QWaylandScreen::orientation() const
@@ -35,7 +35,7 @@ index 7c4f1bdf..f3433f4a 100644
  }
  
  qreal QWaylandScreen::refreshRate() const
-@@ -324,7 +326,12 @@ void QWaylandScreen::zxdg_output_v1_name(const QString &name)
+@@ -349,7 +351,12 @@ void QWaylandScreen::zxdg_output_v1_name(const QString &name)
  void QWaylandScreen::updateXdgOutputProperties()
  {
      Q_ASSERT(zxdg_output_v1::isInitialized());
@@ -49,7 +49,7 @@ index 7c4f1bdf..f3433f4a 100644
  
  } // namespace QtWaylandClient
 diff --git a/src/client/qwaylandscreen_p.h b/src/client/qwaylandscreen_p.h
-index 4499f0ee..f1e761e7 100644
+index c0f6f199..e4071c45 100644
 --- a/src/client/qwaylandscreen_p.h
 +++ b/src/client/qwaylandscreen_p.h
 @@ -63,7 +63,7 @@ public:
@@ -61,19 +61,19 @@ index 4499f0ee..f1e761e7 100644
      qreal devicePixelRatio() const override;
      qreal refreshRate() const override;
  
-@@ -115,6 +115,7 @@ protected:
+@@ -117,6 +117,7 @@ protected:
      QRect mGeometry;
      QRect mXdgGeometry;
      int mScale = 1;
 +    qreal mFractionalScale = 1;
      int mDepth = 32;
      int mRefreshRate = 60000;
-     int mTransform = -1;
+     int mSubpixel = -1;
 diff --git a/src/client/qwaylandwindow.cpp b/src/client/qwaylandwindow.cpp
-index b81e00ef..de11b82a 100644
+index 1fb5c3f8..40ac008a 100644
 --- a/src/client/qwaylandwindow.cpp
 +++ b/src/client/qwaylandwindow.cpp
-@@ -56,7 +56,7 @@ QWaylandWindow::QWaylandWindow(QWindow *window, QWaylandDisplay *display)
+@@ -57,7 +57,7 @@ QWaylandWindow::QWaylandWindow(QWindow *window, QWaylandDisplay *display)
              mFrameCallbackTimeout = frameCallbackTimeout;
      }
  
@@ -82,7 +82,7 @@ index b81e00ef..de11b82a 100644
  
      static WId id = 1;
      mWindowId = id++;
-@@ -102,7 +102,7 @@ void QWaylandWindow::initWindow()
+@@ -103,7 +103,7 @@ void QWaylandWindow::initWindow()
          initializeWlSurface();
      }
  
@@ -91,7 +91,7 @@ index b81e00ef..de11b82a 100644
          mFractionalScale.reset(new QWaylandFractionalScale(mDisplay->fractionalScaleManager()->get_fractional_scale(mSurface->object())));
  
          connect(mFractionalScale.data(), &QWaylandFractionalScale::preferredScaleChanged, this, [this](qreal preferredScale) {
-@@ -1395,7 +1395,7 @@ void QWaylandWindow::handleScreensChanged()
+@@ -1415,7 +1415,7 @@ void QWaylandWindow::handleScreensChanged()
      if (mFractionalScale)
          return;
  
@@ -100,7 +100,7 @@ index b81e00ef..de11b82a 100644
  
      if (scale != mScale) {
          mScale = scale;
-@@ -1413,7 +1413,7 @@ void QWaylandWindow::handleScreensChanged()
+@@ -1433,7 +1433,7 @@ void QWaylandWindow::handleScreensChanged()
  #if QT_CONFIG(cursor)
  void QWaylandWindow::setMouseCursor(QWaylandInputDevice *device, const QCursor &cursor)
  {
