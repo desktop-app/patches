@@ -1,0 +1,103 @@
+diff --git a/src/network/CMakeLists.txt b/src/network/CMakeLists.txt
+index f1eb9fe5f7..6bdc3674ca 100644
+--- a/src/network/CMakeLists.txt
++++ b/src/network/CMakeLists.txt
+@@ -262,7 +262,14 @@ qt_internal_extend_target(Network CONDITION APPLE
+         kernel/qnetworkproxy_darwin.cpp
+ )
+ 
+-qt_internal_extend_target(Network CONDITION QT_FEATURE_libproxy AND UNIX AND NOT MACOS
++qt_internal_extend_target(Network CONDITION QT_FEATURE_glib AND TARGET GLIB2::GIO AND UNIX AND NOT MACOS
++    SOURCES
++        kernel/qnetworkproxy_glib.cpp
++    LIBRARIES
++        GLIB2::GIO
++)
++
++qt_internal_extend_target(Network CONDITION QT_FEATURE_libproxy AND (NOT QT_FEATURE_glib OR NOT TARGET GLIB2::GIO) AND UNIX AND NOT MACOS
+     SOURCES
+         kernel/qnetworkproxy_libproxy.cpp
+     LIBRARIES
+@@ -275,7 +282,7 @@ qt_internal_extend_target(Network CONDITION ANDROID
+         kernel/qnetworkproxy_android.cpp
+ )
+ 
+-qt_internal_extend_target(Network CONDITION UNIX AND NOT ANDROID AND NOT APPLE AND NOT QT_FEATURE_libproxy AND (UNIX OR WINRT)
++qt_internal_extend_target(Network CONDITION UNIX AND NOT ANDROID AND NOT APPLE AND NOT QT_FEATURE_libproxy AND (NOT QT_FEATURE_glib OR NOT TARGET GLIB2::GIO) AND (UNIX OR WINRT)
+     SOURCES
+         kernel/qnetworkproxy_generic.cpp
+ )
+diff --git a/src/network/kernel/qnetworkproxy_glib.cpp b/src/network/kernel/qnetworkproxy_glib.cpp
+new file mode 100644
+index 0000000000..b78dd095e1
+--- /dev/null
++++ b/src/network/kernel/qnetworkproxy_glib.cpp
+@@ -0,0 +1,68 @@
++// Copyright (C) 2016 The Qt Company Ltd.
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
++
++#include "qnetworkproxy.h"
++
++#include <QtCore/QByteArray>
++#include <QtCore/QUrl>
++
++#undef signals
++#include <gio/gio.h>
++
++#ifndef QT_NO_NETWORKPROXY
++
++/*
++ * Construct a proxy from the environment variables http_proxy and no_proxy.
++ * Or no system proxy. Just return a list with NoProxy.
++ */
++
++QT_BEGIN_NAMESPACE
++
++using namespace Qt::StringLiterals;
++
++QList<QNetworkProxy> QNetworkProxyFactory::systemProxyForQuery(const QNetworkProxyQuery &query)
++{
++    QList<QNetworkProxy> proxyList;
++
++    const QByteArray queryUrl = query.url().toEncoded();
++    gchar **proxies = g_proxy_resolver_lookup(g_proxy_resolver_get_default(),
++                                              !queryUrl.isEmpty()
++                                                  ? queryUrl.constData()
++                                                  : "none://",
++                                              nullptr,
++                                              nullptr);
++
++    if (!proxies)
++        return proxyList << QNetworkProxy::NoProxy;
++
++    for (int i = 0; proxies[i]; ++i) {
++        QUrl url = QUrl(QString::fromUtf8(proxies[i]));
++        const QString scheme = url.scheme();
++        if (scheme == "direct"_L1) {
++            proxyList << QNetworkProxy::NoProxy;
++        } else if (scheme == "socks5"_L1) {
++            QNetworkProxy proxy(QNetworkProxy::Socks5Proxy, url.host(),
++                    url.port() ? url.port() : 1080, url.userName(), url.password());
++            proxyList << proxy;
++        } else if (scheme == "socks5h"_L1) {
++            QNetworkProxy proxy(QNetworkProxy::Socks5Proxy, url.host(),
++                    url.port() ? url.port() : 1080, url.userName(), url.password());
++            proxy.setCapabilities(QNetworkProxy::HostNameLookupCapability);
++            proxyList << proxy;
++        } else if (scheme == "http"_L1) {
++            QNetworkProxy proxy(QNetworkProxy::HttpProxy, url.host(),
++                    url.port() ? url.port() : 80, url.userName(), url.password());
++            proxyList << proxy;
++        }
++    }
++
++    if (proxyList.isEmpty())
++        proxyList << QNetworkProxy::NoProxy;
++
++    g_strfreev(proxies);
++    return proxyList;
++}
++
++QT_END_NAMESPACE
++
++#endif
