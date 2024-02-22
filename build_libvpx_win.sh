@@ -9,7 +9,7 @@ pacman --noconfirm -S msys/make
 pacman --noconfirm -S diffutils
 
 ./configure --prefix=$FullScriptPath/../local \
---target=$TARGET \
+--target=$TOOLCHAIN \
 --disable-examples \
 --disable-unit-tests \
 --disable-tools \
