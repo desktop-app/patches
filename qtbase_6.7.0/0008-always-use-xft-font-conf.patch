@@ -1,8 +1,8 @@
 diff --git a/src/gui/text/unix/qfontconfigdatabase.cpp b/src/gui/text/unix/qfontconfigdatabase.cpp
-index ee9d323747..b79b0b740f 100644
+index 46e8f5724a..387fe0bd59 100644
 --- a/src/gui/text/unix/qfontconfigdatabase.cpp
 +++ b/src/gui/text/unix/qfontconfigdatabase.cpp
-@@ -48,8 +48,6 @@
+@@ -12,8 +12,6 @@
  
  #include <qpa/qplatformnativeinterface.h>
  #include <qpa/qplatformscreen.h>
@@ -11,7 +11,7 @@ index ee9d323747..b79b0b740f 100644
  
  #include <QtGui/private/qguiapplication_p.h>
  #include <QtGui/private/qhighdpiscaling_p.h>
-@@ -640,7 +638,15 @@ QFontEngineMulti *QFontconfigDatabase::fontEngineMulti(QFontEngine *fontEngine,
+@@ -638,7 +636,15 @@ QFontEngineMulti *QFontconfigDatabase::fontEngineMulti(QFontEngine *fontEngine,
  }
  
  namespace {
@@ -28,7 +28,7 @@ index ee9d323747..b79b0b740f 100644
  {
      switch (hintingPreference) {
      case QFont::PreferNoHinting:
-@@ -656,9 +662,15 @@ QFontEngine::HintStyle defaultHintStyleFromMatch(QFont::HintingPreference hintin
+@@ -654,9 +660,15 @@ QFontEngine::HintStyle defaultHintStyleFromMatch(QFont::HintingPreference hintin
      if (QHighDpiScaling::isActive())
          return QFontEngine::HintNone;
  
@@ -47,7 +47,7 @@ index ee9d323747..b79b0b740f 100644
          case FC_HINT_NONE:
              return QFontEngine::HintNone;
          case FC_HINT_SLIGHT:
-@@ -673,23 +685,20 @@ QFontEngine::HintStyle defaultHintStyleFromMatch(QFont::HintingPreference hintin
+@@ -671,23 +683,20 @@ QFontEngine::HintStyle defaultHintStyleFromMatch(QFont::HintingPreference hintin
          }
      }
  
@@ -81,7 +81,7 @@ index ee9d323747..b79b0b740f 100644
          case FC_RGBA_UNKNOWN:
          case FC_RGBA_NONE:
              return QFontEngine::Subpixel_None;
-@@ -707,15 +716,6 @@ QFontEngine::SubpixelAntialiasingType subpixelTypeFromMatch(FcPattern *match, bo
+@@ -705,15 +714,6 @@ QFontEngine::SubpixelAntialiasingType subpixelTypeFromMatch(FcPattern *match, bo
          }
      }
  
@@ -97,7 +97,7 @@ index ee9d323747..b79b0b740f 100644
      return QFontEngine::Subpixel_None;
  }
  } // namespace
-@@ -954,21 +954,15 @@ void QFontconfigDatabase::setupFontEngine(QFontEngineFT *engine, const QFontDef
+@@ -960,21 +960,15 @@ void QFontconfigDatabase::setupFontEngine(QFontEngineFT *engine, const QFontDef
      bool antialias = !(fontDef.styleStrategy & QFont::NoAntialias);
      bool forcedAntialiasSetting = !antialias || QHighDpiScaling::isActive();
  
@@ -124,16 +124,16 @@ index ee9d323747..b79b0b740f 100644
      }
  
      QFontEngine::GlyphFormat format;
-@@ -1002,7 +996,7 @@ void QFontconfigDatabase::setupFontEngine(QFontEngineFT *engine, const QFontDef
+@@ -1057,7 +1051,7 @@ bail:
+         match = FcFontMatch(nullptr, pattern, &result);
  
-     FcPattern *match = FcFontMatch(nullptr, pattern, &result);
      if (match) {
 -        engine->setDefaultHintStyle(defaultHintStyleFromMatch((QFont::HintingPreference)fontDef.hintingPreference, match, useXftConf));
 +        engine->setDefaultHintStyle(defaultHintStyleFromMatch((QFont::HintingPreference)fontDef.hintingPreference, match));
  
          FcBool fc_autohint;
          if (FcPatternGetBool(match, FC_AUTOHINT,0, &fc_autohint) == FcResultMatch)
-@@ -1023,7 +1017,7 @@ void QFontconfigDatabase::setupFontEngine(QFontEngineFT *engine, const QFontDef
+@@ -1078,7 +1072,7 @@ bail:
          if (antialias) {
              QFontEngine::SubpixelAntialiasingType subpixelType = QFontEngine::Subpixel_None;
              if (!(fontDef.styleStrategy & QFont::NoSubpixelAntialias))

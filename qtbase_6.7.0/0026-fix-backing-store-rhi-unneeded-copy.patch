@@ -1,8 +1,8 @@
 diff --git a/src/gui/painting/qbackingstoredefaultcompositor.cpp b/src/gui/painting/qbackingstoredefaultcompositor.cpp
-index 13a8bdb157..2a28f41e0e 100644
+index c1452ca768..9095152e45 100644
 --- a/src/gui/painting/qbackingstoredefaultcompositor.cpp
 +++ b/src/gui/painting/qbackingstoredefaultcompositor.cpp
-@@ -46,7 +46,7 @@ QRhiTexture *QBackingStoreDefaultCompositor::toTexture(const QPlatformBackingSto
+@@ -39,7 +39,7 @@ QRhiTexture *QBackingStoreDefaultCompositor::toTexture(const QPlatformBackingSto
      return toTexture(backingStore->toImage(), rhi, resourceUpdates, dirtyRegion, flags);
  }
  
@@ -11,7 +11,7 @@ index 13a8bdb157..2a28f41e0e 100644
                                                         QRhi *rhi,
                                                         QRhiResourceUpdateBatch *resourceUpdates,
                                                         const QRegion &dirtyRegion,
-@@ -63,8 +63,6 @@ QRhiTexture *QBackingStoreDefaultCompositor::toTexture(const QImage &sourceImage
+@@ -56,8 +56,6 @@ QRhiTexture *QBackingStoreDefaultCompositor::toTexture(const QImage &sourceImage
          return nullptr;
      }
  
@@ -20,7 +20,7 @@ index 13a8bdb157..2a28f41e0e 100644
      bool needsConversion = false;
      *flags = {};
  
-@@ -106,8 +104,6 @@ QRhiTexture *QBackingStoreDefaultCompositor::toTexture(const QImage &sourceImage
+@@ -99,8 +97,6 @@ QRhiTexture *QBackingStoreDefaultCompositor::toTexture(const QImage &sourceImage
  
      if (needsConversion)
          image = image.convertToFormat(QImage::Format_RGBA8888);
@@ -29,7 +29,7 @@ index 13a8bdb157..2a28f41e0e 100644
  
      if (resized) {
          if (!m_texture)
-@@ -515,7 +511,7 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+@@ -508,7 +504,7 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
              const QImage::Format format = QImage::toImageFormat(graphicsBuffer->format());
              const QSize size = graphicsBuffer->size();
              QImage wrapperImage(graphicsBuffer->data(), size.width(), size.height(), graphicsBuffer->bytesPerLine(), format);
@@ -39,13 +39,13 @@ index 13a8bdb157..2a28f41e0e 100644
              graphicsBuffer->unlock();
              if (graphicsBuffer->origin() == QPlatformGraphicsBuffer::OriginBottomLeft)
 diff --git a/src/gui/painting/qbackingstoredefaultcompositor_p.h b/src/gui/painting/qbackingstoredefaultcompositor_p.h
-index 2f835e5d35..1ced8e4cdc 100644
+index c5a8ffd328..a3ef7ac75c 100644
 --- a/src/gui/painting/qbackingstoredefaultcompositor_p.h
 +++ b/src/gui/painting/qbackingstoredefaultcompositor_p.h
 @@ -55,7 +55,7 @@ private:
      Q_DECLARE_FLAGS(UpdateQuadDataOptions, UpdateQuadDataOption)
  
-     void ensureResources(QRhiSwapChain *swapchain, QRhiResourceUpdateBatch *resourceUpdates);
+     void ensureResources(QRhiResourceUpdateBatch *resourceUpdates, QRhiRenderPassDescriptor *rpDesc);
 -    QRhiTexture *toTexture(const QImage &image,
 +    QRhiTexture *toTexture(QImage image,
                             QRhi *rhi,

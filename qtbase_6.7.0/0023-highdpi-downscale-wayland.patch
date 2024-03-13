@@ -21,7 +21,7 @@ index 189f31fd0a..d6deb8a72a 100644
  
      QRegion scaled = region.translated(-origin);
 diff --git a/src/gui/painting/qbackingstore.cpp b/src/gui/painting/qbackingstore.cpp
-index b1d2b9adc4..ac89e106c8 100644
+index e6f19cd1b1..c016dc07e7 100644
 --- a/src/gui/painting/qbackingstore.cpp
 +++ b/src/gui/painting/qbackingstore.cpp
 @@ -50,6 +50,7 @@ public:
@@ -86,13 +86,16 @@ index b1d2b9adc4..ac89e106c8 100644
          return d_ptr->highDpiBackingstore.data();
  
      return device;
-@@ -230,7 +232,8 @@ void QBackingStore::flush(const QRegion &region, QWindow *window, const QPoint &
+@@ -229,9 +231,10 @@ void QBackingStore::flush(const QRegion &region, QWindow *window, const QPoint &
+ */
  void QBackingStore::resize(const QSize &size)
  {
-     d_ptr->size = size;
--    handle()->resize(QHighDpi::scale(size, d_ptr->deviceIndependentToNativeFactor()), d_ptr->staticContents);
-+    d_ptr->nativeSize = QHighDpi::scale(size, d_ptr->deviceIndependentToNativeFactor());
-+    handle()->resize(d_ptr->nativeSize, d_ptr->staticContents);
+-    d_ptr->size = size;
+     const qreal factor = d_ptr->deviceIndependentToNativeFactor();
+-    handle()->resize(QHighDpi::scale(size, factor), QHighDpi::scale(d_ptr->staticContents, factor));
++    d_ptr->size = size;
++    d_ptr->nativeSize = QHighDpi::scale(size, factor);
++    handle()->resize(d_ptr->nativeSize, QHighDpi::scale(d_ptr->staticContents, factor));
  }
  
  /*!

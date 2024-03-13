@@ -83,10 +83,10 @@ index 0000000000..fd32d9a783
 +
 +mark_as_advanced(LCMS2_INCLUDE_DIR LCMS2_LIBRARIES LCMS2_VERSION)
 diff --git a/src/gui/CMakeLists.txt b/src/gui/CMakeLists.txt
-index c2c9b96465..daaa9af57b 100644
+index 3207244afd..9fcba1d250 100644
 --- a/src/gui/CMakeLists.txt
 +++ b/src/gui/CMakeLists.txt
-@@ -540,6 +540,11 @@ qt_internal_extend_target(Gui CONDITION QT_FEATURE_movie
+@@ -570,6 +570,11 @@ qt_internal_extend_target(Gui CONDITION QT_FEATURE_movie
          image/qmovie.cpp image/qmovie.h
  )
  
@@ -99,7 +99,7 @@ index c2c9b96465..daaa9af57b 100644
      SOURCES
          image/qpnghandler.cpp image/qpnghandler_p.h
 diff --git a/src/gui/configure.cmake b/src/gui/configure.cmake
-index 02a80130d5..9ef5d59359 100644
+index 4affd7b30a..b830521d90 100644
 --- a/src/gui/configure.cmake
 +++ b/src/gui/configure.cmake
 @@ -60,6 +60,7 @@ qt_find_package(GLESv2 PROVIDED_TARGETS GLESv2::GLESv2 MODULE_NAME gui QMAKE_LIB
@@ -109,8 +109,8 @@ index 02a80130d5..9ef5d59359 100644
 +qt_find_package(LCMS2 PROVIDED_TARGETS LCMS2::LCMS2 MODULE_NAME gui QMAKE_LIB lcms2)
  if((LINUX) OR QT_FIND_ALL_PACKAGES_ALWAYS)
      qt_find_package(Wayland PROVIDED_TARGETS Wayland::Server MODULE_NAME gui QMAKE_LIB wayland_server)
- endif()
-@@ -668,6 +669,12 @@ qt_feature("fontconfig" PUBLIC PRIVATE
+     qt_find_package(Wayland PROVIDED_TARGETS Wayland::Client MODULE_NAME gui QMAKE_LIB wayland_client)
+@@ -685,6 +686,12 @@ qt_feature("fontconfig" PUBLIC PRIVATE
      CONDITION NOT WIN32 AND QT_FEATURE_system_freetype AND Fontconfig_FOUND
  )
  qt_feature_definition("fontconfig" "QT_NO_FONTCONFIG" NEGATE VALUE "1")
@@ -123,7 +123,7 @@ index 02a80130d5..9ef5d59359 100644
  qt_feature("gbm"
      LABEL "GBM"
      CONDITION gbm_FOUND
-@@ -1228,6 +1235,7 @@ qt_configure_add_summary_entry(ARGS "system-freetype")
+@@ -1257,6 +1264,7 @@ qt_configure_add_summary_entry(ARGS "system-freetype")
  qt_configure_add_summary_entry(ARGS "harfbuzz")
  qt_configure_add_summary_entry(ARGS "system-harfbuzz")
  qt_configure_add_summary_entry(ARGS "fontconfig")
@@ -132,7 +132,7 @@ index 02a80130d5..9ef5d59359 100644
  qt_configure_add_summary_entry(ARGS "gif")
  qt_configure_add_summary_entry(ARGS "ico")
 diff --git a/src/gui/image/qimage.cpp b/src/gui/image/qimage.cpp
-index 91292d01d1..a871c3db22 100644
+index 463a1e4a6d..85d2086ce8 100644
 --- a/src/gui/image/qimage.cpp
 +++ b/src/gui/image/qimage.cpp
 @@ -44,6 +44,10 @@
@@ -146,7 +146,7 @@ index 91292d01d1..a871c3db22 100644
  QT_BEGIN_NAMESPACE
  
  using namespace Qt::StringLiterals;
-@@ -4986,6 +4990,43 @@ void QImage::setColorSpace(const QColorSpace &colorSpace)
+@@ -5003,6 +5007,43 @@ void QImage::setColorSpace(const QColorSpace &colorSpace)
          d->colorSpace = colorSpace;
  }
  
@@ -190,7 +190,7 @@ index 91292d01d1..a871c3db22 100644
  /*!
      \since 5.14
  
-@@ -4999,6 +5040,34 @@ void QImage::convertToColorSpace(const QColorSpace &colorSpace)
+@@ -5016,6 +5057,34 @@ void QImage::convertToColorSpace(const QColorSpace &colorSpace)
  {
      if (!d)
          return;
@@ -242,7 +242,7 @@ index 6b077a7647..f52237aa35 100644
  # the vendored libjpeg sources, due to 'boolean'
  # redefinition in jmorecfg.h and rpcndr.h.
 diff --git a/src/plugins/imageformats/jpeg/qjpeghandler.cpp b/src/plugins/imageformats/jpeg/qjpeghandler.cpp
-index 0d72ba01d0..7846ab4370 100644
+index 6bc7712c61..d65982ced6 100644
 --- a/src/plugins/imageformats/jpeg/qjpeghandler.cpp
 +++ b/src/plugins/imageformats/jpeg/qjpeghandler.cpp
 @@ -32,6 +32,10 @@ extern "C" {

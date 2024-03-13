@@ -1,18 +1,3 @@
-diff --git a/src/gui/platform/darwin/qapplekeymapper.mm b/src/gui/platform/darwin/qapplekeymapper.mm
-index f7dbc1990d..aad953326d 100644
---- a/src/gui/platform/darwin/qapplekeymapper.mm
-+++ b/src/gui/platform/darwin/qapplekeymapper.mm
-@@ -574,8 +574,8 @@ QList<int> QAppleKeyMapper::possibleKeys(const QKeyEvent *event) const
-         if ((eventModifiers & candidateModifiers) == candidateModifiers) {
-             // If the event includes more modifiers than the candidate they
-             // will need to be included in the resulting key combination.
--            auto additionalModifiers = eventModifiers & ~candidateModifiers;
--            ret << int(additionalModifiers) + int(keyAfterApplyingModifiers);
-+            // Patch: Fix non-english layout global shortcuts.
-+            ret << int(candidateModifiers) + int(keyAfterApplyingModifiers);
-         }
-     }
- 
 diff --git a/src/plugins/platforms/cocoa/qnsview_keys.mm b/src/plugins/platforms/cocoa/qnsview_keys.mm
 index 118678ffa5..fae0003454 100644
 --- a/src/plugins/platforms/cocoa/qnsview_keys.mm
