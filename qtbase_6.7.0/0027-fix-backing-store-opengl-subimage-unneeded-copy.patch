@@ -1,0 +1,18 @@
+diff --git a/src/gui/rhi/qrhigles2.cpp b/src/gui/rhi/qrhigles2.cpp
+index 09bbbcf044..c2ebe0cac0 100644
+--- a/src/gui/rhi/qrhigles2.cpp
++++ b/src/gui/rhi/qrhigles2.cpp
+@@ -2324,7 +2324,12 @@ void QRhiGles2::enqueueSubresUpload(QGles2Texture *texD, QGles2CommandBuffer *cb
+             const QPoint sp = subresDesc.sourceTopLeft();
+             if (!subresDesc.sourceSize().isEmpty())
+                 size = subresDesc.sourceSize();
+-            img = img.copy(sp.x(), sp.y(), size.width(), size.height());
++            if (!ctx->isOpenGLES() || ctx->format().majorVersion() >= 3) {
++                const uchar *data = img.constBits() + ((sp.x() * img.depth()) >> 3) + sp.y() * img.bytesPerLine();
++                img = QImage(data, size.width(), size.height(), img.bytesPerLine(), img.format());
++            } else {
++                img = img.copy(sp.x(), sp.y(), size.width(), size.height());
++            }
+         }
+ 
+         setCmdByNotCompressedData(cbD->retainImage(img), size, img.bytesPerLine());
