@@ -1,8 +1,8 @@
 diff --git a/src/network/CMakeLists.txt b/src/network/CMakeLists.txt
-index c4e0324deb..b47b86356a 100644
+index c4e0324deb..3479905c04 100644
 --- a/src/network/CMakeLists.txt
 +++ b/src/network/CMakeLists.txt
-@@ -272,7 +272,15 @@ qt_internal_extend_target(Network CONDITION APPLE
+@@ -272,7 +272,14 @@ qt_internal_extend_target(Network CONDITION APPLE
          kernel/qnetworkproxy_darwin.cpp
  )
  
@@ -11,7 +11,6 @@ index c4e0324deb..b47b86356a 100644
 +    SOURCES
 +        kernel/qnetworkproxy_glib.cpp
 +    LIBRARIES
-+        GLIB2::GOBJECT
 +        GLIB2::GIO
 +)
 +
@@ -19,7 +18,7 @@ index c4e0324deb..b47b86356a 100644
      SOURCES
          kernel/qnetworkproxy_libproxy.cpp
      LIBRARIES
-@@ -285,7 +293,7 @@ qt_internal_extend_target(Network CONDITION ANDROID
+@@ -285,7 +292,7 @@ qt_internal_extend_target(Network CONDITION ANDROID
          kernel/qnetworkproxy_android.cpp
  )
  
@@ -30,7 +29,7 @@ index c4e0324deb..b47b86356a 100644
  )
 diff --git a/src/network/kernel/qnetworkproxy_glib.cpp b/src/network/kernel/qnetworkproxy_glib.cpp
 new file mode 100644
-index 0000000000..c2b169242a
+index 0000000000..88b14955ec
 --- /dev/null
 +++ b/src/network/kernel/qnetworkproxy_glib.cpp
 @@ -0,0 +1,199 @@
@@ -60,7 +59,7 @@ index 0000000000..c2b169242a
 +static bool isThreadingNeeded()
 +{
 +    // libproxy is not thread-safe
-+    return QLatin1StringView(G_OBJECT_TYPE_NAME(g_proxy_resolver_get_default())) == "GLibproxyResolver"_L1;
++    return true;
 +}
 +
 +class QGProxyResolverWrapper : public QDaemonThread
