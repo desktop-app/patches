@@ -1,0 +1,137 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index afcdd1f463..05ad3e0007 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -53,6 +53,9 @@ endif()
+ if (QT_FEATURE_sql)
+     add_subdirectory(sql)
+ endif()
++if (QT_FEATURE_dbus)
++    add_subdirectory(dbus)
++endif()
+ if (QT_FEATURE_network)
+     add_subdirectory(network)
+     if (ANDROID)
+@@ -63,10 +66,6 @@ if (QT_FEATURE_xml)
+     add_subdirectory(xml)
+ endif()
+ 
+-if (QT_FEATURE_dbus)
+-    add_subdirectory(dbus)
+-endif()
+-
+ add_subdirectory(tools)
+ 
+ if(QT_FEATURE_gui)
+diff --git a/src/network/CMakeLists.txt b/src/network/CMakeLists.txt
+index c4e0324deb..18acf567af 100644
+--- a/src/network/CMakeLists.txt
++++ b/src/network/CMakeLists.txt
+@@ -290,6 +290,11 @@ qt_internal_extend_target(Network CONDITION UNIX AND NOT ANDROID AND NOT APPLE A
+         kernel/qnetworkproxy_generic.cpp
+ )
+ 
++qt_internal_extend_target(Network CONDITION UNIX AND NOT ANDROID AND NOT APPLE AND NOT QT_FEATURE_libproxy AND QT_FEATURE_dbus AND (UNIX OR WINRT)
++    LIBRARIES
++        Qt::DBus
++)
++
+ if(ANDROID AND (ANDROID))
+     set_property(TARGET Network APPEND PROPERTY QT_ANDROID_BUNDLED_JAR_DEPENDENCIES
+         jar/Qt${QtBase_VERSION_MAJOR}AndroidNetwork.jar
+diff --git a/src/network/kernel/qnetworkproxy_generic.cpp b/src/network/kernel/qnetworkproxy_generic.cpp
+index b915ee8fc8..8168d0cae8 100644
+--- a/src/network/kernel/qnetworkproxy_generic.cpp
++++ b/src/network/kernel/qnetworkproxy_generic.cpp
+@@ -6,6 +6,11 @@
+ #include <QtCore/QByteArray>
+ #include <QtCore/QUrl>
+ 
++#if QT_CONFIG(dbus)
++#include <QtDBus/QDBusConnection>
++#include <QtDBus/QDBusMessage>
++#endif
++
+ #ifndef QT_NO_NETWORKPROXY
+ 
+ /*
+@@ -56,10 +61,54 @@ static bool ignoreProxyFor(const QNetworkProxyQuery &query)
+     return false;
+ }
+ 
++static std::optional<QNetworkProxy> urlToProxy(const QNetworkProxyQuery &query, const QUrl &url)
++{
++    const QString scheme = url.scheme();
++    if (scheme == "direct"_L1) {
++        return QNetworkProxy::NoProxy;
++    } else if (scheme == "socks5"_L1) {
++        QNetworkProxy proxy(QNetworkProxy::Socks5Proxy, url.host(),
++                url.port() ? url.port() : 1080, url.userName(), url.password());
++        return proxy;
++    } else if (scheme == "socks5h"_L1) {
++        QNetworkProxy proxy(QNetworkProxy::Socks5Proxy, url.host(),
++                url.port() ? url.port() : 1080, url.userName(), url.password());
++        proxy.setCapabilities(QNetworkProxy::HostNameLookupCapability);
++        return proxy;
++    } else if ((scheme.isEmpty() || scheme == "http"_L1)
++                && query.queryType() != QNetworkProxyQuery::UdpSocket
++                && query.queryType() != QNetworkProxyQuery::TcpServer) {
++        QNetworkProxy proxy(QNetworkProxy::HttpProxy, url.host(),
++                url.port() ? url.port() : 8080, url.userName(), url.password());
++        return proxy;
++    }
++    return std::nullopt;
++}
++
+ QList<QNetworkProxy> QNetworkProxyFactory::systemProxyForQuery(const QNetworkProxyQuery &query)
+ {
+     QList<QNetworkProxy> proxyList;
+ 
++#if QT_CONFIG(dbus)
++    QUrl queryUrl = query.url();
++    if (queryUrl.scheme().isEmpty())
++        queryUrl.setScheme(u"none"_s);
++
++    QDBusMessage message = QDBusMessage::createMethodCall("org.freedesktop.portal.Desktop"_L1,
++                                                          "/org/freedesktop/portal/desktop"_L1,
++                                                          "org.freedesktop.portal.ProxyResolver"_L1,
++                                                          "Lookup"_L1);
++    message << queryUrl.toString(QUrl::FullyEncoded);
++    QDBusReply<QStringList> reply = QDBusConnection::sessionBus().call(message);
++    if (reply.isValid()) {
++        for (const QString &proxyStr : reply.value()) {
++            if (const std::optional<QNetworkProxy> proxy = urlToProxy(query, QUrl(proxyStr))) {
++                proxyList << *proxy;
++            }
++        }
++    }
++#endif
++
+     if (ignoreProxyFor(query))
+         return proxyList << QNetworkProxy::NoProxy;
+ 
+@@ -82,22 +131,8 @@ QList<QNetworkProxy> QNetworkProxyFactory::systemProxyForQuery(const QNetworkPro
+ 
+     if (!proxy_env.isEmpty()) {
+         QUrl url = QUrl(QString::fromLocal8Bit(proxy_env));
+-        const QString scheme = url.scheme();
+-        if (scheme == "socks5"_L1) {
+-            QNetworkProxy proxy(QNetworkProxy::Socks5Proxy, url.host(),
+-                    url.port() ? url.port() : 1080, url.userName(), url.password());
+-            proxyList << proxy;
+-        } else if (scheme == "socks5h"_L1) {
+-            QNetworkProxy proxy(QNetworkProxy::Socks5Proxy, url.host(),
+-                    url.port() ? url.port() : 1080, url.userName(), url.password());
+-            proxy.setCapabilities(QNetworkProxy::HostNameLookupCapability);
+-            proxyList << proxy;
+-        } else if ((scheme.isEmpty() || scheme == "http"_L1)
+-                  && query.queryType() != QNetworkProxyQuery::UdpSocket
+-                  && query.queryType() != QNetworkProxyQuery::TcpServer) {
+-            QNetworkProxy proxy(QNetworkProxy::HttpProxy, url.host(),
+-                    url.port() ? url.port() : 8080, url.userName(), url.password());
+-            proxyList << proxy;
++        if (const std::optional<QNetworkProxy> proxy = urlToProxy(query, url)) {
++            proxyList << *proxy;
+         }
+     }
+     if (proxyList.isEmpty())
