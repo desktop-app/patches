@@ -23,6 +23,9 @@ export PKG_CONFIG_PATH="$FullExecPath/../local/lib/pkgconfig:$PKG_CONFIG_PATH"
 --disable-doc \
 --disable-network \
 --disable-everything \
+--enable-ffnvcodec \
+--enable-nvdec \
+--enable-cuvid \
 --enable-hwaccel=av1_d3d11va \
 --enable-hwaccel=av1_d3d11va2 \
 --enable-hwaccel=av1_dxva2 \
@@ -137,5 +140,5 @@ export PKG_CONFIG_PATH="$FullExecPath/../local/lib/pkgconfig:$PKG_CONFIG_PATH"
 --enable-muxer=ogg \
 --enable-muxer=opus
 
-make -j8
-make -j8 install
+make -j$NUMBER_OF_PROCESSORS
+make -j$NUMBER_OF_PROCESSORS install
