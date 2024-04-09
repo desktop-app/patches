@@ -120,6 +120,7 @@ export PKG_CONFIG_PATH="$FullExecPath/../local/lib/pkgconfig:$PKG_CONFIG_PATH"
 --enable-parser=aac \
 --enable-parser=aac_latm \
 --enable-parser=flac \
+--enable-parser=gif \
 --enable-parser=h264 \
 --enable-parser=hevc \
 --enable-parser=mpeg4video \
