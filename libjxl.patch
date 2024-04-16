@@ -1,8 +1,16 @@
 diff --git a/lib/jpegli/decode.cc b/lib/jpegli/decode.cc
-index bf57115a..8293c812 100644
+index bf57115a..8747fc7f 100644
 --- a/lib/jpegli/decode.cc
 +++ b/lib/jpegli/decode.cc
-@@ -243,6 +243,9 @@ void PrepareForScan(j_decompress_ptr cinfo) {
+@@ -54,6 +54,7 @@ void InitializeImage(j_decompress_ptr cinfo) {
+   m->found_soi_ = false;
+   m->found_dri_ = false;
+   m->found_sof_ = false;
++  m->found_sos_ = false;
+   m->found_eoi_ = false;
+   m->icc_index_ = 0;
+   m->icc_total_ = 0;
+@@ -243,6 +244,9 @@ void PrepareForScan(j_decompress_ptr cinfo) {
    // Copy quantization tables into comp_info.
    for (int i = 0; i < cinfo->comps_in_scan; ++i) {
      jpeg_component_info* comp = cinfo->cur_comp_info[i];
