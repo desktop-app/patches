@@ -1,0 +1,16 @@
+[binaries]
+c = ['clang', '-arch', 'x86_64']
+cpp = ['clang++', '-arch', 'x86_64']
+ar = 'ar'
+strip = 'strip'
+[built-in options]
+c_args = ['-mmacosx-version-min=10.13']
+cpp_args = ['-mmacosx-version-min=10.13']
+c_link_args = ['-mmacosx-version-min=10.13']
+cpp_link_args = ['-mmacosx-version-min=10.13']
+[host_machine]
+system = 'darwin'
+subsystem = 'macos'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'
