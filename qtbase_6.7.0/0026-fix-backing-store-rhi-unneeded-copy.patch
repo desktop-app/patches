@@ -1,0 +1,88 @@
+diff --git a/src/gui/CMakeLists.txt b/src/gui/CMakeLists.txt
+index 3207244afd..ec1e2792fe 100644
+--- a/src/gui/CMakeLists.txt
++++ b/src/gui/CMakeLists.txt
+@@ -200,6 +200,7 @@ qt_internal_add_module(Gui
+         painting/qpixellayout.cpp painting/qpixellayout_p.h
+         painting/qplatformbackingstore.cpp painting/qplatformbackingstore.h
+         painting/qpolygon.cpp painting/qpolygon.h
++        painting/qrasterbackingstore.cpp painting/qrasterbackingstore_p.h
+         painting/qrasterdefs_p.h
+         painting/qrasterizer.cpp painting/qrasterizer_p.h
+         painting/qrbtree_p.h
+@@ -207,6 +208,7 @@ qt_internal_add_module(Gui
+         painting/qrgb.h
+         painting/qrgba64.h painting/qrgba64_p.h
+         painting/qrgbafloat.h
++        painting/qrhibackingstore.cpp painting/qrhibackingstore_p.h
+         painting/qstroker.cpp painting/qstroker_p.h
+         painting/qtextureglyphcache.cpp painting/qtextureglyphcache_p.h
+         painting/qtransform.cpp painting/qtransform.h
+@@ -381,8 +383,6 @@ qt_internal_extend_target(Gui CONDITION APPLE
+     SOURCES
+         image/qimage_darwin.mm
+         painting/qcoregraphics.mm painting/qcoregraphics_p.h
+-        painting/qrasterbackingstore.cpp painting/qrasterbackingstore_p.h
+-        painting/qrhibackingstore.cpp painting/qrhibackingstore_p.h
+         platform/darwin/qmacmimeregistry.mm platform/darwin/qmacmimeregistry_p.h
+         platform/darwin/qutimimeconverter.mm platform/darwin/qutimimeconverter.h
+         platform/darwin/qapplekeymapper.mm platform/darwin/qapplekeymapper_p.h
+diff --git a/src/gui/painting/qbackingstoredefaultcompositor.cpp b/src/gui/painting/qbackingstoredefaultcompositor.cpp
+index c1452ca768..c4ba57089b 100644
+--- a/src/gui/painting/qbackingstoredefaultcompositor.cpp
++++ b/src/gui/painting/qbackingstoredefaultcompositor.cpp
+@@ -99,8 +99,6 @@ QRhiTexture *QBackingStoreDefaultCompositor::toTexture(const QImage &sourceImage
+ 
+     if (needsConversion)
+         image = image.convertToFormat(QImage::Format_RGBA8888);
+-    else
+-        image.detach(); // if it was just wrapping data, that's no good, we need ownership, so detach
+ 
+     if (resized) {
+         if (!m_texture)
+diff --git a/src/plugins/platforms/cocoa/qcocoaintegration.mm b/src/plugins/platforms/cocoa/qcocoaintegration.mm
+index f21e683c00..1b041142d7 100644
+--- a/src/plugins/platforms/cocoa/qcocoaintegration.mm
++++ b/src/plugins/platforms/cocoa/qcocoaintegration.mm
+@@ -301,15 +301,6 @@ QPlatformBackingStore *QCocoaIntegration::createPlatformBackingStore(QWindow *wi
+     case QSurface::MetalSurface:
+     case QSurface::OpenGLSurface:
+     case QSurface::VulkanSurface:
+-        // If the window is a widget window, we know that the QWidgetRepaintManager
+-        // will explicitly use rhiFlush() for the window owning the backingstore,
+-        // and any child window with the same surface format. This means we can
+-        // safely return a QCALayerBackingStore here, to ensure that any plain
+-        // flush() for child windows that don't have a matching surface format
+-        // will still work, by setting the layer's contents property.
+-        if (window->inherits("QWidgetWindow"))
+-            return new QCALayerBackingStore(window);
+-
+         // Otherwise we return a QRhiBackingStore, that implements flush() in
+         // terms of rhiFlush().
+         return new QRhiBackingStore(window);
+diff --git a/src/plugins/platforms/xcb/qxcbintegration.cpp b/src/plugins/platforms/xcb/qxcbintegration.cpp
+index 6e82d24d8c..2dd89d2b4c 100644
+--- a/src/plugins/platforms/xcb/qxcbintegration.cpp
++++ b/src/plugins/platforms/xcb/qxcbintegration.cpp
+@@ -30,6 +30,7 @@
+ #include <stdio.h>
+ 
+ #include <QtGui/private/qguiapplication_p.h>
++#include <QtGui/private/qrhibackingstore_p.h>
+ 
+ #if QT_CONFIG(xcb_xlib)
+ #define register        /* C++17 deprecated register */
+@@ -281,6 +282,13 @@ QPlatformBackingStore *QXcbIntegration::createPlatformBackingStore(QWindow *wind
+         backingStore = new QXcbNativeBackingStore(window);
+ #endif
+     } else {
++        switch (window->surfaceType()) {
++        case QSurface::OpenGLSurface:
++        case QSurface::VulkanSurface:
++            backingStore = new QRhiBackingStore(window);
++        default:
++            break;
++        }
+         backingStore = new QXcbBackingStore(window);
+     }
+     Q_ASSERT(backingStore);
