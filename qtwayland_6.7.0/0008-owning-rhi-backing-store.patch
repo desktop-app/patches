@@ -1,0 +1,26 @@
+diff --git a/src/client/qwaylandintegration.cpp b/src/client/qwaylandintegration.cpp
+index 846556d4..2adc30ae 100644
+--- a/src/client/qwaylandintegration.cpp
++++ b/src/client/qwaylandintegration.cpp
+@@ -28,6 +28,7 @@
+ #include <QtGui/private/qgenericunixthemes_p.h>
+ 
+ #include <QtGui/private/qguiapplication_p.h>
++#include <QtGui/private/qrhibackingstore_p.h>
+ 
+ #include <qpa/qwindowsysteminterface.h>
+ #include <qpa/qplatformcursor.h>
+@@ -153,6 +154,13 @@ QPlatformOpenGLContext *QWaylandIntegration::createPlatformOpenGLContext(QOpenGL
+ 
+ QPlatformBackingStore *QWaylandIntegration::createPlatformBackingStore(QWindow *window) const
+ {
++    switch (window->surfaceType()) {
++    case QSurface::OpenGLSurface:
++    case QSurface::VulkanSurface:
++        return new QRhiBackingStore(window);
++    default:
++        break;
++    }
+     return new QWaylandShmBackingStore(window, mDisplay.data());
+ }
+ 
