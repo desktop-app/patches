@@ -1,0 +1,15 @@
+diff --git a/src/gui/text/qtextlayout.cpp b/src/gui/text/qtextlayout.cpp
+index 23f81145b1..fe002b865b 100644
+--- a/src/gui/text/qtextlayout.cpp
++++ b/src/gui/text/qtextlayout.cpp
+@@ -2089,6 +2089,10 @@ found:
+     }
+ 
+     if (hasInlineObject && QTextDocumentPrivate::get(eng->block) != nullptr) {
++        // Patch: Attempt to fix inline objects without text in line.
++        if (!line.height()) {
++            line.setDefaultHeight(eng);
++        }
+         // position top/bottom aligned inline objects
+         if (maxInlineObjectHeight > line.ascent + line.descent) {
+             // extend line height if required
