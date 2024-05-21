@@ -1,0 +1,14 @@
+diff --git a/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp b/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
+index 355d3e6cc9..a3ca718318 100644
+--- a/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
++++ b/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
+@@ -58,8 +58,7 @@ public:
+     {
+         switch (colorschemePref) {
+             case PreferDark: return Qt::ColorScheme::Dark;
+-            case PreferLight: return Qt::ColorScheme::Light;
+-            default: return Qt::ColorScheme::Unknown;
++            default: return Qt::ColorScheme::Light;
+         }
+     }
+ 
