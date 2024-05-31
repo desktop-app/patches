@@ -1,11 +1,11 @@
 diff --git a/src/gui/painting/qbackingstore.cpp b/src/gui/painting/qbackingstore.cpp
-index ac89e106c8..6f81b4f7c9 100644
+index 2304ee2256..0ffee177a1 100644
 --- a/src/gui/painting/qbackingstore.cpp
 +++ b/src/gui/painting/qbackingstore.cpp
 @@ -143,6 +143,14 @@ void QBackingStore::beginPaint(const QRegion &region)
-                 new QImage(source->bits(), source->width(), source->height(), source->bytesPerLine(), source->format()));
  
-         d_ptr->highDpiBackingstore->setDevicePixelRatio(d_ptr->backingStoreDevicePixelRatio());
+             d_ptr->highDpiBackingstore->setDevicePixelRatio(dpr);
+         }
 +
 +        if (d_ptr->highDpiBackingstore->hasAlphaChannel()) {
 +            QPainter p(d_ptr->highDpiBackingstore.data());
@@ -14,18 +14,9 @@ index ac89e106c8..6f81b4f7c9 100644
 +            for (const QRect &rect : region)
 +                p.fillRect(rect, blank);
 +        }
-     } else {
-         d_ptr->highDpiBackingstore.reset();
      }
-@@ -158,7 +166,7 @@ QPaintDevice *QBackingStore::paintDevice()
- {
-     QPaintDevice *device = handle()->paintDevice();
+ }
  
--    if (d_ptr->highDpiBackingstore)
-+    if (!qFuzzyCompare(d_ptr->deviceIndependentToNativeFactor(), qreal(1)) && device->devType() == QInternal::Image)
-         return d_ptr->highDpiBackingstore.data();
- 
-     return device;
 diff --git a/src/gui/painting/qrasterbackingstore.cpp b/src/gui/painting/qrasterbackingstore.cpp
 index 3b3ef2fd2e..6d257a8ee7 100644
 --- a/src/gui/painting/qrasterbackingstore.cpp
@@ -40,7 +31,7 @@ index 3b3ef2fd2e..6d257a8ee7 100644
  
      QPainter painter(&m_image);
 diff --git a/src/opengl/qopenglcompositorbackingstore.cpp b/src/opengl/qopenglcompositorbackingstore.cpp
-index 8efccce579..cc576be132 100644
+index 931734cf60..d74f637a2a 100644
 --- a/src/opengl/qopenglcompositorbackingstore.cpp
 +++ b/src/opengl/qopenglcompositorbackingstore.cpp
 @@ -3,6 +3,7 @@
@@ -82,7 +73,7 @@ index 8443c77dd3..6e164dddc4 100644
          p.setCompositionMode(QPainter::CompositionMode_Source);
          for (const QRect &r : region)
 diff --git a/src/plugins/platforms/cocoa/qcocoabackingstore.mm b/src/plugins/platforms/cocoa/qcocoabackingstore.mm
-index 8f50bc5834..53bc3fe921 100644
+index b211b5d02d..0f187eac27 100644
 --- a/src/plugins/platforms/cocoa/qcocoabackingstore.mm
 +++ b/src/plugins/platforms/cocoa/qcocoabackingstore.mm
 @@ -10,6 +10,7 @@
@@ -146,10 +137,10 @@ index cf80e44f84..a52d7effad 100644
          for (const QRect &r : region) {
              // Clear transparent regions
 diff --git a/src/plugins/platforms/wasm/qwasmbackingstore.cpp b/src/plugins/platforms/wasm/qwasmbackingstore.cpp
-index f6d219dbde..80aa1319b4 100644
+index a3c1ae8a50..778ea62b82 100644
 --- a/src/plugins/platforms/wasm/qwasmbackingstore.cpp
 +++ b/src/plugins/platforms/wasm/qwasmbackingstore.cpp
-@@ -121,7 +121,7 @@ void QWasmBackingStore::beginPaint(const QRegion &region)
+@@ -91,7 +91,7 @@ void QWasmBackingStore::beginPaint(const QRegion &region)
  
      QPainter painter(&m_image);
  
