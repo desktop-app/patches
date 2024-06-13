@@ -20,5 +20,5 @@ pacman --noconfirm -S diffutils
 --enable-webm-io \
 --size-limit=4096x4096
 
-make -j8
-make -j8 install
+make -j$NUMBER_OF_PROCESSORS
+make -j$NUMBER_OF_PROCESSORS install
