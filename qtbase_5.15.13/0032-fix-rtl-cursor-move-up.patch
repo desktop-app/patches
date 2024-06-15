@@ -1,0 +1,27 @@
+diff --git a/src/gui/text/qtextlayout.cpp b/src/gui/text/qtextlayout.cpp
+index 384d6b89ec..9ae7f83676 100644
+--- a/src/gui/text/qtextlayout.cpp
++++ b/src/gui/text/qtextlayout.cpp
+@@ -2973,7 +2973,21 @@ int QTextLine::xToCursor(qreal _x, CursorPosition cpos) const
+         if (si.analysis.bidiLevel % 2)
+             pos += eng->length(item);
+         pos = qMax(line.from, pos);
+-        pos = qMin(line.from + line_length, pos);
++
++        // Patch: Fix go up one line in RTL case of an empty line.
++        //pos = qMin(line.from + line_length, pos);
++
++        // The more accurate value is taken from below for the LTR case.
++        int maxPos = line.from + line_length;
++
++        // except for the last line we assume that the
++        // character between lines is a space and we want
++        // to position the cursor to the left of that
++        // character.
++        if (this->index < eng->lines.count() - 1)
++            maxPos = eng->previousLogicalPosition(maxPos);
++        pos = qMin(maxPos, pos);
++
+         return pos;
+     } else if (x < line.textWidth
+                || (line.justified && x < line.width)) {
