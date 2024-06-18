@@ -1,5 +1,5 @@
 diff --git a/src/client/qwaylandinputdevice.cpp b/src/client/qwaylandinputdevice.cpp
-index 57c0ee8a..4ae62eb4 100644
+index 059df99b..f4048b9e 100644
 --- a/src/client/qwaylandinputdevice.cpp
 +++ b/src/client/qwaylandinputdevice.cpp
 @@ -215,7 +215,7 @@ public:
@@ -70,19 +70,10 @@ index 8cc9d05d..3b4e4780 100644
      int mRefreshRate = 60000;
      int mSubpixel = -1;
 diff --git a/src/client/qwaylandwindow.cpp b/src/client/qwaylandwindow.cpp
-index 42fb1312..26c611dd 100644
+index 22aeba10..c431ce57 100644
 --- a/src/client/qwaylandwindow.cpp
 +++ b/src/client/qwaylandwindow.cpp
-@@ -57,7 +57,7 @@ QWaylandWindow::QWaylandWindow(QWindow *window, QWaylandDisplay *display)
-             mFrameCallbackTimeout = frameCallbackTimeout;
-     }
- 
--    mScale = waylandScreen() ? waylandScreen()->scale() : 1; // fallback to 1 if we don't have a real screen
-+    mScale = waylandScreen() ? waylandScreen()->scale() : qreal(1); // fallback to 1 if we don't have a real screen
- 
-     static WId id = 1;
-     mWindowId = id++;
-@@ -103,7 +103,7 @@ void QWaylandWindow::initWindow()
+@@ -101,7 +101,7 @@ void QWaylandWindow::initWindow()
          initializeWlSurface();
      }
  
@@ -91,16 +82,16 @@ index 42fb1312..26c611dd 100644
          mFractionalScale.reset(new QWaylandFractionalScale(mDisplay->fractionalScaleManager()->get_fractional_scale(mSurface->object())));
  
          connect(mFractionalScale.data(), &QWaylandFractionalScale::preferredScaleChanged,
-@@ -1438,7 +1438,7 @@ void QWaylandWindow::updateScale()
+@@ -1439,7 +1439,7 @@ void QWaylandWindow::updateScale()
          return;
      }
  
--    int scale = mLastReportedScreen->isPlaceholder() ? 1 : static_cast<QWaylandScreen *>(mLastReportedScreen)->scale();
-+    qreal scale = mLastReportedScreen->isPlaceholder() ? qreal(1) : static_cast<QWaylandScreen *>(mLastReportedScreen)->scale();
+-    int scale = screen()->isPlaceholder() ? 1 : static_cast<QWaylandScreen *>(screen())->scale();
++    qreal scale = screen()->isPlaceholder() ? qreal(1) : static_cast<QWaylandScreen *>(screen())->scale();
      setScale(scale);
  }
  
-@@ -1467,7 +1467,7 @@ void QWaylandWindow::setScale(qreal newScale)
+@@ -1468,7 +1468,7 @@ void QWaylandWindow::setScale(qreal newScale)
  #if QT_CONFIG(cursor)
  void QWaylandWindow::setMouseCursor(QWaylandInputDevice *device, const QCursor &cursor)
  {
@@ -109,3 +100,12 @@ index 42fb1312..26c611dd 100644
      device->setCursor(&cursor, {}, fallbackBufferScale);
  }
  
+@@ -1516,7 +1516,7 @@ qreal QWaylandWindow::scale() const
+ 
+ qreal QWaylandWindow::devicePixelRatio() const
+ {
+-    return mScale.value_or(waylandScreen() ? waylandScreen()->scale() : 1);
++    return mScale.value_or(waylandScreen() ? waylandScreen()->scale() : qreal(1));
+ }
+ 
+ bool QWaylandWindow::setMouseGrabEnabled(bool grab)
