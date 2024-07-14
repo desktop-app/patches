@@ -1,0 +1,83 @@
+diff --git a/src/gui/painting/qbackingstore.cpp b/src/gui/painting/qbackingstore.cpp
+index 2304ee2256..81d1e7f61f 100644
+--- a/src/gui/painting/qbackingstore.cpp
++++ b/src/gui/painting/qbackingstore.cpp
+@@ -122,7 +122,7 @@ void QBackingStore::beginPaint(const QRegion &region)
+         resize(size());
+ 
+     QPlatformBackingStore *platformBackingStore = handle();
+-    platformBackingStore->beginPaint(QHighDpi::scale(region, d_ptr->deviceIndependentToNativeFactor()));
++    platformBackingStore->beginPaint(region, d_ptr->deviceIndependentToNativeFactor());
+ 
+     // When QtGui is applying a high-dpi scale factor the backing store
+     // creates a "large" backing store image. This image needs to be
+diff --git a/src/gui/painting/qplatformbackingstore.cpp b/src/gui/painting/qplatformbackingstore.cpp
+index f7c4df40c8..7de846e69f 100644
+--- a/src/gui/painting/qplatformbackingstore.cpp
++++ b/src/gui/painting/qplatformbackingstore.cpp
+@@ -6,6 +6,7 @@
+ #include <qpixmap.h>
+ #include <private/qbackingstorerhisupport_p.h>
+ #include <private/qbackingstoredefaultcompositor_p.h>
++#include <private/qhighdpiscaling_p.h>
+ #include <private/qwindow_p.h>
+ 
+ #include <QtCore/private/qobject_p.h>
+@@ -323,6 +324,11 @@ void QPlatformBackingStore::beginPaint(const QRegion &)
+ {
+ }
+ 
++void QPlatformBackingStore::beginPaint(const QRegion &region, qreal factor)
++{
++    beginPaint(QHighDpi::scale(region, factor));
++}
++
+ /*!
+     This function is called after painting onto the surface has ended.
+ 
+diff --git a/src/gui/painting/qplatformbackingstore.h b/src/gui/painting/qplatformbackingstore.h
+index 1d55e9ab6a..1d28e5af7d 100644
+--- a/src/gui/painting/qplatformbackingstore.h
++++ b/src/gui/painting/qplatformbackingstore.h
+@@ -169,6 +169,7 @@ public:
+     virtual bool scroll(const QRegion &area, int dx, int dy);
+ 
+     virtual void beginPaint(const QRegion &);
++    virtual void beginPaint(const QRegion &region, qreal factor);
+     virtual void endPaint();
+ 
+     void setRhiConfig(const QPlatformBackingStoreRhiConfig &config);
+diff --git a/src/gui/painting/qrasterbackingstore.cpp b/src/gui/painting/qrasterbackingstore.cpp
+index 3b3ef2fd2e..bcdb66190f 100644
+--- a/src/gui/painting/qrasterbackingstore.cpp
++++ b/src/gui/painting/qrasterbackingstore.cpp
+@@ -60,7 +60,7 @@ bool QRasterBackingStore::scroll(const QRegion &region, int dx, int dy)
+     return true;
+ }
+ 
+-void QRasterBackingStore::beginPaint(const QRegion &region)
++void QRasterBackingStore::beginPaint(const QRegion &region, qreal factor)
+ {
+     qreal nativeWindowDevicePixelRatio = window()->handle()->devicePixelRatio();
+     QSize effectiveBufferSize = m_requestedSize * nativeWindowDevicePixelRatio;
+@@ -76,6 +76,7 @@ void QRasterBackingStore::beginPaint(const QRegion &region)
+ 
+     QPainter painter(&m_image);
+     painter.setCompositionMode(QPainter::CompositionMode_Source);
++    painter.scale(factor, factor);
+     for (const QRect &rect : region)
+         painter.fillRect(rect, Qt::transparent);
+ }
+diff --git a/src/gui/painting/qrasterbackingstore_p.h b/src/gui/painting/qrasterbackingstore_p.h
+index be8d122655..30f5ef00ed 100644
+--- a/src/gui/painting/qrasterbackingstore_p.h
++++ b/src/gui/painting/qrasterbackingstore_p.h
+@@ -29,7 +29,7 @@ public:
+ 
+     void resize(const QSize &size, const QRegion &staticContents) override;
+     bool scroll(const QRegion &area, int dx, int dy) override;
+-    void beginPaint(const QRegion &region) override;
++    void beginPaint(const QRegion &region, qreal factor) override;
+ 
+     QPaintDevice *paintDevice() override;
+     QImage toImage() const override;
