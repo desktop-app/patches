@@ -17,10 +17,18 @@ Change-Id: Ibd81bbfe20d0750ddb751f41722a316387225ba6
  2 files changed, 49 insertions(+), 3 deletions(-)
 
 diff --git a/src/client/qwaylandshmbackingstore.cpp b/src/client/qwaylandshmbackingstore.cpp
-index aadebac0..66625a89 100644
+index 67b8edd6..23835e4d 100644
 --- a/src/client/qwaylandshmbackingstore.cpp
 +++ b/src/client/qwaylandshmbackingstore.cpp
-@@ -48,6 +48,7 @@ namespace QtWaylandClient {
+@@ -14,6 +14,7 @@
+ #include <QtGui/QTransform>
+ #include <QMutexLocker>
+ 
++#include <QtGui/private/qhighdpiscaling_p.h>
+ #include <QtWaylandClient/private/wayland-wayland-client-protocol.h>
+ 
+ #include <fcntl.h>
+@@ -47,6 +48,7 @@ namespace QtWaylandClient {
  
  QWaylandShmBuffer::QWaylandShmBuffer(QWaylandDisplay *display,
                       const QSize &size, QImage::Format format, qreal scale)
@@ -28,7 +36,7 @@ index aadebac0..66625a89 100644
  {
      int stride = size.width() * 4;
      int alloc = stride * size.height();
-@@ -167,11 +168,24 @@ QPaintDevice *QWaylandShmBackingStore::paintDevice()
+@@ -166,11 +168,24 @@ QPaintDevice *QWaylandShmBackingStore::paintDevice()
      return contentSurface();
  }
  
@@ -42,18 +50,18 @@ index aadebac0..66625a89 100644
 +    }
 +}
 +
- void QWaylandShmBackingStore::beginPaint(const QRegion &region)
+ void QWaylandShmBackingStore::beginPaint(const QRegion &region, qreal factor)
  {
      mPainting = true;
      ensureSize();
  
 +    const QMargins margins = windowDecorationMargins();
-+    updateDirtyStates(region.translated(margins.left(), margins.top()));
++    updateDirtyStates(QHighDpi::scale(region, factor).translated(margins.left(), margins.top()));
 +
-     if (backingStore()->paintDevice() == paintDevice() && mBackBuffer->image()->hasAlphaChannel()) {
+     if (mBackBuffer->image()->hasAlphaChannel()) {
          QPainter p(paintDevice());
          p.setCompositionMode(QPainter::CompositionMode_Source);
-@@ -264,7 +278,7 @@ void QWaylandShmBackingStore::resize(const QSize &size)
+@@ -263,7 +278,7 @@ void QWaylandShmBackingStore::resize(const QSize &size)
      QSize sizeWithMargins = (size + QSize(margins.left()+margins.right(),margins.top()+margins.bottom())) * scale;
  
      // We look for a free buffer to draw into. If the buffer is not the last buffer we used,
@@ -62,7 +70,7 @@ index aadebac0..66625a89 100644
      // buffer so that QPainter is happy to find the stuff it had drawn before. If the new
      // buffer has a different size it needs to be redrawn completely anyway, and if the buffer
      // is the same the stuff is there already.
-@@ -283,8 +297,27 @@ void QWaylandShmBackingStore::resize(const QSize &size)
+@@ -282,8 +297,27 @@ void QWaylandShmBackingStore::resize(const QSize &size)
      qsizetype newSizeInBytes = buffer->image()->sizeInBytes();
  
      // mBackBuffer may have been deleted here but if so it means its size was different so we wouldn't copy it anyway
@@ -92,7 +100,7 @@ index aadebac0..66625a89 100644
  
      mBackBuffer = buffer;
  
-@@ -297,6 +330,8 @@ void QWaylandShmBackingStore::resize(const QSize &size)
+@@ -296,6 +330,8 @@ void QWaylandShmBackingStore::resize(const QSize &size)
  
      if (windowDecoration() && window()->isVisible() && oldSizeInBytes != newSizeInBytes)
          windowDecoration()->update();
@@ -101,7 +109,7 @@ index aadebac0..66625a89 100644
  }
  
  QImage *QWaylandShmBackingStore::entireSurface() const
-@@ -321,6 +356,7 @@ void QWaylandShmBackingStore::updateDecorations()
+@@ -320,6 +356,7 @@ void QWaylandShmBackingStore::updateDecorations()
      QTransform sourceMatrix;
      sourceMatrix.scale(dp, dp);
      QRect target; // needs to be in device independent pixels
@@ -109,7 +117,7 @@ index aadebac0..66625a89 100644
  
      //Top
      target.setX(0);
-@@ -328,16 +364,19 @@ void QWaylandShmBackingStore::updateDecorations()
+@@ -327,16 +364,19 @@ void QWaylandShmBackingStore::updateDecorations()
      target.setWidth(dpWidth);
      target.setHeight(windowDecorationMargins().top());
      decorationPainter.drawImage(target, sourceImage, sourceMatrix.mapRect(target));
@@ -129,7 +137,7 @@ index aadebac0..66625a89 100644
  
      //Bottom
      target.setX(0);
-@@ -345,6 +384,9 @@ void QWaylandShmBackingStore::updateDecorations()
+@@ -344,6 +384,9 @@ void QWaylandShmBackingStore::updateDecorations()
      target.setWidth(dpWidth);
      target.setHeight(windowDecorationMargins().bottom());
      decorationPainter.drawImage(target, sourceImage, sourceMatrix.mapRect(target));
@@ -140,7 +148,7 @@ index aadebac0..66625a89 100644
  
  QWaylandAbstractDecoration *QWaylandShmBackingStore::windowDecoration() const
 diff --git a/src/client/qwaylandshmbackingstore_p.h b/src/client/qwaylandshmbackingstore_p.h
-index 8a63b3c1..8c7b83db 100644
+index 09a7bad1..59c5e2cf 100644
 --- a/src/client/qwaylandshmbackingstore_p.h
 +++ b/src/client/qwaylandshmbackingstore_p.h
 @@ -42,11 +42,14 @@ public:
