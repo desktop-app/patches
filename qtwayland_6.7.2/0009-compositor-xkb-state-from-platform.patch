@@ -1,0 +1,88 @@
+diff --git a/src/client/qwaylandinputdevice_p.h b/src/client/qwaylandinputdevice_p.h
+index becd5f9b..697971ff 100644
+--- a/src/client/qwaylandinputdevice_p.h
++++ b/src/client/qwaylandinputdevice_p.h
+@@ -251,6 +251,7 @@ public:
+     struct ::wl_keyboard *wl_keyboard() { return QtWayland::wl_keyboard::object(); }
+ 
+ #if QT_CONFIG(xkbcommon)
++    xkb_state *xkbState() const { return mXkbState.get(); }
+     virtual int keysymToQtKey(xkb_keysym_t keysym, Qt::KeyboardModifiers modifiers, xkb_state *state, xkb_keycode_t code) {
+         return QXkbCommon::keysymToQtKey(keysym, modifiers, state, code);
+     }
+diff --git a/src/compositor/CMakeLists.txt b/src/compositor/CMakeLists.txt
+index 52564438..c8f6c1c7 100644
+--- a/src/compositor/CMakeLists.txt
++++ b/src/compositor/CMakeLists.txt
+@@ -67,6 +67,7 @@ qt_internal_add_module(WaylandCompositor
+         Qt::CorePrivate
+         Qt::GuiPrivate
+         Qt::WaylandGlobalPrivate
++        Qt::WaylandClientPrivate
+     PUBLIC_LIBRARIES
+         Qt::Core
+         Qt::Gui
+@@ -75,6 +76,7 @@ qt_internal_add_module(WaylandCompositor
+         Qt::CorePrivate
+         Qt::GuiPrivate
+         Qt::WaylandGlobalPrivate
++        Qt::WaylandClientPrivate
+     PRIVATE_HEADER_FILTERS
+         "^qwayland-.*\.h|^wayland-.*-protocol\.h"
+ )
+diff --git a/src/compositor/compositor_api/qwaylandkeyboard.cpp b/src/compositor/compositor_api/qwaylandkeyboard.cpp
+index 8af7fbd8..fd511ed9 100644
+--- a/src/compositor/compositor_api/qwaylandkeyboard.cpp
++++ b/src/compositor/compositor_api/qwaylandkeyboard.cpp
+@@ -10,9 +10,14 @@
+ #include <QtWaylandCompositor/QWaylandSeat>
+ #include <QtWaylandCompositor/QWaylandClient>
+ 
++#include <QtWaylandClient/private/qwaylandintegration_p.h>
++#include <QtWaylandClient/private/qwaylandinputdevice_p.h>
++
+ #include <QtCore/QFile>
+ #include <QtCore/QStandardPaths>
+ 
++#include <QtGui/private/qguiapplication_p.h>
++
+ #include <QKeyEvent>
+ #include <fcntl.h>
+ #include <unistd.h>
+@@ -147,6 +152,23 @@ void QWaylandKeyboardPrivate::sendKeyEvent(uint code, uint32_t state)
+ }
+ 
+ #if QT_CONFIG(xkbcommon)
++struct xkb_state *QWaylandKeyboardPrivate::xkbState() const
++{
++    using namespace QtWaylandClient;
++    if (const auto integration = dynamic_cast<QWaylandIntegration*>(QGuiApplicationPrivate::platformIntegration()))
++        if (const auto device = integration->display()->lastInputDevice())
++            if (const auto keyboard = device->keyboard())
++                if (const auto state = keyboard->xkbState())
++                    return state;
++
++    using namespace QNativeInterface;
++    if (const auto native = qApp->nativeInterface<QX11Application>())
++        if (const auto state = native->xkbState())
++            return state;
++
++    return mXkbState.get();
++}
++
+ void QWaylandKeyboardPrivate::maybeUpdateXkbScanCodeTable()
+ {
+     if (!scanCodesByQtKey.isEmpty() || !xkbState())
+diff --git a/src/compositor/compositor_api/qwaylandkeyboard_p.h b/src/compositor/compositor_api/qwaylandkeyboard_p.h
+index a91c60e4..5d975faa 100644
+--- a/src/compositor/compositor_api/qwaylandkeyboard_p.h
++++ b/src/compositor/compositor_api/qwaylandkeyboard_p.h
+@@ -51,7 +51,7 @@ public:
+     void focused(QWaylandSurface* surface);
+ 
+ #if QT_CONFIG(xkbcommon)
+-    struct xkb_state *xkbState() const { return mXkbState.get(); }
++    struct xkb_state *xkbState() const;
+     struct xkb_context *xkbContext() const {
+         return QWaylandCompositorPrivate::get(seat->compositor())->xkbContext();
+     }
