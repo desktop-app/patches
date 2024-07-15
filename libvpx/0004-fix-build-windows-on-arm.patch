@@ -1,0 +1,22 @@
+diff --git a/vpx_dsp/arm/vpx_convolve8_neon.h b/vpx_dsp/arm/vpx_convolve8_neon.h
+index 025e943cc..ade260e52 100644
+--- a/vpx_dsp/arm/vpx_convolve8_neon.h
++++ b/vpx_dsp/arm/vpx_convolve8_neon.h
+@@ -17,7 +17,7 @@
+ #include "./vpx_dsp_rtcd.h"
+ #include "vpx_dsp/vpx_filter.h"
+ 
+-#if VPX_ARCH_AARCH64 && defined(__ARM_FEATURE_DOTPROD)
++#if VPX_ARCH_AARCH64 && HAVE_NEON_DOTPROD
+ 
+ void vpx_convolve8_2d_horiz_neon_dotprod(const uint8_t *src,
+                                          ptrdiff_t src_stride, uint8_t *dst,
+@@ -124,7 +124,7 @@ static INLINE uint8x8_t convolve8_8_sdot(uint8x16_t samples,
+ 
+ #endif  // VPX_ARCH_AARCH64 && defined(__ARM_FEATURE_DOTPROD)
+ 
+-#if VPX_ARCH_AARCH64 && defined(__ARM_FEATURE_MATMUL_INT8)
++#if VPX_ARCH_AARCH64 && HAVE_NEON_I8MM
+ 
+ void vpx_convolve8_2d_horiz_neon_i8mm(const uint8_t *src, ptrdiff_t src_stride,
+                                       uint8_t *dst, ptrdiff_t dst_stride,
