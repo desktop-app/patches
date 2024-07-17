@@ -1,5 +1,5 @@
 diff --git a/src/build/common.gypi b/src/build/common.gypi
-index 29990c65..09e8596a 100644
+index 29990c65..60b1a015 100644
 --- a/src/build/common.gypi
 +++ b/src/build/common.gypi
 @@ -123,8 +123,8 @@
@@ -13,7 +13,53 @@ index 29990c65..09e8596a 100644
  
      # Set to 1 to enable code coverage.  In addition to build changes
      # (e.g. extra CFLAGS), also creates a new target in the src/chrome
-@@ -850,8 +850,9 @@
+@@ -392,6 +392,29 @@
+           'NO_TCMALLOC',
+         ],
+       },
++      'ARM64_Base': {
++        'abstract': 1,
++        'msvs_configuration_platform': 'ARM64',
++        'msvs_settings': {
++          'VCLinkerTool': {
++            'TargetMachine': '4', # ARM64
++            'AdditionalLibraryDirectories!':
++              ['<(DEPTH)/third_party/platformsdk_win7/files/Lib'],
++            'AdditionalLibraryDirectories':
++              ['<(DEPTH)/third_party/platformsdk_win7/files/Lib/ARM64'],
++          },
++          'VCLibrarianTool': {
++            'AdditionalLibraryDirectories!':
++              ['<(DEPTH)/third_party/platformsdk_win7/files/Lib'],
++            'AdditionalLibraryDirectories':
++              ['<(DEPTH)/third_party/platformsdk_win7/files/Lib/ARM64'],
++          },
++        },
++        'defines': [
++          # Not sure if tcmalloc works on Windows on ARM.
++          'NO_TCMALLOC',
++        ],
++      },
+       'Debug_Base': {
+         'abstract': 1,
+         'xcode_settings': {
+@@ -531,6 +554,15 @@
+           'Purify_x64': {
+             'inherit_from': ['Common_Base', 'x64_Base', 'Release_Base', 'Purify_Base'],
+           },
++          'Debug_ARM64': {
++            'inherit_from': ['Common_Base', 'ARM64_Base', 'Debug_Base'],
++          },
++          'Release_ARM64': {
++            'inherit_from': ['Common_Base', 'ARM64_Base', 'Release_Base'],
++          },
++          'Purify_ARM64': {
++            'inherit_from': ['Common_Base', 'ARM64_Base', 'Release_Base', 'Purify_Base'],
++          },
+         }],
+       ],
+     },
+@@ -850,8 +882,9 @@
            'GCC_SYMBOLS_PRIVATE_EXTERN': 'YES',      # -fvisibility=hidden
            'GCC_THREADSAFE_STATICS': 'NO',           # -fno-threadsafe-statics
            'GCC_TREAT_WARNINGS_AS_ERRORS': 'YES',    # -Werror
@@ -24,7 +70,7 @@ index 29990c65..09e8596a 100644
            # MACOSX_DEPLOYMENT_TARGET maps to -mmacosx-version-min
            'MACOSX_DEPLOYMENT_TARGET': '<(mac_deployment_target)',
            'PREBINDING': 'NO',                       # No -Wl,-prebind
-@@ -973,6 +974,9 @@
+@@ -973,6 +1006,9 @@
                'dwmapi.dll',
                'uxtheme.dll',
              ],
@@ -34,7 +80,27 @@ index 29990c65..09e8596a 100644
            },
          },
          'configurations': {
-@@ -1027,7 +1031,7 @@
+@@ -1002,6 +1038,19 @@
+               },
+             },
+           },
++          'ARM64_Base': {
++            'msvs_settings': {
++              'VCLinkerTool': {
++                'AdditionalOptions': [
++                  # safeseh is not compatible with ARM64
++                  '/dynamicbase',
++                  '/ignore:4199',
++                  '/ignore:4221',
++                  '/nxcompat',
++                ],
++              },
++            },
++          },
+         },
+       },
+     }],
+@@ -1027,7 +1076,7 @@
      # setting sets the SDK on a project-wide basis.  In order to get the
      # configured SDK to show properly in the Xcode UI, SDKROOT must be set
      # here at the project level.
