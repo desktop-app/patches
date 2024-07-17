@@ -4,10 +4,6 @@ pushd `dirname $0` > /dev/null
 FullScriptPath=`pwd`
 popd > /dev/null
 
-pacman --noconfirm -Sy
-pacman --noconfirm -S msys/make
-pacman --noconfirm -S diffutils
-
 ./configure --prefix=$FullScriptPath/../local \
 --target=$TOOLCHAIN \
 --disable-examples \

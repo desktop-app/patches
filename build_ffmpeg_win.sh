@@ -4,11 +4,6 @@ pushd `dirname $0` > /dev/null
 FullScriptPath=`pwd`
 popd > /dev/null
 
-pacman --noconfirm -Sy
-pacman --noconfirm -S msys/make
-pacman --noconfirm -S diffutils
-pacman --noconfirm -S pkg-config
-
 cd $FullScriptPath/../nv-codec-headers
 make PREFIX="$FullScriptPath/../local" install
 cd $FullScriptPath/../ffmpeg
