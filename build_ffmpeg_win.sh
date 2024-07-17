@@ -141,4 +141,8 @@ chmod a+x $FullExecPath/../gas-preprocessor/cpp
 --enable-muxer=opus
 
 make -j$NUMBER_OF_PROCESSORS
+rm -f libavcodec/aarch64/*.d
+rm -f libswresample/aarch64/*.d
+rm -f libswscale/aarch64/*.d
+rm -f libavutil/aarch64/*.d
 make -j$NUMBER_OF_PROCESSORS install
