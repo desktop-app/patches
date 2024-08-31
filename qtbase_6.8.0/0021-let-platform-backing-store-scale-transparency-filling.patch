@@ -1,18 +1,18 @@
 diff --git a/src/gui/painting/qbackingstore.cpp b/src/gui/painting/qbackingstore.cpp
-index 2304ee2256..81d1e7f61f 100644
+index 3b709ec77b..927745c6fa 100644
 --- a/src/gui/painting/qbackingstore.cpp
 +++ b/src/gui/painting/qbackingstore.cpp
 @@ -122,7 +122,7 @@ void QBackingStore::beginPaint(const QRegion &region)
          resize(size());
  
      QPlatformBackingStore *platformBackingStore = handle();
--    platformBackingStore->beginPaint(QHighDpi::scale(region, d_ptr->deviceIndependentToNativeFactor()));
-+    platformBackingStore->beginPaint(region, d_ptr->deviceIndependentToNativeFactor());
+-    platformBackingStore->beginPaint(QHighDpi::scale(region, toNativeFactor));
++    platformBackingStore->beginPaint(region, toNativeFactor);
  
      // When QtGui is applying a high-dpi scale factor the backing store
      // creates a "large" backing store image. This image needs to be
 diff --git a/src/gui/painting/qplatformbackingstore.cpp b/src/gui/painting/qplatformbackingstore.cpp
-index f7c4df40c8..7de846e69f 100644
+index 21e89d67fd..356430c54d 100644
 --- a/src/gui/painting/qplatformbackingstore.cpp
 +++ b/src/gui/painting/qplatformbackingstore.cpp
 @@ -6,6 +6,7 @@
@@ -23,7 +23,7 @@ index f7c4df40c8..7de846e69f 100644
  #include <private/qwindow_p.h>
  
  #include <QtCore/private/qobject_p.h>
-@@ -323,6 +324,11 @@ void QPlatformBackingStore::beginPaint(const QRegion &)
+@@ -335,6 +336,11 @@ void QPlatformBackingStore::beginPaint(const QRegion &)
  {
  }
  
@@ -36,17 +36,17 @@ index f7c4df40c8..7de846e69f 100644
      This function is called after painting onto the surface has ended.
  
 diff --git a/src/gui/painting/qplatformbackingstore.h b/src/gui/painting/qplatformbackingstore.h
-index 1d55e9ab6a..1d28e5af7d 100644
+index 2f27a2aa2c..38d5e78d05 100644
 --- a/src/gui/painting/qplatformbackingstore.h
 +++ b/src/gui/painting/qplatformbackingstore.h
-@@ -169,6 +169,7 @@ public:
+@@ -172,6 +172,7 @@ public:
      virtual bool scroll(const QRegion &area, int dx, int dy);
  
      virtual void beginPaint(const QRegion &);
 +    virtual void beginPaint(const QRegion &region, qreal factor);
      virtual void endPaint();
  
-     void setRhiConfig(const QPlatformBackingStoreRhiConfig &config);
+     void createRhi(QWindow *window, QPlatformBackingStoreRhiConfig config);
 diff --git a/src/gui/painting/qrasterbackingstore.cpp b/src/gui/painting/qrasterbackingstore.cpp
 index 3b3ef2fd2e..bcdb66190f 100644
 --- a/src/gui/painting/qrasterbackingstore.cpp

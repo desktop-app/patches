@@ -1,18 +1,34 @@
 diff --git a/src/client/qwaylandshmbackingstore.cpp b/src/client/qwaylandshmbackingstore.cpp
-index a58ab516..67b8edd6 100644
+index d77c548a..05b799df 100644
 --- a/src/client/qwaylandshmbackingstore.cpp
 +++ b/src/client/qwaylandshmbackingstore.cpp
-@@ -166,7 +166,7 @@ QPaintDevice *QWaylandShmBackingStore::paintDevice()
-     return contentSurface();
+@@ -14,6 +14,7 @@
+ #include <QtGui/QTransform>
+ #include <QMutexLocker>
+ 
++#include <QtGui/private/qhighdpiscaling_p.h>
+ #include <QtWaylandClient/private/wayland-wayland-client-protocol.h>
+ 
+ #include <fcntl.h>
+@@ -178,14 +179,14 @@ void QWaylandShmBackingStore::updateDirtyStates(const QRegion &region)
+     }
  }
  
 -void QWaylandShmBackingStore::beginPaint(const QRegion &region)
 +void QWaylandShmBackingStore::beginPaint(const QRegion &region, qreal factor)
  {
      mPainting = true;
-     ensureSize();
-@@ -174,6 +174,7 @@ void QWaylandShmBackingStore::beginPaint(const QRegion &region)
-     if (mBackBuffer->image()->hasAlphaChannel()) {
+     waylandWindow()->setBackingStore(this);
+     const bool bufferWasRecreated = recreateBackBufferIfNeeded();
+ 
+     const QMargins margins = windowDecorationMargins();
+-    updateDirtyStates(region.translated(margins.left(), margins.top()));
++    updateDirtyStates(QHighDpi::scale(region, factor).translated(margins.left(), margins.top()));
+ 
+     // Although undocumented, QBackingStore::beginPaint expects the painted region
+     // to be cleared before use if the window has a surface format with an alpha.
+@@ -193,6 +194,7 @@ void QWaylandShmBackingStore::beginPaint(const QRegion &region)
+     if (!bufferWasRecreated && mBackBuffer->image()->hasAlphaChannel()) {
          QPainter p(paintDevice());
          p.setCompositionMode(QPainter::CompositionMode_Source);
 +        p.scale(factor, factor);
@@ -20,13 +36,13 @@ index a58ab516..67b8edd6 100644
          for (const QRect &rect : region)
              p.fillRect(rect, blank);
 diff --git a/src/client/qwaylandshmbackingstore_p.h b/src/client/qwaylandshmbackingstore_p.h
-index 8a63b3c1..09a7bad1 100644
+index 6d276bf7..4676004e 100644
 --- a/src/client/qwaylandshmbackingstore_p.h
 +++ b/src/client/qwaylandshmbackingstore_p.h
-@@ -59,7 +59,7 @@ public:
+@@ -61,7 +61,7 @@ public:
+     QPaintDevice *paintDevice() override;
      void flush(QWindow *window, const QRegion &region, const QPoint &offset) override;
      void resize(const QSize &size, const QRegion &staticContents) override;
-     void resize(const QSize &size);
 -    void beginPaint(const QRegion &region) override;
 +    void beginPaint(const QRegion &region, qreal factor) override;
      void endPaint() override;
