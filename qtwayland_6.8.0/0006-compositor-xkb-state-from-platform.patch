@@ -1,8 +1,8 @@
 diff --git a/src/client/qwaylandinputdevice_p.h b/src/client/qwaylandinputdevice_p.h
-index becd5f9b..697971ff 100644
+index 06a9f55d..054bd162 100644
 --- a/src/client/qwaylandinputdevice_p.h
 +++ b/src/client/qwaylandinputdevice_p.h
-@@ -251,6 +251,7 @@ public:
+@@ -253,6 +253,7 @@ public:
      struct ::wl_keyboard *wl_keyboard() { return QtWayland::wl_keyboard::object(); }
  
  #if QT_CONFIG(xkbcommon)
@@ -11,7 +11,7 @@ index becd5f9b..697971ff 100644
          return QXkbCommon::keysymToQtKey(keysym, modifiers, state, code);
      }
 diff --git a/src/compositor/CMakeLists.txt b/src/compositor/CMakeLists.txt
-index 52564438..c8f6c1c7 100644
+index f9d2bcf2..8a77fd46 100644
 --- a/src/compositor/CMakeLists.txt
 +++ b/src/compositor/CMakeLists.txt
 @@ -67,6 +67,7 @@ qt_internal_add_module(WaylandCompositor
@@ -29,7 +29,7 @@ index 52564438..c8f6c1c7 100644
 +        Qt::WaylandClientPrivate
      PRIVATE_HEADER_FILTERS
          "^qwayland-.*\.h|^wayland-.*-protocol\.h"
- )
+     ATTRIBUTION_FILE_DIR_PATHS
 diff --git a/src/compositor/compositor_api/qwaylandkeyboard.cpp b/src/compositor/compositor_api/qwaylandkeyboard.cpp
 index 8af7fbd8..fd511ed9 100644
 --- a/src/compositor/compositor_api/qwaylandkeyboard.cpp
