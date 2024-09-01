@@ -31,7 +31,7 @@ index fa757b0edc..4f0a922b21 100644
          QWindowsWindow::settingsChanged();
          const bool darkMode = QWindowsTheme::queryDarkMode();
 diff --git a/src/plugins/platforms/windows/qwindowsscreen.cpp b/src/plugins/platforms/windows/qwindowsscreen.cpp
-index 4697d1f249..0602cb3489 100644
+index 6aeecdb7fa..0602cb3489 100644
 --- a/src/plugins/platforms/windows/qwindowsscreen.cpp
 +++ b/src/plugins/platforms/windows/qwindowsscreen.cpp
 @@ -445,30 +445,6 @@ bool QWindowsScreenManager::isSingleScreen()
@@ -57,8 +57,8 @@ index 4697d1f249..0602cb3489 100644
 -        m_lastVerticalResolution = newVerticalResolution;
 -        qCDebug(lcQpaWindows) << __FUNCTION__ << "Depth=" << newDepth
 -            << ", resolution " << newHorizontalResolution << 'x' << newVerticalResolution;
--        handleScreenChanges();
 -    }
+-    handleScreenChanges();
 -    return false;
 -}
 -
