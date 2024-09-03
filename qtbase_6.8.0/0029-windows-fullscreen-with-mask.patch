@@ -1,0 +1,144 @@
+diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
+index eb8cf6e913..c81f579de0 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.cpp
++++ b/src/plugins/platforms/windows/qwindowswindow.cpp
+@@ -1240,6 +1240,24 @@ HWND QWindowsBaseWindow::handleOf(const QWindow *w)
+     return bw ? bw->handle() : HWND(nullptr);
+ }
+ 
++bool QWindowsBaseWindow::isFullScreenGeometry(const QRect &geometry) const
++{
++    const QWindow *w = window();
++    if (!w->isTopLevel())
++        return false;
++    QPlatformScreen *screen = screenForGeometry(geometry);
++    return screen && geometry == screen->geometry();
++}
++
++QRect QWindowsBaseWindow::toFullScreenGeometry(const QRect &geometry, bool remove) const
++{
++    if (!hasBorderInFullScreen())
++        return geometry;
++    if (!isFullScreenGeometry(geometry - QMargins(0, 0, remove ? 1 : 0, 0)))
++        return geometry;
++    return geometry + QMargins(0, 0, remove ? -1 : 1, 0);
++}
++
+ bool QWindowsBaseWindow::isTopLevel_sys() const
+ {
+     const HWND parent = parentHwnd();
+@@ -1253,7 +1271,7 @@ QRect QWindowsBaseWindow::frameGeometry_sys() const
+ 
+ QRect QWindowsBaseWindow::geometry_sys() const
+ {
+-    return frameGeometry_sys().marginsRemoved(fullFrameMargins());
++    return toFullScreenGeometry(frameGeometry_sys().marginsRemoved(fullFrameMargins()), true);
+ }
+ 
+ QMargins QWindowsBaseWindow::frameMargins_sys() const
+@@ -2160,7 +2178,7 @@ void QWindowsWindow::setGeometry(const QRect &rectIn)
+         // achieve that size (for example, window title minimal constraint),
+         // notify and warn.
+         setFlag(WithinSetGeometry);
+-        setGeometry_sys(rect);
++        setGeometry_sys(toFullScreenGeometry(rect));
+         clearFlag(WithinSetGeometry);
+         if (m_data.geometry != rect && (isVisible() || QLibraryInfo::isDebugBuild())) {
+             const auto warning =
+@@ -2276,8 +2294,9 @@ void QWindowsWindow::checkForScreenChanged(ScreenChangeMode mode)
+ void QWindowsWindow::handleGeometryChange()
+ {
+     const QRect previousGeometry = m_data.geometry;
+-    m_data.geometry = geometry_sys();
+     updateFullFrameMargins();
++    m_data.geometry = geometry_sys();
++    setMask(QHighDpi::toNativeLocalRegion(window()->mask(), window()));
+     QWindowSystemInterface::handleGeometryChange(window(), m_data.geometry);
+     // QTBUG-32121: OpenGL/normal windows (with exception of ANGLE
+     // which we no longer support in Qt 6) do not receive expose
+@@ -2545,14 +2564,7 @@ void QWindowsWindow::setWindowState(Qt::WindowStates state)
+ 
+ bool QWindowsWindow::isFullScreen_sys() const
+ {
+-    const QWindow *w = window();
+-    if (!w->isTopLevel())
+-        return false;
+-    QRect geometry = geometry_sys();
+-    if (testFlag(HasBorderInFullScreen))
+-        geometry += QMargins(1, 1, 1, 1);
+-    QPlatformScreen *screen = screenForGeometry(geometry);
+-    return screen && geometry == screen->geometry();
++    return isFullScreenGeometry(geometry_sys());
+ }
+ 
+ /*!
+@@ -2599,15 +2611,14 @@ void QWindowsWindow::setWindowState_sys(Qt::WindowStates newState)
+                 newStyle |= WS_SYSMENU;
+             if (visible)
+                 newStyle |= WS_VISIBLE;
+-            if (testFlag(HasBorderInFullScreen))
+-                newStyle |= WS_BORDER;
+             setStyle(newStyle);
+             const HMONITOR monitor = MonitorFromWindow(m_data.hwnd, MONITOR_DEFAULTTONEAREST);
+             MONITORINFO monitorInfo = {};
+             monitorInfo.cbSize = sizeof(MONITORINFO);
+             GetMonitorInfoW(monitor, &monitorInfo);
+             const QRect screenGeometry(monitorInfo.rcMonitor.left, monitorInfo.rcMonitor.top,
+-                                       monitorInfo.rcMonitor.right - monitorInfo.rcMonitor.left,
++                                       monitorInfo.rcMonitor.right - monitorInfo.rcMonitor.left
++                                           + (hasBorderInFullScreen() ? 1 : 0),
+                                        monitorInfo.rcMonitor.bottom - monitorInfo.rcMonitor.top);
+             if (newState & Qt::WindowMinimized) {
+                 setMinimizedGeometry(m_data.hwnd, screenGeometry);
+@@ -2621,8 +2632,6 @@ void QWindowsWindow::setWindowState_sys(Qt::WindowStates newState)
+                 if (!wasSync)
+                     clearFlag(SynchronousGeometryChangeEvent);
+                 clearFlag(MaximizeToFullScreen);
+-                QWindowSystemInterface::handleGeometryChange(window(), screenGeometry);
+-                QWindowSystemInterface::flushWindowSystemEvents(QEventLoop::ExcludeUserInputEvents);
+             }
+         } else {
+             // Restore saved state.
+@@ -2907,11 +2916,13 @@ static HRGN qRegionToWinRegion(const QRegion &region)
+ 
+ void QWindowsWindow::setMask(const QRegion &region)
+ {
+-    if (region.isEmpty()) {
++    if (region.isEmpty() && (!hasBorderInFullScreen() || !isFullScreen_sys())) {
+          SetWindowRgn(m_data.hwnd, nullptr, true);
+          return;
+     }
+-    const HRGN winRegion = qRegionToWinRegion(region);
++    const HRGN winRegion = qRegionToWinRegion(region.isEmpty()
++        ? QRegion(QRect(QPoint(), geometry().size()))
++        : region);
+ 
+     // Mask is in client area coordinates, so offset it in case we have a frame
+     if (window()->isTopLevel()) {
+@@ -3481,12 +3492,7 @@ void QWindowsWindow::setHasBorderInFullScreen(bool border)
+         clearFlag(HasBorderInFullScreen);
+     // Directly apply the flag in case we are fullscreen.
+     if (m_windowState == Qt::WindowFullScreen) {
+-        LONG_PTR style = GetWindowLongPtr(handle(), GWL_STYLE);
+-        if (border)
+-            style |= WS_BORDER;
+-        else
+-            style &= ~WS_BORDER;
+-        SetWindowLongPtr(handle(), GWL_STYLE, style);
++        setGeometry(geometry() + QMargins(0, 0, border ? 0 : -1, 0));
+     }
+ }
+ 
+diff --git a/src/plugins/platforms/windows/qwindowswindow.h b/src/plugins/platforms/windows/qwindowswindow.h
+index f2e5c73592..a9c5482d3b 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.h
++++ b/src/plugins/platforms/windows/qwindowswindow.h
+@@ -127,6 +127,8 @@ public:
+ 
+ protected:
+     HWND parentHwnd() const { return GetAncestor(handle(), GA_PARENT); }
++    bool isFullScreenGeometry(const QRect &geometry) const;
++    QRect toFullScreenGeometry(const QRect &geometry, bool remove = false) const;
+     bool isTopLevel_sys() const;
+     inline bool hasMaximumSize() const;
+     QRect frameGeometry_sys() const;
