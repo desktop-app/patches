@@ -1,0 +1,23 @@
+diff --git a/src/plugins/platforms/windows/qwindowsmime.cpp b/src/plugins/platforms/windows/qwindowsmime.cpp
+index b670ca3c05..ba08a250c9 100644
+--- a/src/plugins/platforms/windows/qwindowsmime.cpp
++++ b/src/plugins/platforms/windows/qwindowsmime.cpp
+@@ -816,14 +816,16 @@ bool QWindowsMimeURI::convertFromMime(const FORMATETC &formatetc, const QMimeDat
+ 
+ bool QWindowsMimeURI::canConvertToMime(const QString &mimeType, IDataObject *pDataObj) const
+ {
++    // Patch: Accept only CF_HDROP as URIs, PyCharm copies file:// URIs as CF_INETURL.
+     return mimeType == u"text/uri-list"
+-           && (canGetData(CF_HDROP, pDataObj) || canGetData(CF_INETURL_W, pDataObj) || canGetData(CF_INETURL, pDataObj));
++           && (canGetData(CF_HDROP, pDataObj));
+ }
+ 
+ QString QWindowsMimeURI::mimeForFormat(const FORMATETC &formatetc) const
+ {
+     QString format;
+-    if (getCf(formatetc) == CF_HDROP || getCf(formatetc) == CF_INETURL_W || getCf(formatetc) == CF_INETURL)
++    // Patch: Accept only CF_HDROP as URIs, PyCharm copies file:// URIs as CF_INETURL.
++    if (getCf(formatetc) == CF_HDROP)
+         format = QStringLiteral("text/uri-list");
+     return format;
+ }
