@@ -1,30 +1,8 @@
-diff --git a/src/client/qwaylandinputdevice.cpp b/src/client/qwaylandinputdevice.cpp
-index c72c2a81..ab8fa3e5 100644
---- a/src/client/qwaylandinputdevice.cpp
-+++ b/src/client/qwaylandinputdevice.cpp
-@@ -215,7 +215,7 @@ public:
-     {
-         int scale = 0;
-         for (auto *screen : m_screens)
--            scale = qMax(scale, screen->scale());
-+            scale = qMax(scale, qCeil(screen->scale()));
-         return scale;
-     }
- 
 diff --git a/src/client/qwaylandscreen.cpp b/src/client/qwaylandscreen.cpp
-index ef548925..b8a6f583 100644
+index ef548925..a9d5c2f4 100644
 --- a/src/client/qwaylandscreen.cpp
 +++ b/src/client/qwaylandscreen.cpp
-@@ -182,14 +182,16 @@ Qt::ScreenOrientation QWaylandScreen::orientation() const
-     return m_orientation;
- }
- 
--int QWaylandScreen::scale() const
-+qreal QWaylandScreen::scale() const
- {
--    return mScale;
-+    return devicePixelRatio();
- }
+@@ -189,7 +189,9 @@ int QWaylandScreen::scale() const
  
  qreal QWaylandScreen::devicePixelRatio() const
  {
@@ -49,18 +27,9 @@ index ef548925..b8a6f583 100644
  
  } // namespace QtWaylandClient
 diff --git a/src/client/qwaylandscreen_p.h b/src/client/qwaylandscreen_p.h
-index ff3d2321..f735f5dc 100644
+index ff3d2321..15ee29cf 100644
 --- a/src/client/qwaylandscreen_p.h
 +++ b/src/client/qwaylandscreen_p.h
-@@ -64,7 +64,7 @@ public:
-     QList<QPlatformScreen *> virtualSiblings() const override;
- 
-     Qt::ScreenOrientation orientation() const override;
--    int scale() const;
-+    qreal scale() const;
-     qreal devicePixelRatio() const override;
-     qreal refreshRate() const override;
- 
 @@ -121,6 +121,7 @@ protected:
      QRect mGeometry;
      QRect mXdgGeometry;
@@ -70,7 +39,7 @@ index ff3d2321..f735f5dc 100644
      int mRefreshRate = 60000;
      int mSubpixel = -1;
 diff --git a/src/client/qwaylandwindow.cpp b/src/client/qwaylandwindow.cpp
-index 12838033..8688c80e 100644
+index 12838033..a951e0ff 100644
 --- a/src/client/qwaylandwindow.cpp
 +++ b/src/client/qwaylandwindow.cpp
 @@ -106,7 +106,7 @@ void QWaylandWindow::initWindow()
@@ -82,30 +51,3 @@ index 12838033..8688c80e 100644
          mFractionalScale.reset(new QWaylandFractionalScale(mDisplay->fractionalScaleManager()->get_fractional_scale(mSurface->object())));
  
          connect(mFractionalScale.data(), &QWaylandFractionalScale::preferredScaleChanged,
-@@ -1462,7 +1462,7 @@ void QWaylandWindow::updateScale()
-         return;
-     }
- 
--    int scale = screen()->isPlaceholder() ? 1 : static_cast<QWaylandScreen *>(screen())->scale();
-+    qreal scale = screen()->isPlaceholder() ? qreal(1) : static_cast<QWaylandScreen *>(screen())->scale();
-     setScale(scale);
- }
- 
-@@ -1491,7 +1491,7 @@ void QWaylandWindow::setScale(qreal newScale)
- #if QT_CONFIG(cursor)
- void QWaylandWindow::setMouseCursor(QWaylandInputDevice *device, const QCursor &cursor)
- {
--    int fallbackBufferScale = int(devicePixelRatio());
-+    int fallbackBufferScale = qCeil(devicePixelRatio());
-     device->setCursor(&cursor, {}, fallbackBufferScale);
- }
- 
-@@ -1539,7 +1539,7 @@ qreal QWaylandWindow::scale() const
- 
- qreal QWaylandWindow::devicePixelRatio() const
- {
--    return mScale.value_or(waylandScreen() ? waylandScreen()->scale() : 1);
-+    return mScale.value_or(waylandScreen() ? waylandScreen()->scale() : qreal(1));
- }
- 
- bool QWaylandWindow::setMouseGrabEnabled(bool grab)
