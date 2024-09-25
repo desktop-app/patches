@@ -127,7 +127,7 @@ index a0e1b48dcb..96d0bc404a 100644
  
  #ifndef QT_NO_DEBUG_STREAM
 diff --git a/src/gui/kernel/qhighdpiscaling_p.h b/src/gui/kernel/qhighdpiscaling_p.h
-index 189f31fd0a..0308bac606 100644
+index d6deb8a72a..e5043cace7 100644
 --- a/src/gui/kernel/qhighdpiscaling_p.h
 +++ b/src/gui/kernel/qhighdpiscaling_p.h
 @@ -32,6 +32,7 @@ Q_DECLARE_LOGGING_CATEGORY(lcHighDpi);
@@ -164,16 +164,16 @@ index 189f31fd0a..0308bac606 100644
      static bool m_screenFactorSet;
      static bool m_usePhysicalDpi;
 diff --git a/src/gui/kernel/qwindow.cpp b/src/gui/kernel/qwindow.cpp
-index 1bc35e9524..3e7cfa25bb 100644
+index f698113ed2..19e24f5e9a 100644
 --- a/src/gui/kernel/qwindow.cpp
 +++ b/src/gui/kernel/qwindow.cpp
-@@ -1372,6 +1372,9 @@ bool QWindowPrivate::updateDevicePixelRatio()
+@@ -1413,6 +1413,9 @@ bool QWindowPrivate::updateDevicePixelRatio()
  {
      Q_Q(QWindow);
  
 +    if (platformWindow)
 +        QHighDpiScaling::checkDevicePixelRatioRounding(platformWindow);
 +
-     // If there is no platform window use the associated screen's devicePixelRatio,
-     // which typically is the primary screen and will be correct for single-display
-     // systems (a very common case).
+     const qreal newDevicePixelRatio = [this, q]{
+         if (platformWindow)
+             return platformWindow->devicePixelRatio() * QHighDpiScaling::factor(q);
