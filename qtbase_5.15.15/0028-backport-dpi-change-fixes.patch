@@ -1,0 +1,20 @@
+diff --git a/src/gui/kernel/qwindowsysteminterface.cpp b/src/gui/kernel/qwindowsysteminterface.cpp
+index 600cd9a7a5..59a0270028 100644
+--- a/src/gui/kernel/qwindowsysteminterface.cpp
++++ b/src/gui/kernel/qwindowsysteminterface.cpp
+@@ -822,6 +822,7 @@ void QWindowSystemInterface::handleScreenAdded(QPlatformScreen *ps, bool isPrima
+         QGuiApplicationPrivate::screen_list.append(screen);
+ 
+     QGuiApplicationPrivate::resetCachedDevicePixelRatio();
++    QHighDpiScaling::updateHighDpiScaling();
+ 
+     emit qGuiApp->screenAdded(screen);
+ 
+@@ -879,6 +880,7 @@ void QWindowSystemInterface::handleScreenGeometryChange(QScreen *screen, const Q
+ 
+ void QWindowSystemInterface::handleScreenLogicalDotsPerInchChange(QScreen *screen, qreal dpiX, qreal dpiY)
+ {
++    QHighDpiScaling::updateHighDpiScaling();
+     const QDpi effectiveDpi = QPlatformScreen::overrideDpi(QDpi{dpiX, dpiY});
+     auto e = new QWindowSystemInterfacePrivate::ScreenLogicalDotsPerInchEvent(screen, effectiveDpi.first, effectiveDpi.second);
+     QWindowSystemInterfacePrivate::handleWindowSystemEvent(e);
