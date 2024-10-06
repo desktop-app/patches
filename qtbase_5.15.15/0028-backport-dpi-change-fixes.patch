@@ -1,3 +1,70 @@
+diff --git a/src/gui/kernel/qguiapplication.cpp b/src/gui/kernel/qguiapplication.cpp
+index c7ff2a6dac..c6ccadc490 100644
+--- a/src/gui/kernel/qguiapplication.cpp
++++ b/src/gui/kernel/qguiapplication.cpp
+@@ -2548,11 +2548,6 @@ void QGuiApplicationPrivate::processWindowScreenChangedEvent(QWindowSystemInterf
+             else // Fall back to default behavior, and try to find some appropriate screen
+                 topLevelWindow->setScreen(nullptr);
+         }
+-        // we may have changed scaling, so trigger resize event if needed
+-        if (window->handle()) {
+-            QWindowSystemInterfacePrivate::GeometryChangeEvent gce(window, QHighDpi::fromNativePixels(window->handle()->geometry(), window));
+-            processGeometryChangeEvent(&gce);
+-        }
+     }
+ }
+ 
+@@ -3209,6 +3204,10 @@ void QGuiApplicationPrivate::processScreenLogicalDotsPerInchChange(QWindowSystem
+     emit s->logicalDotsPerInchChanged(s->logicalDotsPerInch());
+     s->d_func()->updateGeometriesWithSignals();
+ 
++    for (QWindow *window : QGuiApplication::allWindows())
++        if (window->screen() == e->screen) 
++            window->screenChanged(e->screen);
++
+     resetCachedDevicePixelRatio();
+ }
+ 
+diff --git a/src/gui/kernel/qhighdpiscaling_p.h b/src/gui/kernel/qhighdpiscaling_p.h
+index 5b02c5d646..630ee0350d 100644
+--- a/src/gui/kernel/qhighdpiscaling_p.h
++++ b/src/gui/kernel/qhighdpiscaling_p.h
+@@ -187,7 +187,7 @@ inline QMargins scale(const QMargins &margins, qreal scaleFactor, QPoint origin
+ template <typename T>
+ QVector<T> scale(const QVector<T> &vector, qreal scaleFactor, QPoint origin = QPoint(0, 0))
+ {
+-    if (!QHighDpiScaling::isActive())
++    if (qFuzzyCompare(scaleFactor, qreal(1)))
+         return vector;
+ 
+     QVector<T> scaled;
+@@ -199,7 +199,7 @@ QVector<T> scale(const QVector<T> &vector, qreal scaleFactor, QPoint origin = QP
+ 
+ inline QRegion scale(const QRegion &region, qreal scaleFactor, QPoint origin = QPoint(0, 0))
+ {
+-    if (!QHighDpiScaling::isActive())
++    if (qFuzzyCompare(scaleFactor, qreal(1)))
+         return region;
+ 
+     QRegion scaled;
+diff --git a/src/gui/kernel/qwindow.cpp b/src/gui/kernel/qwindow.cpp
+index 639817257e..3f30f5b40e 100644
+--- a/src/gui/kernel/qwindow.cpp
++++ b/src/gui/kernel/qwindow.cpp
+@@ -244,6 +244,13 @@ void QWindowPrivate::init(QScreen *targetScreen)
+     QGuiApplicationPrivate::window_list.prepend(q);
+ 
+     requestedFormat = QSurfaceFormat::defaultFormat();
++
++    QObject::connect(q, &QWindow::screenChanged, q, [q, this](QScreen *){
++        if (q->handle()) {
++            QWindowSystemInterfacePrivate::GeometryChangeEvent gce(q, QHighDpi::fromNativePixels(q->handle()->geometry(), q));
++            QGuiApplicationPrivate::processGeometryChangeEvent(&gce);
++        }
++    });
+ }
+ 
+ /*!
 diff --git a/src/gui/kernel/qwindowsysteminterface.cpp b/src/gui/kernel/qwindowsysteminterface.cpp
 index 600cd9a7a5..59a0270028 100644
 --- a/src/gui/kernel/qwindowsysteminterface.cpp
@@ -18,3 +85,107 @@ index 600cd9a7a5..59a0270028 100644
      const QDpi effectiveDpi = QPlatformScreen::overrideDpi(QDpi{dpiX, dpiY});
      auto e = new QWindowSystemInterfacePrivate::ScreenLogicalDotsPerInchEvent(screen, effectiveDpi.first, effectiveDpi.second);
      QWindowSystemInterfacePrivate::handleWindowSystemEvent(e);
+diff --git a/src/gui/painting/qbackingstore.cpp b/src/gui/painting/qbackingstore.cpp
+index ebce163ed3..6143c5058d 100644
+--- a/src/gui/painting/qbackingstore.cpp
++++ b/src/gui/painting/qbackingstore.cpp
+@@ -66,6 +66,7 @@ public:
+     QScopedPointer<QImage> highDpiBackingstore;
+     QRegion staticContents;
+     QSize size;
++    QSize nativeSize;
+ };
+ 
+ /*!
+@@ -130,8 +131,7 @@ QWindow* QBackingStore::window() const
+ 
+ void QBackingStore::beginPaint(const QRegion &region)
+ {
+-    if (d_ptr->highDpiBackingstore &&
+-        d_ptr->highDpiBackingstore->devicePixelRatio() != d_ptr->window->devicePixelRatio())
++    if (d_ptr->nativeSize != QHighDpi::toNativePixels(size(), d_ptr->window))
+         resize(size());
+ 
+     QPlatformBackingStore *platformBackingStore = handle();
+@@ -147,20 +147,23 @@ void QBackingStore::beginPaint(const QRegion &region)
+     if (QHighDpiScaling::isActive() && device->devType() == QInternal::Image) {
+         QImage *source = static_cast<QImage *>(device);
+         const bool needsNewImage = d_ptr->highDpiBackingstore.isNull()
+-            || source->data_ptr() != d_ptr->highDpiBackingstore->data_ptr()
++            || source->constBits() != d_ptr->highDpiBackingstore->constBits()
+             || source->size() != d_ptr->highDpiBackingstore->size()
+-            || source->devicePixelRatio() != d_ptr->highDpiBackingstore->devicePixelRatio();
++            || source->bytesPerLine() != d_ptr->highDpiBackingstore->bytesPerLine()
++            || source->format() != d_ptr->highDpiBackingstore->format();
+         if (needsNewImage) {
+             qCDebug(lcScaling) << "QBackingStore::beginPaint new backingstore for" << d_ptr->window;
+             qCDebug(lcScaling) << "  source size" << source->size() << "dpr" << source->devicePixelRatio();
+             d_ptr->highDpiBackingstore.reset(
+                 new QImage(source->bits(), source->width(), source->height(), source->bytesPerLine(), source->format()));
+-
+-            qreal targetDevicePixelRatio = d_ptr->window->devicePixelRatio();
+-            d_ptr->highDpiBackingstore->setDevicePixelRatio(targetDevicePixelRatio);
+-            qCDebug(lcScaling) <<"  destination size" << d_ptr->highDpiBackingstore->size()
+-                               << "dpr" << targetDevicePixelRatio;
+         }
++
++        qreal targetDevicePixelRatio = d_ptr->window->devicePixelRatio();
++        d_ptr->highDpiBackingstore->setDevicePixelRatio(targetDevicePixelRatio);
++        qCDebug(lcScaling) <<"  destination size" << d_ptr->highDpiBackingstore->size()
++                           << "dpr" << targetDevicePixelRatio;
++    } else {
++        d_ptr->highDpiBackingstore.reset();
+     }
+ }
+ 
+@@ -271,7 +274,8 @@ void QBackingStore::flush(const QRegion &region, QWindow *window, const QPoint &
+ void QBackingStore::resize(const QSize &size)
+ {
+     d_ptr->size = size;
+-    handle()->resize(QHighDpi::toNativePixels(size, d_ptr->window), d_ptr->staticContents);
++    d_ptr->nativeSize = QHighDpi::toNativePixels(size, d_ptr->window);
++    handle()->resize(d_ptr->nativeSize, d_ptr->staticContents);
+ }
+ 
+ /*!
+diff --git a/src/plugins/platforms/windows/qwindowscontext.cpp b/src/plugins/platforms/windows/qwindowscontext.cpp
+index 3e0059ca90..e529b27276 100644
+--- a/src/plugins/platforms/windows/qwindowscontext.cpp
++++ b/src/plugins/platforms/windows/qwindowscontext.cpp
+@@ -1448,7 +1448,7 @@ bool QWindowsContext::windowsProc(HWND hwnd, UINT message,
+         // WM_DPICHANGED is sent with a size that avoids resize loops (by
+         // snapping back to the previous screen, see QTBUG-65580).
+         const bool doResize = resizeOnDpiChanged(platformWindow->window());
+-        if (doResize) {
++        if (doResize && !platformWindow->testFlag(QWindowsWindow::WithinSetGeometry)) {
+             platformWindow->setFlag(QWindowsWindow::WithinDpiChanged);
+             platformWindow->updateFullFrameMargins();
+             const auto prcNewWindow = reinterpret_cast<RECT *>(lParam);
+@@ -1457,6 +1457,7 @@ bool QWindowsContext::windowsProc(HWND hwnd, UINT message,
+             SetWindowPos(hwnd, nullptr, prcNewWindow->left, prcNewWindow->top,
+                          prcNewWindow->right - prcNewWindow->left,
+                          prcNewWindow->bottom - prcNewWindow->top, SWP_NOZORDER | SWP_NOACTIVATE);
++            platformWindow->handleGeometryChange();
+             platformWindow->clearFlag(QWindowsWindow::WithinDpiChanged);
+         }
+         platformWindow->checkForScreenChanged(QWindowsWindow::FromDpiChange);
+diff --git a/src/plugins/platforms/windows/qwindowswindow.h b/src/plugins/platforms/windows/qwindowswindow.h
+index ac207aa48f..27d467c3c6 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.h
++++ b/src/plugins/platforms/windows/qwindowswindow.h
+@@ -264,6 +264,7 @@ public:
+     void propagateSizeHints() override;
+     static bool handleGeometryChangingMessage(MSG *message, const QWindow *qWindow, const QMargins &marginsDp);
+     bool handleGeometryChanging(MSG *message) const;
++    void handleGeometryChange();
+     QMargins frameMargins() const override;
+     QMargins fullFrameMargins() const override;
+     void setFullFrameMargins(const QMargins &newMargins);
+@@ -370,7 +371,6 @@ private:
+     inline bool isDropSiteEnabled() const { return m_dropTarget != nullptr; }
+     void setDropSiteEnabled(bool enabled);
+     void updateDropSite(bool topLevel);
+-    void handleGeometryChange();
+     void handleWindowStateChange(Qt::WindowStates state);
+     inline void destroyIcon();
+     void fireExpose(const QRegion &region, bool force=false);
