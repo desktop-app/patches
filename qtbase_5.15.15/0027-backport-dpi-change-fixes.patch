@@ -1,5 +1,5 @@
 diff --git a/src/gui/kernel/qguiapplication.cpp b/src/gui/kernel/qguiapplication.cpp
-index c7ff2a6dac..c6ccadc490 100644
+index c7ff2a6dac..f88d6fe8de 100644
 --- a/src/gui/kernel/qguiapplication.cpp
 +++ b/src/gui/kernel/qguiapplication.cpp
 @@ -2548,11 +2548,6 @@ void QGuiApplicationPrivate::processWindowScreenChangedEvent(QWindowSystemInterf
@@ -19,7 +19,7 @@ index c7ff2a6dac..c6ccadc490 100644
      s->d_func()->updateGeometriesWithSignals();
  
 +    for (QWindow *window : QGuiApplication::allWindows())
-+        if (window->screen() == e->screen) 
++        if (window->screen() == e->screen)
 +            window->screenChanged(e->screen);
 +
      resetCachedDevicePixelRatio();
@@ -66,18 +66,27 @@ index 639817257e..3f30f5b40e 100644
  
  /*!
 diff --git a/src/gui/kernel/qwindowsysteminterface.cpp b/src/gui/kernel/qwindowsysteminterface.cpp
-index 600cd9a7a5..59a0270028 100644
+index 600cd9a7a5..4ab368d98c 100644
 --- a/src/gui/kernel/qwindowsysteminterface.cpp
 +++ b/src/gui/kernel/qwindowsysteminterface.cpp
-@@ -822,6 +822,7 @@ void QWindowSystemInterface::handleScreenAdded(QPlatformScreen *ps, bool isPrima
+@@ -42,6 +42,7 @@
+ #include "private/qguiapplication_p.h"
+ #include "private/qevent_p.h"
+ #include "private/qtouchdevice_p.h"
++#include "private/qscreen_p.h"
+ #include <QAbstractEventDispatcher>
+ #include <qpa/qplatformintegration.h>
+ #include <qdebug.h>
+@@ -822,6 +823,8 @@ void QWindowSystemInterface::handleScreenAdded(QPlatformScreen *ps, bool isPrima
          QGuiApplicationPrivate::screen_list.append(screen);
  
      QGuiApplicationPrivate::resetCachedDevicePixelRatio();
 +    QHighDpiScaling::updateHighDpiScaling();
++    screen->d_func()->updateHighDpi();
  
      emit qGuiApp->screenAdded(screen);
  
-@@ -879,6 +880,7 @@ void QWindowSystemInterface::handleScreenGeometryChange(QScreen *screen, const Q
+@@ -879,6 +882,7 @@ void QWindowSystemInterface::handleScreenGeometryChange(QScreen *screen, const Q
  
  void QWindowSystemInterface::handleScreenLogicalDotsPerInchChange(QScreen *screen, qreal dpiX, qreal dpiY)
  {
