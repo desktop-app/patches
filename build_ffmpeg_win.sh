@@ -45,6 +45,7 @@ chmod a+x $FullExecPath/../gas-preprocessor/cpp
 --enable-hwaccel=vp8_nvdec \
 --enable-protocol=file \
 --enable-libdav1d \
+--enable-libopenh264 \
 --enable-libopus \
 --enable-libvpx \
 --enable-decoder=aac \
@@ -115,7 +116,9 @@ chmod a+x $FullExecPath/../gas-preprocessor/cpp
 --enable-decoder=wmav2 \
 --enable-decoder=wmavoice \
 --enable-filter=atempo \
+--enable-encoder=aac \
 --enable-encoder=libopus \
+--enable-encoder=libopenh264 \
 --enable-parser=aac \
 --enable-parser=aac_latm \
 --enable-parser=flac \
@@ -137,6 +140,7 @@ chmod a+x $FullExecPath/../gas-preprocessor/cpp
 --enable-demuxer=mp3 \
 --enable-demuxer=ogg \
 --enable-demuxer=wav \
+--enable-muxer=mp4 \
 --enable-muxer=ogg \
 --enable-muxer=opus
 
