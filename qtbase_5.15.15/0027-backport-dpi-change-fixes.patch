@@ -178,6 +178,56 @@ index 3e0059ca90..e529b27276 100644
              platformWindow->clearFlag(QWindowsWindow::WithinDpiChanged);
          }
          platformWindow->checkForScreenChanged(QWindowsWindow::FromDpiChange);
+diff --git a/src/plugins/platforms/windows/qwindowsscreen.cpp b/src/plugins/platforms/windows/qwindowsscreen.cpp
+index 6aeecdb7fa..056e08f051 100644
+--- a/src/plugins/platforms/windows/qwindowsscreen.cpp
++++ b/src/plugins/platforms/windows/qwindowsscreen.cpp
+@@ -55,6 +55,7 @@
+ #include <QtGui/qscreen.h>
+ 
+ #include <QtCore/qdebug.h>
++#include <QtCore/qscopeguard.h>
+ 
+ QT_BEGIN_NAMESPACE
+ 
+@@ -592,7 +593,7 @@ const QWindowsScreen *QWindowsScreenManager::screenAtDp(const QPoint &p) const
+     return nullptr;
+ }
+ 
+-const QWindowsScreen *QWindowsScreenManager::screenForHwnd(HWND hwnd) const
++const QWindowsScreen *QWindowsScreenManager::screenForHwnd(HWND hwnd)
+ {
+     HMONITOR hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL);
+     if (hMonitor == nullptr)
+@@ -604,6 +605,15 @@ const QWindowsScreen *QWindowsScreenManager::screenForHwnd(HWND hwnd) const
+                          return s->data().hMonitor == hMonitor
+                              && (s->data().flags & QWindowsScreenData::VirtualDesktop) != 0;
+                      });
++    static bool inside = false;
++    if (it == m_screens.cend() && !inside) {
++        inside = true;
++        const auto guard = qScopeGuard([] {
++            inside = false;
++        });
++        handleScreenChanges();
++        return screenForHwnd(hwnd);
++    }
+     return it != m_screens.cend() ? *it : nullptr;
+ }
+ 
+diff --git a/src/plugins/platforms/windows/qwindowsscreen.h b/src/plugins/platforms/windows/qwindowsscreen.h
+index 5c095808f2..c22c5ca50b 100644
+--- a/src/plugins/platforms/windows/qwindowsscreen.h
++++ b/src/plugins/platforms/windows/qwindowsscreen.h
+@@ -138,7 +138,7 @@ public:
+     const WindowsScreenList &screens() const { return m_screens; }
+ 
+     const QWindowsScreen *screenAtDp(const QPoint &p) const;
+-    const QWindowsScreen *screenForHwnd(HWND hwnd) const;
++    const QWindowsScreen *screenForHwnd(HWND hwnd);
+ 
+     static bool isSingleScreen();
+ 
 diff --git a/src/plugins/platforms/windows/qwindowswindow.h b/src/plugins/platforms/windows/qwindowswindow.h
 index ac207aa48f..27d467c3c6 100644
 --- a/src/plugins/platforms/windows/qwindowswindow.h
