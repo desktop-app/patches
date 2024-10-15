@@ -228,6 +228,21 @@ index 5c095808f2..c22c5ca50b 100644
  
      static bool isSingleScreen();
  
+diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
+index 9d9180e4f5..8a923a052f 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.cpp
++++ b/src/plugins/platforms/windows/qwindowswindow.cpp
+@@ -1942,9 +1942,9 @@ void QWindowsWindow::checkForScreenChanged(ScreenChangeMode mode)
+     if (parent() || QWindowsScreenManager::isSingleScreen())
+         return;
+ 
+-    QPlatformScreen *currentScreen = screen();
+     const QWindowsScreen *newScreen =
+         QWindowsContext::instance()->screenManager().screenForHwnd(m_data.hwnd);
++    QPlatformScreen *currentScreen = screen();
+     if (newScreen == nullptr || newScreen == currentScreen)
+         return;
+     // For screens with different DPI: postpone until WM_DPICHANGE
 diff --git a/src/plugins/platforms/windows/qwindowswindow.h b/src/plugins/platforms/windows/qwindowswindow.h
 index ac207aa48f..27d467c3c6 100644
 --- a/src/plugins/platforms/windows/qwindowswindow.h
