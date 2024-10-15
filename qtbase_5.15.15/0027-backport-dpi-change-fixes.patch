@@ -229,7 +229,7 @@ index 5c095808f2..c22c5ca50b 100644
      static bool isSingleScreen();
  
 diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
-index 9d9180e4f5..8a923a052f 100644
+index 9d9180e4f5..18b24de878 100644
 --- a/src/plugins/platforms/windows/qwindowswindow.cpp
 +++ b/src/plugins/platforms/windows/qwindowswindow.cpp
 @@ -1942,9 +1942,9 @@ void QWindowsWindow::checkForScreenChanged(ScreenChangeMode mode)
@@ -243,6 +243,21 @@ index 9d9180e4f5..8a923a052f 100644
      if (newScreen == nullptr || newScreen == currentScreen)
          return;
      // For screens with different DPI: postpone until WM_DPICHANGE
+@@ -1964,9 +1964,11 @@ void QWindowsWindow::handleGeometryChange()
+ {
+     const QRect previousGeometry = m_data.geometry;
+     m_data.geometry = geometry_sys();
+-    if (testFlag(WithinDpiChanged)
+-        && QWindowsContext::instance()->screenManager().screenForHwnd(m_data.hwnd) != screen()) {
+-        return; // QGuiApplication will send resize when screen actually changes
++    if (testFlag(WithinDpiChanged)) {
++        const QWindowsScreen *newScreen =
++            QWindowsContext::instance()->screenManager().screenForHwnd(m_data.hwnd);
++        if (newScreen != screen())
++            return; // QGuiApplication will send resize when screen actually changes
+     }
+     QWindowSystemInterface::handleGeometryChange(window(), m_data.geometry);
+     // QTBUG-32121: OpenGL/normal windows (with exception of ANGLE) do not receive
 diff --git a/src/plugins/platforms/windows/qwindowswindow.h b/src/plugins/platforms/windows/qwindowswindow.h
 index ac207aa48f..27d467c3c6 100644
 --- a/src/plugins/platforms/windows/qwindowswindow.h
