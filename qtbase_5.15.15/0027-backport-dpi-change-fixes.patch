@@ -1,5 +1,5 @@
 diff --git a/src/gui/kernel/qguiapplication.cpp b/src/gui/kernel/qguiapplication.cpp
-index c7ff2a6dac..f88d6fe8de 100644
+index c7ff2a6dacd..f88d6fe8deb 100644
 --- a/src/gui/kernel/qguiapplication.cpp
 +++ b/src/gui/kernel/qguiapplication.cpp
 @@ -2548,11 +2548,6 @@ void QGuiApplicationPrivate::processWindowScreenChangedEvent(QWindowSystemInterf
@@ -26,7 +26,7 @@ index c7ff2a6dac..f88d6fe8de 100644
  }
  
 diff --git a/src/gui/kernel/qhighdpiscaling_p.h b/src/gui/kernel/qhighdpiscaling_p.h
-index 5b02c5d646..630ee0350d 100644
+index 5b02c5d646a..630ee0350db 100644
 --- a/src/gui/kernel/qhighdpiscaling_p.h
 +++ b/src/gui/kernel/qhighdpiscaling_p.h
 @@ -187,7 +187,7 @@ inline QMargins scale(const QMargins &margins, qreal scaleFactor, QPoint origin
@@ -48,7 +48,7 @@ index 5b02c5d646..630ee0350d 100644
  
      QRegion scaled;
 diff --git a/src/gui/kernel/qwindow.cpp b/src/gui/kernel/qwindow.cpp
-index 639817257e..3f30f5b40e 100644
+index 639817257ea..3f30f5b40e9 100644
 --- a/src/gui/kernel/qwindow.cpp
 +++ b/src/gui/kernel/qwindow.cpp
 @@ -244,6 +244,13 @@ void QWindowPrivate::init(QScreen *targetScreen)
@@ -66,7 +66,7 @@ index 639817257e..3f30f5b40e 100644
  
  /*!
 diff --git a/src/gui/kernel/qwindowsysteminterface.cpp b/src/gui/kernel/qwindowsysteminterface.cpp
-index 600cd9a7a5..4ab368d98c 100644
+index 600cd9a7a52..4ab368d98cf 100644
 --- a/src/gui/kernel/qwindowsysteminterface.cpp
 +++ b/src/gui/kernel/qwindowsysteminterface.cpp
 @@ -42,6 +42,7 @@
@@ -95,7 +95,7 @@ index 600cd9a7a5..4ab368d98c 100644
      auto e = new QWindowSystemInterfacePrivate::ScreenLogicalDotsPerInchEvent(screen, effectiveDpi.first, effectiveDpi.second);
      QWindowSystemInterfacePrivate::handleWindowSystemEvent(e);
 diff --git a/src/gui/painting/qbackingstore.cpp b/src/gui/painting/qbackingstore.cpp
-index ebce163ed3..6143c5058d 100644
+index ebce163ed32..6143c5058de 100644
 --- a/src/gui/painting/qbackingstore.cpp
 +++ b/src/gui/painting/qbackingstore.cpp
 @@ -66,6 +66,7 @@ public:
@@ -158,7 +158,7 @@ index ebce163ed3..6143c5058d 100644
  
  /*!
 diff --git a/src/plugins/platforms/windows/qwindowscontext.cpp b/src/plugins/platforms/windows/qwindowscontext.cpp
-index 3e0059ca90..e529b27276 100644
+index 3e0059ca900..e529b27276b 100644
 --- a/src/plugins/platforms/windows/qwindowscontext.cpp
 +++ b/src/plugins/platforms/windows/qwindowscontext.cpp
 @@ -1448,7 +1448,7 @@ bool QWindowsContext::windowsProc(HWND hwnd, UINT message,
@@ -179,7 +179,7 @@ index 3e0059ca90..e529b27276 100644
          }
          platformWindow->checkForScreenChanged(QWindowsWindow::FromDpiChange);
 diff --git a/src/plugins/platforms/windows/qwindowsscreen.cpp b/src/plugins/platforms/windows/qwindowsscreen.cpp
-index 6aeecdb7fa..056e08f051 100644
+index 6aeecdb7fa7..056e08f0516 100644
 --- a/src/plugins/platforms/windows/qwindowsscreen.cpp
 +++ b/src/plugins/platforms/windows/qwindowsscreen.cpp
 @@ -55,6 +55,7 @@
@@ -216,7 +216,7 @@ index 6aeecdb7fa..056e08f051 100644
  }
  
 diff --git a/src/plugins/platforms/windows/qwindowsscreen.h b/src/plugins/platforms/windows/qwindowsscreen.h
-index 5c095808f2..c22c5ca50b 100644
+index 5c095808f2d..c22c5ca50b7 100644
 --- a/src/plugins/platforms/windows/qwindowsscreen.h
 +++ b/src/plugins/platforms/windows/qwindowsscreen.h
 @@ -138,7 +138,7 @@ public:
@@ -229,11 +229,15 @@ index 5c095808f2..c22c5ca50b 100644
      static bool isSingleScreen();
  
 diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
-index 9d9180e4f5..18b24de878 100644
+index 9d9180e4f57..affaf7542c9 100644
 --- a/src/plugins/platforms/windows/qwindowswindow.cpp
 +++ b/src/plugins/platforms/windows/qwindowswindow.cpp
-@@ -1942,9 +1942,9 @@ void QWindowsWindow::checkForScreenChanged(ScreenChangeMode mode)
-     if (parent() || QWindowsScreenManager::isSingleScreen())
+@@ -1939,12 +1939,12 @@ static inline bool equalDpi(const QDpi &d1, const QDpi &d2)
+ 
+ void QWindowsWindow::checkForScreenChanged(ScreenChangeMode mode)
+ {
+-    if (parent() || QWindowsScreenManager::isSingleScreen())
++    if (parent())
          return;
  
 -    QPlatformScreen *currentScreen = screen();
@@ -259,7 +263,7 @@ index 9d9180e4f5..18b24de878 100644
      QWindowSystemInterface::handleGeometryChange(window(), m_data.geometry);
      // QTBUG-32121: OpenGL/normal windows (with exception of ANGLE) do not receive
 diff --git a/src/plugins/platforms/windows/qwindowswindow.h b/src/plugins/platforms/windows/qwindowswindow.h
-index ac207aa48f..27d467c3c6 100644
+index ac207aa48f4..27d467c3c65 100644
 --- a/src/plugins/platforms/windows/qwindowswindow.h
 +++ b/src/plugins/platforms/windows/qwindowswindow.h
 @@ -264,6 +264,7 @@ public:
