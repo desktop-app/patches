@@ -12,7 +12,7 @@ index 3e011ead..486049bc 100644
      }
  
 diff --git a/src/client/qwaylandscreen.cpp b/src/client/qwaylandscreen.cpp
-index ef548925..b8a6f583 100644
+index ef548925..64dfcdf6 100644
 --- a/src/client/qwaylandscreen.cpp
 +++ b/src/client/qwaylandscreen.cpp
 @@ -182,14 +182,16 @@ Qt::ScreenOrientation QWaylandScreen::orientation() const
@@ -35,12 +35,32 @@ index ef548925..b8a6f583 100644
  }
  
  qreal QWaylandScreen::refreshRate() const
-@@ -374,7 +376,12 @@ void QWaylandScreen::zxdg_output_v1_name(const QString &name)
+@@ -330,7 +332,6 @@ void QWaylandScreen::updateOutputProperties()
+             m_orientation = newOrientation;
+             QWindowSystemInterface::handleScreenOrientationChange(screen(), m_orientation);
+         }
+-        mTransform = -1;
+     }
+ 
+     QWindowSystemInterface::handleScreenRefreshRateChange(screen(), refreshRate());
+@@ -374,7 +375,24 @@ void QWaylandScreen::zxdg_output_v1_name(const QString &name)
  void QWaylandScreen::updateXdgOutputProperties()
  {
      Q_ASSERT(zxdg_output_v1::isInitialized());
-+    mFractionalScale = std::round((qreal(mGeometry.width()) / qreal(mXdgGeometry.width())
-+        + qreal(mGeometry.height()) / qreal(mXdgGeometry.height()))
++    bool rotated = false;
++    switch (mTransform) {
++    case WL_OUTPUT_TRANSFORM_90:
++    case WL_OUTPUT_TRANSFORM_180:
++    case WL_OUTPUT_TRANSFORM_FLIPPED_90:
++    case WL_OUTPUT_TRANSFORM_FLIPPED_180:
++        rotated = true;
++        break;
++    }
++    mFractionalScale = std::round((rotated
++        ? qreal(mGeometry.width()) / qreal(mXdgGeometry.height())
++            + qreal(mGeometry.height()) / qreal(mXdgGeometry.width())
++        : qreal(mGeometry.width()) / qreal(mXdgGeometry.width())
++            + qreal(mGeometry.height()) / qreal(mXdgGeometry.height()))
 +        * qreal(0.5) * qreal(100)) / qreal(100);
 +    const QDpi dpi = logicalDpi();
      QWindowSystemInterface::handleScreenGeometryChange(screen(), geometry(), geometry());
