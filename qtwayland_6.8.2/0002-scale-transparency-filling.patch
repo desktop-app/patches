@@ -1,5 +1,5 @@
 diff --git a/src/client/qwaylandshmbackingstore.cpp b/src/client/qwaylandshmbackingstore.cpp
-index d77c548a..05b799df 100644
+index b1ae2e1a..dc9789e5 100644
 --- a/src/client/qwaylandshmbackingstore.cpp
 +++ b/src/client/qwaylandshmbackingstore.cpp
 @@ -14,6 +14,7 @@
@@ -9,8 +9,8 @@ index d77c548a..05b799df 100644
 +#include <QtGui/private/qhighdpiscaling_p.h>
  #include <QtWaylandClient/private/wayland-wayland-client-protocol.h>
  
- #include <fcntl.h>
-@@ -178,14 +179,14 @@ void QWaylandShmBackingStore::updateDirtyStates(const QRegion &region)
+ #include <memory>
+@@ -182,14 +183,14 @@ void QWaylandShmBackingStore::updateDirtyStates(const QRegion &region)
      }
  }
  
@@ -27,7 +27,7 @@ index d77c548a..05b799df 100644
  
      // Although undocumented, QBackingStore::beginPaint expects the painted region
      // to be cleared before use if the window has a surface format with an alpha.
-@@ -193,6 +194,7 @@ void QWaylandShmBackingStore::beginPaint(const QRegion &region)
+@@ -197,6 +198,7 @@ void QWaylandShmBackingStore::beginPaint(const QRegion &region)
      if (!bufferWasRecreated && mBackBuffer->image()->hasAlphaChannel()) {
          QPainter p(paintDevice());
          p.setCompositionMode(QPainter::CompositionMode_Source);
