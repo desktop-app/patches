@@ -1,5 +1,5 @@
 diff --git a/src/gui/kernel/qguiapplication_platform.h b/src/gui/kernel/qguiapplication_platform.h
-index 545bf75c84..68459a9636 100644
+index 98e19427ae7..eddc92d886c 100644
 --- a/src/gui/kernel/qguiapplication_platform.h
 +++ b/src/gui/kernel/qguiapplication_platform.h
 @@ -21,6 +21,7 @@
@@ -10,7 +10,7 @@ index 545bf75c84..68459a9636 100644
  #endif
  
  #if QT_CONFIG(wayland)
-@@ -43,6 +44,7 @@ struct Q_GUI_EXPORT QX11Application
+@@ -59,6 +60,7 @@ struct Q_GUI_EXPORT QX11Application
      QT_DECLARE_NATIVE_INTERFACE(QX11Application, 1, QGuiApplication)
      virtual Display *display() const = 0;
      virtual xcb_connection_t *connection() const = 0;
@@ -19,19 +19,19 @@ index 545bf75c84..68459a9636 100644
  #endif
  
 diff --git a/src/plugins/platforms/offscreen/qoffscreenintegration_x11.h b/src/plugins/platforms/offscreen/qoffscreenintegration_x11.h
-index d7b5120332..89baaa48aa 100644
+index 7b2ad6e1ce0..dfe7f1fbf73 100644
 --- a/src/plugins/platforms/offscreen/qoffscreenintegration_x11.h
 +++ b/src/plugins/platforms/offscreen/qoffscreenintegration_x11.h
 @@ -34,6 +34,7 @@ public:
  #if QT_CONFIG(xcb)
      Display *display() const override;
-     xcb_connection_t *connection() const override { return nullptr; };
-+    xkb_state *xkbState() const override { return nullptr; };
+     xcb_connection_t *connection() const override { return nullptr; }
++    xkb_state *xkbState() const override { return nullptr; }
  #endif
      QScopedPointer<QOffscreenX11Connection> m_connection;
  };
 diff --git a/src/plugins/platforms/xcb/qxcbkeyboard.h b/src/plugins/platforms/xcb/qxcbkeyboard.h
-index 62d9268c64..ff1e42468d 100644
+index 62d9268c64f..ff1e42468d3 100644
 --- a/src/plugins/platforms/xcb/qxcbkeyboard.h
 +++ b/src/plugins/platforms/xcb/qxcbkeyboard.h
 @@ -50,6 +50,8 @@ public:
@@ -44,7 +44,7 @@ index 62d9268c64..ff1e42468d 100644
      void handleKeyEvent(xcb_window_t sourceWindow, QEvent::Type type, xcb_keycode_t code,
                          quint16 state, xcb_timestamp_t time, bool fromSendEvent);
 diff --git a/src/plugins/platforms/xcb/qxcbnativeinterface.cpp b/src/plugins/platforms/xcb/qxcbnativeinterface.cpp
-index 06f5241d8c..03bb8c331b 100644
+index 06f5241d8c0..03bb8c331b0 100644
 --- a/src/plugins/platforms/xcb/qxcbnativeinterface.cpp
 +++ b/src/plugins/platforms/xcb/qxcbnativeinterface.cpp
 @@ -4,6 +4,7 @@
@@ -71,7 +71,7 @@ index 06f5241d8c..03bb8c331b 100644
  {
      QXcbIntegration *integration = static_cast<QXcbIntegration *>(QGuiApplicationPrivate::platformIntegration());
 diff --git a/src/plugins/platforms/xcb/qxcbnativeinterface.h b/src/plugins/platforms/xcb/qxcbnativeinterface.h
-index 62bfb4c634..5cc5c045ad 100644
+index 62bfb4c634f..5cc5c045ad8 100644
 --- a/src/plugins/platforms/xcb/qxcbnativeinterface.h
 +++ b/src/plugins/platforms/xcb/qxcbnativeinterface.h
 @@ -79,6 +79,7 @@ public:
