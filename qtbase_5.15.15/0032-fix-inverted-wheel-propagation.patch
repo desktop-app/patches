@@ -1,0 +1,13 @@
+diff --git a/src/widgets/kernel/qapplication.cpp b/src/widgets/kernel/qapplication.cpp
+index 0126ce4c439..f3e820c08f7 100644
+--- a/src/widgets/kernel/qapplication.cpp
++++ b/src/widgets/kernel/qapplication.cpp
+@@ -3216,7 +3216,7 @@ QT_WARNING_POP
+ QT_WARNING_PUSH
+ QT_WARNING_DISABLE_DEPRECATED
+                 QWheelEvent we(relpos, wheel->globalPos(), wheel->pixelDelta(), wheel->angleDelta(), wheel->delta(), wheel->orientation(), wheel->buttons(),
+-                               wheel->modifiers(), wheel->phase(), wheel->source());
++                               wheel->modifiers(), wheel->phase(), wheel->source(), wheel->inverted());
+ QT_WARNING_POP
+ #else
+                 QWheelEvent we(relpos, wheel->globalPosition(), wheel->pixelDelta(), wheel->angleDelta(), wheel->buttons(),
