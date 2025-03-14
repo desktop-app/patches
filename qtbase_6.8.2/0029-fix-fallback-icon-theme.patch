@@ -1,0 +1,34 @@
+diff --git a/src/gui/platform/unix/qgenericunixthemes.cpp b/src/gui/platform/unix/qgenericunixthemes.cpp
+index 8b65711ff2e..345d2090f2d 100644
+--- a/src/gui/platform/unix/qgenericunixthemes.cpp
++++ b/src/gui/platform/unix/qgenericunixthemes.cpp
+@@ -1383,7 +1383,7 @@ QVariant QGnomeTheme::themeHint(QPlatformTheme::ThemeHint hint) const
+     case QPlatformTheme::SystemIconThemeName:
+         return QVariant(QStringLiteral("Adwaita"));
+     case QPlatformTheme::SystemIconFallbackThemeName:
+-        return QVariant(QStringLiteral("gnome"));
++        return QVariant(QStringLiteral("hicolor"));
+     case QPlatformTheme::IconThemeSearchPaths:
+         return QVariant(QGenericUnixTheme::xdgIconThemePaths());
+     case QPlatformTheme::IconPixmapSizes:
+diff --git a/src/plugins/platformthemes/gtk3/qgtk3theme.cpp b/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
+index b21c45da7a0..b496d669f85 100644
+--- a/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
++++ b/src/plugins/platformthemes/gtk3/qgtk3theme.cpp
+@@ -95,7 +95,6 @@ QGtk3Theme::QGtk3Theme()
+     SETTING_CONNECT("gtk-entry-password-hint-timeout");
+     SETTING_CONNECT("gtk-dnd-drag-threshold");
+     SETTING_CONNECT("gtk-icon-theme-name");
+-    SETTING_CONNECT("gtk-fallback-icon-theme");
+     SETTING_CONNECT("gtk-font-name");
+     SETTING_CONNECT("gtk-application-prefer-dark-theme");
+     SETTING_CONNECT("gtk-theme-name");
+@@ -136,8 +135,6 @@ QVariant QGtk3Theme::themeHint(QPlatformTheme::ThemeHint hint) const
+         return QVariant(gtkSetting<gint>("gtk-dnd-drag-threshold"));
+     case QPlatformTheme::SystemIconThemeName:
+         return QVariant(gtkSetting("gtk-icon-theme-name"));
+-    case QPlatformTheme::SystemIconFallbackThemeName:
+-        return QVariant(gtkSetting("gtk-fallback-icon-theme"));
+     case QPlatformTheme::MouseCursorTheme:
+         return QVariant(gtkSetting("gtk-cursor-theme-name"));
+     case QPlatformTheme::MouseCursorSize: {
