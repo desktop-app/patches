@@ -1,8 +1,8 @@
 diff --git a/src/gui/kernel/qhighdpiscaling.cpp b/src/gui/kernel/qhighdpiscaling.cpp
-index a0e1b48dcb..96d0bc404a 100644
+index 6fead184c2a..9fa8d57f277 100644
 --- a/src/gui/kernel/qhighdpiscaling.cpp
 +++ b/src/gui/kernel/qhighdpiscaling.cpp
-@@ -241,6 +241,7 @@ qreal QHighDpiScaling::m_factor = 1.0;
+@@ -238,6 +238,7 @@ qreal QHighDpiScaling::m_factor = 1.0;
  bool QHighDpiScaling::m_active = false; //"overall active" - is there any scale factor set.
  bool QHighDpiScaling::m_usePlatformPluginDpi = false; // use scale factor based on platform plugin DPI
  bool QHighDpiScaling::m_platformPluginDpiScalingActive  = false; // platform plugin DPI gives a scale factor > 1
@@ -10,7 +10,7 @@ index a0e1b48dcb..96d0bc404a 100644
  bool QHighDpiScaling::m_globalScalingActive = false; // global scale factor is active
  bool QHighDpiScaling::m_screenFactorSet = false; // QHighDpiScaling::setScreenFactor has been used
  bool QHighDpiScaling::m_usePhysicalDpi = false;
-@@ -432,6 +433,7 @@ void QHighDpiScaling::initHighDpiScaling()
+@@ -429,6 +430,7 @@ void QHighDpiScaling::initHighDpiScaling()
      // High-dpi scaling is enabled by default; check for global disable.
      m_usePlatformPluginDpi = envEnableHighDpiScaling.value_or(1) > 0;
      m_platformPluginDpiScalingActive = false; // see updateHighDpiScaling()
@@ -18,7 +18,7 @@ index a0e1b48dcb..96d0bc404a 100644
  
      // Check for glabal scale factor (different from 1)
      m_factor = envScaleFactor.value_or(qreal(1));
-@@ -475,7 +477,7 @@ void QHighDpiScaling::initHighDpiScaling()
+@@ -472,7 +474,7 @@ void QHighDpiScaling::initHighDpiScaling()
      }
  
      // Set initial active state
@@ -27,7 +27,7 @@ index a0e1b48dcb..96d0bc404a 100644
  
      qCDebug(lcHighDpi) << "Initialization done, high-DPI scaling is"
                         << (m_active ? "active" : "inactive");
-@@ -511,19 +513,24 @@ void QHighDpiScaling::updateHighDpiScaling()
+@@ -508,19 +510,24 @@ void QHighDpiScaling::updateHighDpiScaling()
          }
      }
  
@@ -55,7 +55,7 @@ index a0e1b48dcb..96d0bc404a 100644
  
      qCDebug(lcHighDpi) << "Update done, high-DPI scaling is"
                         << (m_active ? "active" : "inactive");
-@@ -549,7 +556,7 @@ void QHighDpiScaling::setGlobalFactor(qreal factor)
+@@ -546,7 +553,7 @@ void QHighDpiScaling::setGlobalFactor(qreal factor)
  
      m_globalScalingActive = !qFuzzyCompare(factor, qreal(1));
      m_factor = m_globalScalingActive ? factor : qreal(1);
@@ -64,7 +64,7 @@ index a0e1b48dcb..96d0bc404a 100644
      for (QScreen *screen : screens)
          screen->d_func()->updateGeometry();
  }
-@@ -581,6 +588,15 @@ void QHighDpiScaling::setScreenFactor(QScreen *screen, qreal factor)
+@@ -578,6 +585,15 @@ void QHighDpiScaling::setScreenFactor(QScreen *screen, qreal factor)
      screen->d_func()->updateGeometry();
  }
  
@@ -80,7 +80,7 @@ index a0e1b48dcb..96d0bc404a 100644
  QPoint QHighDpiScaling::mapPositionToNative(const QPoint &pos, const QPlatformScreen *platformScreen)
  {
      if (!platformScreen)
-@@ -599,7 +615,7 @@ QPoint QHighDpiScaling::mapPositionFromNative(const QPoint &pos, const QPlatform
+@@ -596,7 +612,7 @@ QPoint QHighDpiScaling::mapPositionFromNative(const QPoint &pos, const QPlatform
      return (pos - topLeft) / scaleFactor + topLeft;
  }
  
@@ -89,7 +89,7 @@ index a0e1b48dcb..96d0bc404a 100644
  {
      auto factor = qreal(1.0);
      if (!screen)
-@@ -630,6 +646,9 @@ qreal QHighDpiScaling::screenSubfactor(const QPlatformScreen *screen)
+@@ -627,6 +643,9 @@ qreal QHighDpiScaling::screenSubfactor(const QPlatformScreen *screen)
      if (!screenPropertyUsed && m_usePlatformPluginDpi)
          factor = roundScaleFactor(rawScaleFactor(screen));
  
@@ -99,7 +99,7 @@ index a0e1b48dcb..96d0bc404a 100644
      return factor;
  }
  
-@@ -647,7 +666,9 @@ QDpi QHighDpiScaling::logicalDpi(const QScreen *screen)
+@@ -644,7 +663,9 @@ QDpi QHighDpiScaling::logicalDpi(const QScreen *screen)
  
      const qreal scaleFactor = rawScaleFactor(screen->handle());
      const qreal roundedScaleFactor = roundScaleFactor(scaleFactor);
@@ -110,7 +110,7 @@ index a0e1b48dcb..96d0bc404a 100644
  }
  
  // Returns the screen containing \a position, using \a guess as a starting point
-@@ -750,7 +771,14 @@ QHighDpiScaling::ScaleAndOrigin QHighDpiScaling::scaleAndOrigin(const QWindow *w
+@@ -747,7 +768,14 @@ QHighDpiScaling::ScaleAndOrigin QHighDpiScaling::scaleAndOrigin(const QWindow *w
      QScreen *screen = window ? window->screen() : QGuiApplication::primaryScreen();
      QScreen *overrideScreen = QHighDpiScaling::screenForPosition(position, screen);
      QScreen *targetScreen = overrideScreen ? overrideScreen : screen;
@@ -127,7 +127,7 @@ index a0e1b48dcb..96d0bc404a 100644
  
  #ifndef QT_NO_DEBUG_STREAM
 diff --git a/src/gui/kernel/qhighdpiscaling_p.h b/src/gui/kernel/qhighdpiscaling_p.h
-index d6deb8a72a..e5043cace7 100644
+index 4a2f4b7a1a3..ffd836285b3 100644
 --- a/src/gui/kernel/qhighdpiscaling_p.h
 +++ b/src/gui/kernel/qhighdpiscaling_p.h
 @@ -32,6 +32,7 @@ Q_DECLARE_LOGGING_CATEGORY(lcHighDpi);
@@ -135,7 +135,7 @@ index d6deb8a72a..e5043cace7 100644
  class QScreen;
  class QPlatformScreen;
 +class QPlatformWindow;
- typedef QPair<qreal, qreal> QDpi;
+ typedef std::pair<qreal, qreal> QDpi;
  
  #ifndef QT_NO_HIGHDPISCALING
 @@ -57,6 +58,7 @@ public:
@@ -153,7 +153,7 @@ index d6deb8a72a..e5043cace7 100644
 -    static qreal screenSubfactor(const QPlatformScreen *screen);
 +    static qreal screenSubfactor(const QPlatformScreen *screen, bool dprFix = true);
      static QScreen *screenForPosition(Point position, QScreen *guess);
-     static QVector<QHighDpiScaling::ScreenFactor> parseScreenScaleFactorsSpec(const QStringView &screenScaleFactors);
+     static QList<QHighDpiScaling::ScreenFactor> parseScreenScaleFactorsSpec(QStringView screenScaleFactors);
  
 @@ -108,6 +110,7 @@ private:
      static bool m_active;
@@ -164,7 +164,7 @@ index d6deb8a72a..e5043cace7 100644
      static bool m_screenFactorSet;
      static bool m_usePhysicalDpi;
 diff --git a/src/gui/kernel/qwindow.cpp b/src/gui/kernel/qwindow.cpp
-index f698113ed2..19e24f5e9a 100644
+index 0454bf8920e..cb969fa9bf1 100644
 --- a/src/gui/kernel/qwindow.cpp
 +++ b/src/gui/kernel/qwindow.cpp
 @@ -1413,6 +1413,9 @@ bool QWindowPrivate::updateDevicePixelRatio()

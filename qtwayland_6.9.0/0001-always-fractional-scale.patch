@@ -90,19 +90,19 @@ index ff3d2321..f735f5dc 100644
      int mRefreshRate = 60000;
      int mSubpixel = -1;
 diff --git a/src/client/qwaylandwindow.cpp b/src/client/qwaylandwindow.cpp
-index 81f0dd67..f22ec0e5 100644
+index 7a3bf6dd..09339e1d 100644
 --- a/src/client/qwaylandwindow.cpp
 +++ b/src/client/qwaylandwindow.cpp
-@@ -106,7 +106,7 @@ void QWaylandWindow::initWindow()
-         initializeWlSurface();
+@@ -229,7 +229,7 @@ void QWaylandWindow::initializeWlSurface()
      }
+     emit wlSurfaceCreated();
  
 -    if (mDisplay->fractionalScaleManager() && qApp->highDpiScaleFactorRoundingPolicy() == Qt::HighDpiScaleFactorRoundingPolicy::PassThrough) {
 +    if (mDisplay->fractionalScaleManager()) {
          mFractionalScale.reset(new QWaylandFractionalScale(mDisplay->fractionalScaleManager()->get_fractional_scale(mSurface->object())));
  
          connect(mFractionalScale.data(), &QWaylandFractionalScale::preferredScaleChanged,
-@@ -1478,7 +1478,7 @@ void QWaylandWindow::updateScale()
+@@ -1458,7 +1458,7 @@ void QWaylandWindow::updateScale()
          return;
      }
  
@@ -111,16 +111,7 @@ index 81f0dd67..f22ec0e5 100644
      setScale(scale);
  }
  
-@@ -1507,7 +1507,7 @@ void QWaylandWindow::setScale(qreal newScale)
- #if QT_CONFIG(cursor)
- void QWaylandWindow::setMouseCursor(QWaylandInputDevice *device, const QCursor &cursor)
- {
--    int fallbackBufferScale = int(devicePixelRatio());
-+    int fallbackBufferScale = qCeil(devicePixelRatio());
-     device->setCursor(&cursor, {}, fallbackBufferScale);
- }
- 
-@@ -1555,7 +1555,7 @@ qreal QWaylandWindow::scale() const
+@@ -1559,7 +1559,7 @@ qreal QWaylandWindow::scale() const
  
  qreal QWaylandWindow::devicePixelRatio() const
  {

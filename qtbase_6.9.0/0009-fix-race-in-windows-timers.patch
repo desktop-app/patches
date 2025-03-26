@@ -1,8 +1,8 @@
 diff --git a/src/corelib/kernel/qeventdispatcher_win.cpp b/src/corelib/kernel/qeventdispatcher_win.cpp
-index 04e1abf16a..d7013e3f76 100644
+index a7663b24813..44b5827561d 100644
 --- a/src/corelib/kernel/qeventdispatcher_win.cpp
 +++ b/src/corelib/kernel/qeventdispatcher_win.cpp
-@@ -76,7 +76,17 @@ void WINAPI QT_WIN_CALLBACK qt_fast_timer_proc(uint timerId, uint /*reserved*/,
+@@ -82,7 +82,17 @@ void WINAPI QT_WIN_CALLBACK qt_fast_timer_proc(uint timerId, uint /*reserved*/,
          return;
      auto t = reinterpret_cast<WinTimerInfo*>(user);
      Q_ASSERT(t);
@@ -21,7 +21,7 @@ index 04e1abf16a..d7013e3f76 100644
  }
  
  LRESULT QT_WIN_CALLBACK qt_internal_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp)
-@@ -346,12 +356,12 @@ void QEventDispatcherWin32Private::registerTimer(WinTimerInfo *t)
+@@ -352,12 +362,12 @@ void QEventDispatcherWin32Private::registerTimer(WinTimerInfo *t)
          // optimization for single-shot-zero-timer
          QCoreApplication::postEvent(q, new QZeroTimerEvent(t->timerId));
          ok = true;
@@ -36,7 +36,7 @@ index 04e1abf16a..d7013e3f76 100644
      }
  
      if (!ok) {
-@@ -367,16 +377,34 @@ void QEventDispatcherWin32Private::registerTimer(WinTimerInfo *t)
+@@ -373,16 +383,34 @@ void QEventDispatcherWin32Private::registerTimer(WinTimerInfo *t)
  
  void QEventDispatcherWin32Private::unregisterTimer(WinTimerInfo *t)
  {
@@ -77,7 +77,7 @@ index 04e1abf16a..d7013e3f76 100644
          delete t;
  }
  
-@@ -391,14 +419,27 @@ void QEventDispatcherWin32Private::sendTimerEvent(int timerId)
+@@ -397,14 +425,27 @@ void QEventDispatcherWin32Private::sendTimerEvent(int timerId)
          calculateNextTimeout(t, qt_msectime());
  
          QTimerEvent e(t->timerId);
@@ -106,7 +106,7 @@ index 04e1abf16a..d7013e3f76 100644
      }
  }
  
-@@ -858,7 +899,9 @@ bool QEventDispatcherWin32::event(QEvent *e)
+@@ -864,7 +905,9 @@ bool QEventDispatcherWin32::event(QEvent *e)
  
              // timer could have been removed
              if (t->timerId == -1) {
@@ -118,7 +118,7 @@ index 04e1abf16a..d7013e3f76 100644
                  if (t->interval == 0 && t->inTimerEvent) {
                      // post the next zero timer event as long as the timer was not restarted
 diff --git a/src/corelib/kernel/qeventdispatcher_win_p.h b/src/corelib/kernel/qeventdispatcher_win_p.h
-index ecd4bcb27b..febf45927c 100644
+index e46cdec71dc..9d514bb9beb 100644
 --- a/src/corelib/kernel/qeventdispatcher_win_p.h
 +++ b/src/corelib/kernel/qeventdispatcher_win_p.h
 @@ -19,6 +19,7 @@
@@ -129,11 +129,11 @@ index ecd4bcb27b..febf45927c 100644
  
  #include "qabstracteventdispatcher_p.h"
  
-@@ -94,6 +95,7 @@ struct WinTimerInfo {                           // internal timer info
-     QObject *obj;                               // - object to receive events
-     bool inTimerEvent;
+@@ -92,6 +93,7 @@ struct WinTimerInfo {                           // internal timer info
+     int timerId;
+     Qt::TimerType timerType;
      UINT fastTimerId;
 +    QMutex fastTimerMutex;
+     bool inTimerEvent;
  };
  
- class QZeroTimerEvent : public QTimerEvent
