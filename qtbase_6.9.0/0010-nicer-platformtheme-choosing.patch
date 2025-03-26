@@ -1,8 +1,8 @@
 diff --git a/src/gui/kernel/qguiapplication.cpp b/src/gui/kernel/qguiapplication.cpp
-index 3030e11f25..b4a693c209 100644
+index 46712099d0d..f55c6c3d3e8 100644
 --- a/src/gui/kernel/qguiapplication.cpp
 +++ b/src/gui/kernel/qguiapplication.cpp
-@@ -131,6 +131,7 @@ Q_CONSTINIT QGuiApplicationPrivate::QLastCursorPosition QGuiApplicationPrivate::
+@@ -135,6 +135,7 @@ Q_CONSTINIT QGuiApplicationPrivate::QLastCursorPosition QGuiApplicationPrivate::
  
  Q_CONSTINIT QWindow *QGuiApplicationPrivate::currentMouseWindow = nullptr;
  
@@ -10,7 +10,7 @@ index 3030e11f25..b4a693c209 100644
  Q_CONSTINIT QString QGuiApplicationPrivate::styleOverride;
  
  Q_CONSTINIT Qt::ApplicationState QGuiApplicationPrivate::applicationState = Qt::ApplicationInactive;
-@@ -239,15 +240,6 @@ static void initThemeHints()
+@@ -243,15 +244,6 @@ static void initThemeHints()
      touchDoubleTapDistance = QGuiApplicationPrivate::platformTheme()->themeHint(QPlatformTheme::TouchDoubleTapDistance).toInt();
  }
  
@@ -26,9 +26,9 @@ index 3030e11f25..b4a693c209 100644
  // Using aggregate initialization instead of ctor so we can have a POD global static
  #define Q_WINDOW_GEOMETRY_SPECIFICATION_INITIALIZER { Qt::TopLeftCorner, -1, -1, -1, -1 }
  
-@@ -1263,12 +1255,11 @@ Q_LOGGING_CATEGORY(lcQpaPluginLoading, "qt.qpa.plugin");
- Q_LOGGING_CATEGORY(lcQpaTheme, "qt.qpa.theme");
- Q_LOGGING_CATEGORY(lcPtrDispatch, "qt.pointer.dispatch");
+@@ -1281,12 +1273,11 @@ Q_STATIC_LOGGING_CATEGORY(lcQpaPluginLoading, "qt.qpa.plugin");
+ Q_STATIC_LOGGING_CATEGORY(lcQpaTheme, "qt.qpa.theme");
+ Q_STATIC_LOGGING_CATEGORY(lcPtrDispatch, "qt.pointer.dispatch");
  
 -static void init_platform(const QString &pluginNamesWithArguments, const QString &platformPluginPath, const QString &platformThemeName, int &argc, char **argv)
 +static void init_platform(const QString &pluginNamesWithArguments, const QString &platformPluginPath, int &argc, char **argv)
@@ -41,7 +41,7 @@ index 3030e11f25..b4a693c209 100644
  
      QStringList plugins = pluginNamesWithArguments.split(u';', Qt::SkipEmptyParts);
      QStringList platformArguments;
-@@ -1333,21 +1324,23 @@ static void init_platform(const QString &pluginNamesWithArguments, const QString
+@@ -1351,21 +1342,23 @@ static void init_platform(const QString &pluginNamesWithArguments, const QString
  
      // 1) Fetch the platform name from the environment if present.
      QStringList themeNames;
@@ -75,7 +75,7 @@ index 3030e11f25..b4a693c209 100644
      // 4) Look for a theme plugin.
      for (const QString &themeName : std::as_const(themeNames)) {
          qCDebug(lcQpaTheme) << "Attempting to create platform theme" << themeName << "via QPlatformThemeFactory::create";
-@@ -1526,7 +1519,7 @@ void QGuiApplicationPrivate::createPlatformIntegration()
+@@ -1544,7 +1537,7 @@ void QGuiApplicationPrivate::createPlatformIntegration()
          platformExplicitlySelected = true;
      }
  
@@ -84,7 +84,7 @@ index 3030e11f25..b4a693c209 100644
  
      // Get command line params
  
-@@ -1554,7 +1547,7 @@ void QGuiApplicationPrivate::createPlatformIntegration()
+@@ -1572,7 +1565,7 @@ void QGuiApplicationPrivate::createPlatformIntegration()
              }
          } else if (strcmp(arg, "-platformtheme") == 0) {
              if (++i < argc)
@@ -93,7 +93,7 @@ index 3030e11f25..b4a693c209 100644
          } else if (strcmp(arg, "-qwindowgeometry") == 0 || (xcbIsDefault && strcmp(arg, "-geometry") == 0)) {
              if (++i < argc)
                  windowGeometrySpecification = QWindowGeometrySpecification::fromArgument(argv[i]);
-@@ -1577,7 +1570,7 @@ void QGuiApplicationPrivate::createPlatformIntegration()
+@@ -1595,7 +1588,7 @@ void QGuiApplicationPrivate::createPlatformIntegration()
  
      Q_UNUSED(platformExplicitlySelected);
  
@@ -103,10 +103,10 @@ index 3030e11f25..b4a693c209 100644
          QStyleHintsPrivate::get(QGuiApplication::styleHints())->updateColorScheme(theme->colorScheme());
  
 diff --git a/src/gui/kernel/qguiapplication_p.h b/src/gui/kernel/qguiapplication_p.h
-index 45eac1c265..97d166e1a3 100644
+index 2bdbc2463be..02bf6da68f2 100644
 --- a/src/gui/kernel/qguiapplication_p.h
 +++ b/src/gui/kernel/qguiapplication_p.h
-@@ -278,6 +278,7 @@ public:
+@@ -279,6 +279,7 @@ public:
  
      static QFont *app_font;
  
@@ -115,10 +115,10 @@ index 45eac1c265..97d166e1a3 100644
      static QStyleHints *styleHints;
      static bool obey_desktop_settings;
 diff --git a/src/gui/platform/unix/qgenericunixthemes.cpp b/src/gui/platform/unix/qgenericunixthemes.cpp
-index d488247d9a..64477767aa 100644
+index 1f22800af71..f8f86b0af13 100644
 --- a/src/gui/platform/unix/qgenericunixthemes.cpp
 +++ b/src/gui/platform/unix/qgenericunixthemes.cpp
-@@ -1497,25 +1497,13 @@ QStringList QGenericUnixTheme::themeNames()
+@@ -1512,25 +1512,13 @@ QStringList QGenericUnixTheme::themeNames()
      QStringList result;
      if (QGuiApplication::desktopSettingsAware()) {
          const QByteArray desktopEnvironment = QGuiApplicationPrivate::platformIntegration()->services()->desktopEnvironment();
@@ -145,7 +145,7 @@ index d488247d9a..64477767aa 100644
              } else {
                  // unknown, but lowercase the name (our standard practice) and
                  // remove any "x-" prefix
-@@ -1523,6 +1511,10 @@ QStringList QGenericUnixTheme::themeNames()
+@@ -1538,6 +1526,10 @@ QStringList QGenericUnixTheme::themeNames()
                  result.push_back(s.startsWith("x-"_L1) ? s.mid(2) : s);
              }
          }
@@ -157,7 +157,7 @@ index d488247d9a..64477767aa 100644
      result.append(QLatin1StringView(QGenericUnixTheme::name));
      return result;
 diff --git a/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp b/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
-index 355d3e6cc9..199a1d1893 100644
+index 355d3e6cc9a..199a1d1893c 100644
 --- a/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
 +++ b/src/plugins/platformthemes/xdgdesktopportal/qxdgdesktopportaltheme.cpp
 @@ -85,7 +85,12 @@ QXdgDesktopPortalTheme::QXdgDesktopPortalTheme()
