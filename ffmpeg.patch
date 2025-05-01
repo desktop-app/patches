@@ -2,17 +2,6 @@ diff --git a/configure b/configure
 index a89cfa6d95..466e6fe884 100755
 --- a/configure
 +++ b/configure
-@@ -6027,8 +6027,8 @@ if enabled_any arm aarch64 || enabled_all ppc altivec && enabled asm; then
-     [ $target_os = "darwin" ] && gaspp_as_type="apple-$gaspp_as_type"
- 
-     test "${as#*gas-preprocessor.pl}" != "$as" ||
--    test_cmd gas-preprocessor.pl -arch $arch -as-type $gaspp_as_type -- ${as:=$cc} $as_noop &&
--        gas="${gas:=gas-preprocessor.pl} -arch $arch -as-type $gaspp_as_type -- ${as:=$cc}"
-+    test_cmd ../gas-preprocessor/gas-preprocessor.pl -arch $arch -as-type $gaspp_as_type -- ${as:=$cc} $as_noop &&
-+        gas="${gas:=../gas-preprocessor/gas-preprocessor.pl} -verbose -arch $arch -as-type $gaspp_as_type -- ${as:=$cc}"
- 
-     if ! check_gas ; then
-         as=${gas:=$as}
 @@ -7168,7 +7168,7 @@ if enabled x86; then
      esac
  elif enabled_any aarch64 ppc64 && ! enabled bigendian; then
