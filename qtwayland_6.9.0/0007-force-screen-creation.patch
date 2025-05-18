@@ -1,0 +1,19 @@
+diff --git a/src/client/qwaylandwindow.cpp b/src/client/qwaylandwindow.cpp
+index 09339e1d..3db2c02f 100644
+--- a/src/client/qwaylandwindow.cpp
++++ b/src/client/qwaylandwindow.cpp
+@@ -930,6 +930,14 @@ QWaylandSubSurface *QWaylandWindow::subSurfaceWindow() const
+ QWaylandScreen *QWaylandWindow::waylandScreen() const
+ {
+     auto *platformScreen = QPlatformWindow::screen();
++
++    // Patch: Try fix a crash from reports.
++    if (!platformScreen) {
++        mDisplay->ensureScreen();
++        window()->setScreen(nullptr);
++        platformScreen = QPlatformWindow::screen();
++    }
++
+     Q_ASSERT(platformScreen);
+     if (platformScreen->isPlaceholder())
+         return nullptr;
