@@ -1,0 +1,147 @@
+diff --git a/giscanner/ccompiler.py b/giscanner/ccompiler.py
+index d10327c8..408545db 100644
+--- a/giscanner/ccompiler.py
++++ b/giscanner/ccompiler.py
+@@ -133,17 +133,6 @@ class CCompiler(object):
+                 if sys.platform != 'darwin':
+                     args.append('-Wl,--no-as-needed')
+ 
+-        for library in libraries + extra_libraries:
+-            if self.check_is_msvc():
+-                # Note that Visual Studio builds do not use libtool!
+-                if library != 'm':
+-                    args.append(library + '.lib')
+-            else:
+-                if library.endswith(".la"):  # explicitly specified libtool library
+-                    args.append(library)
+-                else:
+-                    args.append('-l' + library)
+-
+         for library_path in libpaths:
+             # The dumper program needs to look for dynamic libraries
+             # in the library paths first
+@@ -161,6 +150,18 @@ class CCompiler(object):
+ 
+             runtime_paths.append(library_path)
+ 
++        for library in libraries + extra_libraries:
++            if self.check_is_msvc():
++                # Note that Visual Studio builds do not use libtool!
++                if library != 'm':
++                    args.append(library + '.lib')
++            else:
++                # If we get a real filename, just use it as-is
++                if library.endswith(".la") or os.path.isfile(library):
++                    args.append(library)
++                else:
++                    args.append('-l' + library)
++
+         for envvar in runtime_path_envvar:
+             if envvar in os.environ:
+                 os.environ[envvar] = \
+diff --git a/giscanner/shlibs.py b/giscanner/shlibs.py
+index 525bdba2..61227e23 100644
+--- a/giscanner/shlibs.py
++++ b/giscanner/shlibs.py
+@@ -49,19 +49,17 @@ def _resolve_libtool(options, binary, libraries):
+ #  libpangoft2-1.0.so.0 => /usr/lib/libpangoft2-1.0.so.0 (0x006c1000)
+ #
+ # We say that if something in the output looks like libpangoft2<blah>
+-# then the *first* such in the output is the soname. We require <blah>
+-# to start with [^A-Za-z0-9_-] to avoid problems with libpango vs libpangoft2
+-#
+-# The negative lookbehind at the start is to avoid problems if someone
+-# is crazy enough to name a library liblib<foo> when lib<foo> exists.
+-#
+-# Match absolute paths on OS X to conform to how libraries are usually
+-# referenced on OS X systems.
++# then the *first* such in the output is the soname.
+ def _ldd_library_pattern(library_name):
+-    pattern = "(?<![A-Za-z0-9_-])(lib*%s[^A-Za-z0-9_-][^\s\(\)]*)"
+-    if platform.system() == 'Darwin':
+-        pattern = "([^\s]*lib*%s[^A-Za-z0-9_-][^\s\(\)]*)"
+-    return re.compile(pattern % re.escape(library_name))
++    return re.compile(r"""^
++    # Require trailing slash to avoid matching liblibfoo when looking for libfoo.
++    (.*[/])?
++    lib%s
++    # Prohibit library name characters to avoid matching libpangoft2 when looking for libpango.
++    [^/A-Za-z0-9_-]
++    # Anything but the path separator to avoid matching directories.
++    [^/]*
++    $""" % re.escape(library_name), re.VERBOSE)
+ 
+ 
+ # This is a what we do for non-la files. We assume that we are on an
+@@ -96,8 +94,7 @@ def _resolve_non_libtool(options, binary, libraries):
+ 
+     if host_os() == 'nt':
+         cc = CCompiler()
+-        shlibs = cc.resolve_windows_libs(libraries, options)
+-
++        return cc.resolve_windows_libs(libraries, options)
+     else:
+         args = []
+         libtool = get_libtool_command(options)
+@@ -109,31 +106,44 @@ def _resolve_non_libtool(options, binary, libraries):
+             args.extend(['otool', '-L', binary.args[0]])
+         else:
+             args.extend(['ldd', binary.args[0]])
+-        proc = subprocess.Popen(args, stdout=subprocess.PIPE)
+-        patterns = {}
+-        for library in libraries:
++        output = subprocess.check_output(args, universal_newlines=True, errors='replace')
++
++        # Use absolute paths on OS X to conform to how libraries are usually
++        # referenced on OS X systems, and file names everywhere else.
++        basename = platform.system() != 'Darwin'
++        return resolve_from_ldd_output(libraries, output, basename=basename)
++
++
++def resolve_from_ldd_output(libraries, output, basename=False):
++    patterns = {}
++    for library in libraries:
++        if not os.path.isfile(library):
+             patterns[library] = _ldd_library_pattern(library)
++    if len(patterns) == 0:
++        return []
+ 
+-        shlibs = []
+-        for line in proc.stdout:
+-            line = line.decode('ascii')
+-            # ldd on *BSD show the argument passed on the first line even if
+-            # there is only one argument. We have to ignore it because it is
+-            # possible for the name of the binary to match _ldd_library_pattern.
+-            if line == binary.args[0] + ':\n':
+-                continue
++    shlibs = []
++    for line in output.splitlines():
++        # ldd on *BSD show the argument passed on the first line even if
++        # there is only one argument. We have to ignore it because it is
++        # possible for the name of the binary to match _ldd_library_pattern.
++        if line.endswith(':'):
++            continue
++        for word in line.split():
+             for library, pattern in patterns.items():
+-                m = pattern.search(line)
++                m = pattern.match(word)
+                 if m:
+                     del patterns[library]
+-                    shlibs.append(m.group(1))
++                    shlibs.append(m.group())
+                     break
+ 
+-        if len(patterns) > 0:
+-            raise SystemExit(
+-                "ERROR: can't resolve libraries to shared libraries: " +
+-                ", ".join(patterns.keys()))
++    if len(patterns) > 0:
++        raise SystemExit(
++            "ERROR: can't resolve libraries to shared libraries: " +
++            ", ".join(patterns.keys()))
+ 
++    if basename:
++        shlibs = list(map(os.path.basename, shlibs))
+     return shlibs
+ 
+ 
