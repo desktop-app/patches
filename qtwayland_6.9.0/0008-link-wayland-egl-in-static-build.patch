@@ -1,0 +1,12 @@
+diff --git a/src/plugins/platforms/qwayland-egl/CMakeLists.txt b/src/plugins/platforms/qwayland-egl/CMakeLists.txt
+index 51925c72..6806b379 100644
+--- a/src/plugins/platforms/qwayland-egl/CMakeLists.txt
++++ b/src/plugins/platforms/qwayland-egl/CMakeLists.txt
+@@ -11,6 +11,7 @@ qt_find_package(EGL) # special case
+ qt_internal_add_plugin(QWaylandEglPlatformIntegrationPlugin
+     OUTPUT_NAME qwayland-egl
+     PLUGIN_TYPE platforms
++    DEFAULT_IF "wayland" IN_LIST QT_QPA_PLATFORMS
+     SOURCES
+         main.cpp
+     LIBRARIES
