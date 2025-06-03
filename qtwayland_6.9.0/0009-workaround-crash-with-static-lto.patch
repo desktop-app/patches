@@ -1,0 +1,12 @@
+diff --git a/src/plugins/hardwareintegration/compositor/CMakeLists.txt b/src/plugins/hardwareintegration/compositor/CMakeLists.txt
+index 8b281f88..b2d6c74e 100644
+--- a/src/plugins/hardwareintegration/compositor/CMakeLists.txt
++++ b/src/plugins/hardwareintegration/compositor/CMakeLists.txt
+@@ -9,7 +9,6 @@ if(QT_FEATURE_wayland_dmabuf_client_buffer)
+ endif()
+ if(QT_FEATURE_wayland_egl)
+     add_subdirectory(wayland-egl)
+-    add_subdirectory(wayland-eglstream-controller)
+ endif()
+ if(QT_FEATURE_wayland_brcm)
+     add_subdirectory(brcm-egl)
