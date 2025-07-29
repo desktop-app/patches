@@ -1,15 +1,15 @@
 diff --git a/src/gui/image/qiconloader.cpp b/src/gui/image/qiconloader.cpp
-index 65785c406c2..be135427843 100644
+index 65785c406c2..8d374300f19 100644
 --- a/src/gui/image/qiconloader.cpp
 +++ b/src/gui/image/qiconloader.cpp
-@@ -503,6 +503,7 @@ QThemeIconInfo QIconLoader::findIconHelper(const QString &themeName,
-                 }
-             }
+@@ -477,6 +477,7 @@ QThemeIconInfo QIconLoader::findIconHelper(const QString &themeName,
+     if (info.entries.empty()) {
+         const QString svgIconName = iconNameFallback + ".svg"_L1;
+         const QString pngIconName = iconNameFallback + ".png"_L1;
++        auto pngs = QThemeIconEntries();
  
-+            auto pngs = QThemeIconEntries();
-             QString contentDir = contentDirs.at(i) + u'/';
-             for (int j = 0; j < subDirs.size() ; ++j) {
-                 const QIconDirInfo &dirInfo = subDirs.at(j);
+         // Add all relevant files
+         for (int i = 0; i < contentDirs.size(); ++i) {
 @@ -519,7 +520,7 @@ QThemeIconInfo QIconLoader::findIconHelper(const QString &themeName,
                      iconEntry->filename = pngPath;
                      // Notice we ensure that pixmap entries always come before
@@ -19,16 +19,17 @@ index 65785c406c2..be135427843 100644
                  } else if (m_supportsSvg) {
                      const QString svgPath = subDir + svgIconName;
                      if (QFile::exists(svgPath)) {
-@@ -530,6 +531,12 @@ QThemeIconInfo QIconLoader::findIconHelper(const QString &themeName,
-                     }
-                 }
+@@ -532,6 +533,13 @@ QThemeIconInfo QIconLoader::findIconHelper(const QString &themeName,
              }
-+            if (!pngs.empty()) {
-+                info.entries.insert(
-+                    info.entries.begin(),
-+                    std::make_move_iterator(pngs.begin()),
-+                    std::make_move_iterator(pngs.end()));
-+            }
          }
  
++        if (!pngs.empty()) {
++            info.entries.insert(
++                info.entries.begin(),
++                std::make_move_iterator(pngs.begin()),
++                std::make_move_iterator(pngs.end()));
++        }
++
          if (!info.entries.empty()) {
+             info.iconName = iconNameFallback.toString();
+         }
