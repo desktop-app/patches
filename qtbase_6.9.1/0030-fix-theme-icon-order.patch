@@ -1,0 +1,34 @@
+diff --git a/src/gui/image/qiconloader.cpp b/src/gui/image/qiconloader.cpp
+index 65785c406c2..be135427843 100644
+--- a/src/gui/image/qiconloader.cpp
++++ b/src/gui/image/qiconloader.cpp
+@@ -503,6 +503,7 @@ QThemeIconInfo QIconLoader::findIconHelper(const QString &themeName,
+                 }
+             }
+ 
++            auto pngs = QThemeIconEntries();
+             QString contentDir = contentDirs.at(i) + u'/';
+             for (int j = 0; j < subDirs.size() ; ++j) {
+                 const QIconDirInfo &dirInfo = subDirs.at(j);
+@@ -519,7 +520,7 @@ QThemeIconInfo QIconLoader::findIconHelper(const QString &themeName,
+                     iconEntry->filename = pngPath;
+                     // Notice we ensure that pixmap entries always come before
+                     // scalable to preserve search order afterwards
+-                    info.entries.insert(info.entries.begin(), std::move(iconEntry));
++                    pngs.push_back(std::move(iconEntry));
+                 } else if (m_supportsSvg) {
+                     const QString svgPath = subDir + svgIconName;
+                     if (QFile::exists(svgPath)) {
+@@ -530,6 +531,12 @@ QThemeIconInfo QIconLoader::findIconHelper(const QString &themeName,
+                     }
+                 }
+             }
++            if (!pngs.empty()) {
++                info.entries.insert(
++                    info.entries.begin(),
++                    std::make_move_iterator(pngs.begin()),
++                    std::make_move_iterator(pngs.end()));
++            }
+         }
+ 
+         if (!info.entries.empty()) {
