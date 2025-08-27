@@ -1,14 +1,9 @@
 diff --git a/src/plugins/platforms/windows/qwindowsbackingstore.cpp b/src/plugins/platforms/windows/qwindowsbackingstore.cpp
-index 0f9d0172d9..e03660599d 100644
+index e580b0243d9..9ce20294a4d 100644
 --- a/src/plugins/platforms/windows/qwindowsbackingstore.cpp
 +++ b/src/plugins/platforms/windows/qwindowsbackingstore.cpp
-@@ -52,11 +52,17 @@ void QWindowsBackingStore::flush(QWindow *window, const QRegion &region,
- 
-     const bool hasAlpha = rw->format().hasAlpha();
-     const Qt::WindowFlags flags = window->flags();
--    if ((flags & Qt::FramelessWindowHint) && QWindowsWindow::setWindowLayered(rw->handle(), flags, hasAlpha, rw->opacity()) && hasAlpha) {
-+    const auto useBlending = hasAlpha;
-+    if (useBlending && QWindowsWindow::setWindowLayered(rw->handle(), flags, hasAlpha, rw->opacity()) && hasAlpha) {
+@@ -56,8 +56,13 @@ void QWindowsBackingStore::flush(QWindow *window, const QRegion &region,
+     if (rw->isLayered() && hasAlpha && QWindowsWindow::hasNoNativeFrame(rw->handle(), flags)) {
          // Windows with alpha: Use blend function to update.
          QRect r = QHighDpi::toNativePixels(window->frameGeometry(), window);
 -        QMargins frameMargins = rw->frameMargins();
@@ -24,10 +19,10 @@ index 0f9d0172d9..e03660599d 100644
          SIZE size = {r.width(), r.height()};
          POINT ptDst = {r.x(), r.y()};
 diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
-index 63c271a79c..f09def4206 100644
+index 6146a01a4b7..d542c710444 100644
 --- a/src/plugins/platforms/windows/qwindowswindow.cpp
 +++ b/src/plugins/platforms/windows/qwindowswindow.cpp
-@@ -470,8 +470,9 @@ static bool shouldShowMaximizeButton(const QWindow *w, Qt::WindowFlags flags)
+@@ -514,8 +514,9 @@ static bool shouldShowMaximizeButton(const QWindow *w, Qt::WindowFlags flags)
  
  bool QWindowsWindow::hasNoNativeFrame(HWND hwnd, Qt::WindowFlags flags)
  {
