@@ -1,8 +1,8 @@
 diff --git a/src/gui/kernel/qguiapplication.cpp b/src/gui/kernel/qguiapplication.cpp
-index 419ada0250f..2491c31710d 100644
+index 5fd48a55344..a2fd8c8f83d 100644
 --- a/src/gui/kernel/qguiapplication.cpp
 +++ b/src/gui/kernel/qguiapplication.cpp
-@@ -1356,17 +1356,18 @@ static void init_platform(const QString &pluginNamesWithArguments, const QString
+@@ -1355,17 +1355,18 @@ static void init_platform(const QString &pluginNamesWithArguments, const QString
          themeNames.append(platformThemeName);
      }
  
@@ -28,11 +28,11 @@ index 419ada0250f..2491c31710d 100644
      // 4) Look for a theme plugin.
      for (const QString &themeName : std::as_const(themeNames)) {
          qCDebug(lcQpaTheme) << "Attempting to create platform theme" << themeName << "via QPlatformThemeFactory::create";
-diff --git a/src/gui/platform/unix/qgenericunixthemes.cpp b/src/gui/platform/unix/qgenericunixthemes.cpp
-index bdbb3ad962e..7f14066006e 100644
---- a/src/gui/platform/unix/qgenericunixthemes.cpp
-+++ b/src/gui/platform/unix/qgenericunixthemes.cpp
-@@ -1514,6 +1514,8 @@ QStringList QGenericUnixTheme::themeNames()
+diff --git a/src/gui/platform/unix/qgenericunixtheme.cpp b/src/gui/platform/unix/qgenericunixtheme.cpp
+index afd2c4cd7de..f55671c5fb0 100644
+--- a/src/gui/platform/unix/qgenericunixtheme.cpp
++++ b/src/gui/platform/unix/qgenericunixtheme.cpp
+@@ -150,6 +150,8 @@ QStringList QGenericUnixTheme::themeNames()
  {
      QStringList result;
      if (QGuiApplication::desktopSettingsAware()) {

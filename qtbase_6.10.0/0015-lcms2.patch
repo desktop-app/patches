@@ -1,6 +1,6 @@
 diff --git a/cmake/FindLCMS2.cmake b/cmake/FindLCMS2.cmake
 new file mode 100644
-index 0000000000..fd32d9a783
+index 00000000000..fd32d9a783d
 --- /dev/null
 +++ b/cmake/FindLCMS2.cmake
 @@ -0,0 +1,78 @@
@@ -83,10 +83,10 @@ index 0000000000..fd32d9a783
 +
 +mark_as_advanced(LCMS2_INCLUDE_DIR LCMS2_LIBRARIES LCMS2_VERSION)
 diff --git a/src/gui/CMakeLists.txt b/src/gui/CMakeLists.txt
-index 3b3dbd1321..48e9982b88 100644
+index d864b4ea3d6..6cef365c00b 100644
 --- a/src/gui/CMakeLists.txt
 +++ b/src/gui/CMakeLists.txt
-@@ -601,6 +601,11 @@ qt_internal_extend_target(Gui CONDITION QT_FEATURE_movie
+@@ -617,6 +617,11 @@ qt_internal_extend_target(Gui CONDITION QT_FEATURE_movie
          image/qmovie.cpp image/qmovie.h
  )
  
@@ -99,18 +99,18 @@ index 3b3dbd1321..48e9982b88 100644
      SOURCES
          image/qpnghandler.cpp image/qpnghandler_p.h
 diff --git a/src/gui/configure.cmake b/src/gui/configure.cmake
-index 4a5bc443ec..8fda651d43 100644
+index 7f6c48fb047..ba3d78864d3 100644
 --- a/src/gui/configure.cmake
 +++ b/src/gui/configure.cmake
-@@ -70,6 +70,7 @@ qt_find_package(GLESv2 PROVIDED_TARGETS GLESv2::GLESv2 MODULE_NAME gui QMAKE_LIB
- qt_find_package(Tslib PROVIDED_TARGETS PkgConfig::Tslib MODULE_NAME gui QMAKE_LIB tslib)
- qt_find_package(WrapVulkanHeaders PROVIDED_TARGETS WrapVulkanHeaders::WrapVulkanHeaders
+@@ -76,6 +76,7 @@ qt_find_package(GLESv2 MODULE
+ qt_find_package(Tslib MODULE PROVIDED_TARGETS PkgConfig::Tslib MODULE_NAME gui QMAKE_LIB tslib)
+ qt_find_package(WrapVulkanHeaders MODULE PROVIDED_TARGETS WrapVulkanHeaders::WrapVulkanHeaders
      MODULE_NAME gui QMAKE_LIB vulkan MARK_OPTIONAL)
 +qt_find_package(LCMS2 PROVIDED_TARGETS LCMS2::LCMS2 MODULE_NAME gui QMAKE_LIB lcms2)
- if((LINUX) OR QT_FIND_ALL_PACKAGES_ALWAYS)
-     qt_find_package(Wayland PROVIDED_TARGETS Wayland::Server MODULE_NAME gui QMAKE_LIB wayland_server)
-     qt_find_package(Wayland PROVIDED_TARGETS Wayland::Client MODULE_NAME gui QMAKE_LIB wayland_client)
-@@ -695,6 +696,12 @@ qt_feature("fontconfig" PUBLIC PRIVATE
+ if(LINUX OR FREEBSD OR QT_FIND_ALL_PACKAGES_ALWAYS)
+     qt_find_package(Wayland MODULE PROVIDED_TARGETS Wayland::Server
+                     MODULE_NAME gui QMAKE_LIB wayland_server)
+@@ -950,6 +951,12 @@ qt_feature("fontconfig" PUBLIC PRIVATE
      CONDITION NOT APPLE AND NOT WIN32 AND QT_FEATURE_system_freetype AND Fontconfig_FOUND
  )
  qt_feature_definition("fontconfig" "QT_NO_FONTCONFIG" NEGATE VALUE "1")
@@ -123,7 +123,7 @@ index 4a5bc443ec..8fda651d43 100644
  qt_feature("gbm"
      LABEL "GBM"
      CONDITION gbm_FOUND
-@@ -1273,6 +1280,7 @@ qt_configure_add_summary_entry(ARGS "system-freetype")
+@@ -1616,6 +1623,7 @@ qt_configure_add_summary_entry(ARGS "system-freetype")
  qt_configure_add_summary_entry(ARGS "harfbuzz")
  qt_configure_add_summary_entry(ARGS "system-harfbuzz")
  qt_configure_add_summary_entry(ARGS "fontconfig")
@@ -132,10 +132,10 @@ index 4a5bc443ec..8fda651d43 100644
  qt_configure_add_summary_entry(ARGS "gif")
  qt_configure_add_summary_entry(ARGS "ico")
 diff --git a/src/gui/image/qimage.cpp b/src/gui/image/qimage.cpp
-index d043ed57e1..86f10f8d0a 100644
+index 684d66121d6..ec85b7a4be8 100644
 --- a/src/gui/image/qimage.cpp
 +++ b/src/gui/image/qimage.cpp
-@@ -45,6 +45,10 @@
+@@ -47,6 +47,10 @@
  
  #include <memory>
  
@@ -146,7 +146,7 @@ index d043ed57e1..86f10f8d0a 100644
  QT_BEGIN_NAMESPACE
  class QCmyk32;
  
-@@ -5035,6 +5039,46 @@ void QImage::setColorSpace(const QColorSpace &colorSpace)
+@@ -5065,6 +5069,46 @@ void QImage::setColorSpace(const QColorSpace &colorSpace)
          d->colorSpace = colorSpace;
  }
  
@@ -193,7 +193,7 @@ index d043ed57e1..86f10f8d0a 100644
  /*!
      \since 5.14
  
-@@ -5049,7 +5093,37 @@ void QImage::setColorSpace(const QColorSpace &colorSpace)
+@@ -5079,7 +5123,37 @@ void QImage::setColorSpace(const QColorSpace &colorSpace)
  */
  void QImage::convertToColorSpace(const QColorSpace &colorSpace)
  {

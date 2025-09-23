@@ -1,15 +1,3 @@
-diff --git a/src/client/qwaylandinputdevice_p.h b/src/client/qwaylandinputdevice_p.h
-index 06a9f55d..054bd162 100644
---- a/src/client/qwaylandinputdevice_p.h
-+++ b/src/client/qwaylandinputdevice_p.h
-@@ -253,6 +253,7 @@ public:
-     struct ::wl_keyboard *wl_keyboard() { return QtWayland::wl_keyboard::object(); }
- 
- #if QT_CONFIG(xkbcommon)
-+    xkb_state *xkbState() const { return mXkbState.get(); }
-     virtual int keysymToQtKey(xkb_keysym_t keysym, Qt::KeyboardModifiers modifiers, xkb_state *state, xkb_keycode_t code) {
-         return QXkbCommon::keysymToQtKey(keysym, modifiers, state, code);
-     }
 diff --git a/src/compositor/CMakeLists.txt b/src/compositor/CMakeLists.txt
 index f9d2bcf2..8a77fd46 100644
 --- a/src/compositor/CMakeLists.txt
