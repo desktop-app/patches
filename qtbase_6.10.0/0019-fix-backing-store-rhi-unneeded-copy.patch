@@ -1,8 +1,8 @@
 diff --git a/src/gui/CMakeLists.txt b/src/gui/CMakeLists.txt
-index 3207244afd..ec1e2792fe 100644
+index d864b4ea3d6..0982822e6e6 100644
 --- a/src/gui/CMakeLists.txt
 +++ b/src/gui/CMakeLists.txt
-@@ -200,6 +200,7 @@ qt_internal_add_module(Gui
+@@ -217,6 +217,7 @@ qt_internal_add_module(Gui
          painting/qpixellayout.cpp painting/qpixellayout_p.h
          painting/qplatformbackingstore.cpp painting/qplatformbackingstore.h
          painting/qpolygon.cpp painting/qpolygon.h
@@ -10,7 +10,7 @@ index 3207244afd..ec1e2792fe 100644
          painting/qrasterdefs_p.h
          painting/qrasterizer.cpp painting/qrasterizer_p.h
          painting/qrbtree_p.h
-@@ -207,6 +208,7 @@ qt_internal_add_module(Gui
+@@ -224,6 +225,7 @@ qt_internal_add_module(Gui
          painting/qrgb.h
          painting/qrgba64.h painting/qrgba64_p.h
          painting/qrgbafloat.h
@@ -18,7 +18,7 @@ index 3207244afd..ec1e2792fe 100644
          painting/qstroker.cpp painting/qstroker_p.h
          painting/qtextureglyphcache.cpp painting/qtextureglyphcache_p.h
          painting/qtransform.cpp painting/qtransform.h
-@@ -381,8 +383,6 @@ qt_internal_extend_target(Gui CONDITION APPLE
+@@ -419,8 +421,6 @@ qt_internal_extend_target(Gui CONDITION APPLE
      SOURCES
          image/qimage_darwin.mm
          painting/qcoregraphics.mm painting/qcoregraphics_p.h
@@ -28,7 +28,7 @@ index 3207244afd..ec1e2792fe 100644
          platform/darwin/qutimimeconverter.mm platform/darwin/qutimimeconverter.h
          platform/darwin/qapplekeymapper.mm platform/darwin/qapplekeymapper_p.h
 diff --git a/src/gui/painting/qbackingstoredefaultcompositor.cpp b/src/gui/painting/qbackingstoredefaultcompositor.cpp
-index c1452ca768..c4ba57089b 100644
+index 41ab7c97f8c..c0e322e998f 100644
 --- a/src/gui/painting/qbackingstoredefaultcompositor.cpp
 +++ b/src/gui/painting/qbackingstoredefaultcompositor.cpp
 @@ -99,8 +99,6 @@ QRhiTexture *QBackingStoreDefaultCompositor::toTexture(const QImage &sourceImage
@@ -41,10 +41,10 @@ index c1452ca768..c4ba57089b 100644
      if (resized) {
          if (!m_texture)
 diff --git a/src/plugins/platforms/cocoa/qcocoaintegration.mm b/src/plugins/platforms/cocoa/qcocoaintegration.mm
-index f21e683c00..1b041142d7 100644
+index 63553b986ed..c8aa694c3bc 100644
 --- a/src/plugins/platforms/cocoa/qcocoaintegration.mm
 +++ b/src/plugins/platforms/cocoa/qcocoaintegration.mm
-@@ -301,15 +301,6 @@ QPlatformBackingStore *QCocoaIntegration::createPlatformBackingStore(QWindow *wi
+@@ -312,15 +312,6 @@ QPlatformBackingStore *QCocoaIntegration::createPlatformBackingStore(QWindow *wi
      case QSurface::MetalSurface:
      case QSurface::OpenGLSurface:
      case QSurface::VulkanSurface:
@@ -60,8 +60,34 @@ index f21e683c00..1b041142d7 100644
          // Otherwise we return a QRhiBackingStore, that implements flush() in
          // terms of rhiFlush().
          return new QRhiBackingStore(window);
+diff --git a/src/plugins/platforms/wayland/qwaylandintegration.cpp b/src/plugins/platforms/wayland/qwaylandintegration.cpp
+index 9158013fe78..7a5529b52f3 100644
+--- a/src/plugins/platforms/wayland/qwaylandintegration.cpp
++++ b/src/plugins/platforms/wayland/qwaylandintegration.cpp
+@@ -29,6 +29,7 @@
+ #include <QtGui/private/qgenericunixtheme_p.h>
+ 
+ #include <QtGui/private/qguiapplication_p.h>
++#include <QtGui/private/qrhibackingstore_p.h>
+ 
+ #include <qpa/qwindowsysteminterface.h>
+ #include <qpa/qplatformcursor.h>
+@@ -166,6 +167,13 @@ QOpenGLContext *QWaylandIntegration::createOpenGLContext(EGLContext context, EGL
+ 
+ QPlatformBackingStore *QWaylandIntegration::createPlatformBackingStore(QWindow *window) const
+ {
++    switch (window->surfaceType()) {
++    case QSurface::OpenGLSurface:
++    case QSurface::VulkanSurface:
++        return new QRhiBackingStore(window);
++    default:
++        break;
++    }
+     return new QWaylandShmBackingStore(window, mDisplay.data());
+ }
+ 
 diff --git a/src/plugins/platforms/xcb/qxcbintegration.cpp b/src/plugins/platforms/xcb/qxcbintegration.cpp
-index 6e82d24d8c..2dd89d2b4c 100644
+index 9de57a26b92..eb90e1bb271 100644
 --- a/src/plugins/platforms/xcb/qxcbintegration.cpp
 +++ b/src/plugins/platforms/xcb/qxcbintegration.cpp
 @@ -30,6 +30,7 @@
@@ -72,7 +98,7 @@ index 6e82d24d8c..2dd89d2b4c 100644
  
  #if QT_CONFIG(xcb_xlib)
  #define register        /* C++17 deprecated register */
-@@ -281,6 +282,13 @@ QPlatformBackingStore *QXcbIntegration::createPlatformBackingStore(QWindow *wind
+@@ -285,6 +286,13 @@ QPlatformBackingStore *QXcbIntegration::createPlatformBackingStore(QWindow *wind
          backingStore = new QXcbNativeBackingStore(window);
  #endif
      } else {

@@ -30,11 +30,23 @@ index 7b2ad6e1ce0..dfe7f1fbf73 100644
  #endif
      QScopedPointer<QOffscreenX11Connection> m_connection;
  };
+diff --git a/src/plugins/platforms/wayland/qwaylandinputdevice_p.h b/src/plugins/platforms/wayland/qwaylandinputdevice_p.h
+index bcaf025840d..be672ffabab 100644
+--- a/src/plugins/platforms/wayland/qwaylandinputdevice_p.h
++++ b/src/plugins/platforms/wayland/qwaylandinputdevice_p.h
+@@ -271,6 +271,7 @@ public:
+     struct ::wl_keyboard *wl_keyboard() { return QtWayland::wl_keyboard::object(); }
+ 
+ #if QT_CONFIG(xkbcommon)
++    xkb_state *xkbState() const { return mXkbState.get(); }
+     virtual int keysymToQtKey(xkb_keysym_t keysym, Qt::KeyboardModifiers modifiers, xkb_state *state, xkb_keycode_t code) {
+         return QXkbCommon::keysymToQtKey(keysym, modifiers, state, code);
+     }
 diff --git a/src/plugins/platforms/xcb/qxcbkeyboard.h b/src/plugins/platforms/xcb/qxcbkeyboard.h
-index 62d9268c64f..ff1e42468d3 100644
+index 9528b8a7e47..30ac14808f8 100644
 --- a/src/plugins/platforms/xcb/qxcbkeyboard.h
 +++ b/src/plugins/platforms/xcb/qxcbkeyboard.h
-@@ -50,6 +50,8 @@ public:
+@@ -49,6 +49,8 @@ public:
  
      void handleStateChanges(xkb_state_component changedComponents);
  
@@ -71,10 +83,10 @@ index 06f5241d8c0..03bb8c331b0 100644
  {
      QXcbIntegration *integration = static_cast<QXcbIntegration *>(QGuiApplicationPrivate::platformIntegration());
 diff --git a/src/plugins/platforms/xcb/qxcbnativeinterface.h b/src/plugins/platforms/xcb/qxcbnativeinterface.h
-index 62bfb4c634f..5cc5c045ad8 100644
+index 45be5c7ef4c..5e9b729405a 100644
 --- a/src/plugins/platforms/xcb/qxcbnativeinterface.h
 +++ b/src/plugins/platforms/xcb/qxcbnativeinterface.h
-@@ -79,6 +79,7 @@ public:
+@@ -78,6 +78,7 @@ public:
  
      Display *display() const override;
      xcb_connection_t *connection() const override;
