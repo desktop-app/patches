@@ -1,0 +1,26 @@
+diff --git a/src/gui/accessible/qaccessiblebridgeutils.cpp b/src/gui/accessible/qaccessiblebridgeutils.cpp
+index 0f91927d4c1..6817b01cc46 100644
+--- a/src/gui/accessible/qaccessiblebridgeutils.cpp
++++ b/src/gui/accessible/qaccessiblebridgeutils.cpp
+@@ -87,7 +87,7 @@ QString accessibleId(QAccessibleInterface *accessible) {
+             if (!name.isEmpty())
+                 result.prepend(name);
+             else
+-                result.prepend(QString::fromUtf8(obj->metaObject()->className()));
++                result.prepend(QString::fromUtf8(typeid(*obj).name()));
+         }
+         accessible = accessible->parent();
+     }
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+index 6a3bbce91d1..ffbe208d10e 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+@@ -535,7 +535,7 @@ HRESULT QWindowsUiaMainProvider::GetPropertyValue(PROPERTYID idProp, VARIANT *pR
+     case UIA_ClassNamePropertyId:
+         // Class name.
+         if (QObject *o = accessible->object()) {
+-            QString className = QLatin1StringView(o->metaObject()->className());
++            QString className = QLatin1StringView(typeid(*o).name());
+             *pRetVal = QComVariant{ className }.release();
+         }
+         break;

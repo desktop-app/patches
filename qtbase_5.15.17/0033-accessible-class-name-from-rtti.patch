@@ -1,0 +1,13 @@
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+index 6a4a7feb8af..4f5f181b513 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+@@ -410,7 +410,7 @@ HRESULT QWindowsUiaMainProvider::GetPropertyValue(PROPERTYID idProp, VARIANT *pR
+     case UIA_ClassNamePropertyId:
+         // Class name.
+         if (QObject *o = accessible->object()) {
+-            QString className = QLatin1String(o->metaObject()->className());
++            QString className = QLatin1String(typeid(*o).name());
+             setVariantString(className, pRetVal);
+         }
+         break;
