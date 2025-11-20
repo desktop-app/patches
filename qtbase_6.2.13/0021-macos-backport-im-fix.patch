@@ -1,6 +1,5 @@
-macOS: Don't pass on key event text for function keys when IM is disabled
 diff --git a/src/plugins/platforms/cocoa/qnsview_keys.mm b/src/plugins/platforms/cocoa/qnsview_keys.mm
-index 9e31ded933..13653f05ba 100644
+index 27911fc719c..cc67494a011 100644
 --- a/src/plugins/platforms/cocoa/qnsview_keys.mm
 +++ b/src/plugins/platforms/cocoa/qnsview_keys.mm
 @@ -39,6 +39,33 @@
@@ -37,7 +36,7 @@ index 9e31ded933..13653f05ba 100644
  @implementation QNSView (Keys)
  
  - (bool)handleKeyEvent:(NSEvent *)nsevent
-@@ -56,6 +83,8 @@
+@@ -62,6 +89,8 @@
      // otherwise by doCommandBySelector.
      m_sendKeyEventWithoutText = false;
  
@@ -46,15 +45,15 @@ index 9e31ded933..13653f05ba 100644
      if (keyEvent.type == QEvent::KeyPress) {
  
          if (m_composingText.isEmpty()) {
-@@ -103,6 +132,7 @@
-                     m_currentlyInterpretedKeyEvent = nsevent;
-                     [self interpretKeyEvents:@[nsevent]];
+@@ -112,6 +141,7 @@
+                         m_sendKeyEvent = true;
+                     }
                      m_currentlyInterpretedKeyEvent = 0;
 +                    didInterpretKeyEvent = true;
  
                      // If the last key we sent was dead, then pass the next
                      // key to the IM as well to complete composition.
-@@ -116,7 +146,9 @@
+@@ -125,7 +155,9 @@
      bool accepted = true;
      if (m_sendKeyEvent && m_composingText.isEmpty()) {
          KeyEvent keyEvent(nsevent);
