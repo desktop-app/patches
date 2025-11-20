@@ -48,7 +48,7 @@ index 5b02c5d646a..630ee0350db 100644
  
      QRegion scaled;
 diff --git a/src/gui/kernel/qwindow.cpp b/src/gui/kernel/qwindow.cpp
-index 639817257ea..3f30f5b40e9 100644
+index fa3a0243a64..4cb4b8157d2 100644
 --- a/src/gui/kernel/qwindow.cpp
 +++ b/src/gui/kernel/qwindow.cpp
 @@ -244,6 +244,13 @@ void QWindowPrivate::init(QScreen *targetScreen)
@@ -179,89 +179,72 @@ index 3e0059ca900..e529b27276b 100644
          }
          platformWindow->checkForScreenChanged(QWindowsWindow::FromDpiChange);
 diff --git a/src/plugins/platforms/windows/qwindowsscreen.cpp b/src/plugins/platforms/windows/qwindowsscreen.cpp
-index 6aeecdb7fa7..056e08f0516 100644
+index 6aeecdb7fa7..a1526ab7004 100644
 --- a/src/plugins/platforms/windows/qwindowsscreen.cpp
 +++ b/src/plugins/platforms/windows/qwindowsscreen.cpp
-@@ -55,6 +55,7 @@
- #include <QtGui/qscreen.h>
- 
- #include <QtCore/qdebug.h>
-+#include <QtCore/qscopeguard.h>
- 
- QT_BEGIN_NAMESPACE
- 
-@@ -592,7 +593,7 @@ const QWindowsScreen *QWindowsScreenManager::screenAtDp(const QPoint &p) const
-     return nullptr;
+@@ -504,6 +504,28 @@ static void moveToVirtualScreen(QWindow *w, const QScreen *newScreen)
+     w->setGeometry(geometry);
  }
  
--const QWindowsScreen *QWindowsScreenManager::screenForHwnd(HWND hwnd) const
-+const QWindowsScreen *QWindowsScreenManager::screenForHwnd(HWND hwnd)
- {
-     HMONITOR hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL);
-     if (hMonitor == nullptr)
-@@ -604,6 +605,15 @@ const QWindowsScreen *QWindowsScreenManager::screenForHwnd(HWND hwnd) const
-                          return s->data().hMonitor == hMonitor
-                              && (s->data().flags & QWindowsScreenData::VirtualDesktop) != 0;
-                      });
-+    static bool inside = false;
-+    if (it == m_screens.cend() && !inside) {
-+        inside = true;
-+        const auto guard = qScopeGuard([] {
-+            inside = false;
-+        });
-+        handleScreenChanges();
-+        return screenForHwnd(hwnd);
++void QWindowsScreenManager::addScreen(const QWindowsScreenData &screenData)
++{
++    auto *newScreen = new QWindowsScreen(screenData);
++    m_screens.push_back(newScreen);
++    QWindowSystemInterface::handleScreenAdded(newScreen,
++                                              screenData.flags & QWindowsScreenData::PrimaryScreen);
++    qCDebug(lcQpaWindows) << "New Monitor: " << screenData;
++
++    // When a new screen is attached Window might move windows to the new screen
++    // automatically, in which case they will get a WM_DPICHANGED event. But at
++    // that point we have not received WM_DISPLAYCHANGE yet, so we fail to reflect
++    // the new screen's DPI. To account for this we explicitly check for screen
++    // change here, now that we are processing the WM_DISPLAYCHANGE.
++    const auto allWindows = QGuiApplication::allWindows();
++    for (QWindow *w : allWindows) {
++        if (w->isVisible() && w->handle() && w->type() != Qt::Desktop) {
++            if (QWindowsWindow *window = QWindowsWindow::windowsWindowOf(w))
++                window->checkForScreenChanged(QWindowsWindow::ScreenChangeMode::FromScreenAdded);
++        }
 +    }
-     return it != m_screens.cend() ? *it : nullptr;
- }
- 
++}
++
+ void QWindowsScreenManager::removeScreen(int index)
+ {
+     qCDebug(lcQpaWindows) << "Removing Monitor:" << m_screens.at(index)->data();
+@@ -525,7 +547,7 @@ void QWindowsScreenManager::removeScreen(int index)
+                     && (QWindowsWindow::baseWindowOf(w)->exStyle() & WS_EX_TOOLWINDOW)) {
+                     moveToVirtualScreen(w, primaryScreen);
+                 } else {
+-                    QWindowSystemInterface::handleWindowScreenChanged(w, primaryScreen);
++                    QWindowSystemInterface::handleWindowScreenChanged<QWindowSystemInterface::SynchronousDelivery>(w, primaryScreen);
+                 }
+                 ++movedWindowCount;
+             }
+@@ -554,11 +576,7 @@ bool QWindowsScreenManager::handleScreenChanges()
+             if (existingIndex == 0)
+                 primaryScreenChanged = true;
+         } else {
+-            auto *newScreen = new QWindowsScreen(newData);
+-            m_screens.push_back(newScreen);
+-            QWindowSystemInterface::handleScreenAdded(newScreen,
+-                                                             newData.flags & QWindowsScreenData::PrimaryScreen);
+-            qCDebug(lcQpaWindows) << "New Monitor: " << newData;
++            addScreen(newData);
+         }    // exists
+     }        // for new screens.
+     // Remove deleted ones but keep main monitors if we get only the
 diff --git a/src/plugins/platforms/windows/qwindowsscreen.h b/src/plugins/platforms/windows/qwindowsscreen.h
-index 5c095808f2d..c22c5ca50b7 100644
+index 5c095808f2d..917fce53b77 100644
 --- a/src/plugins/platforms/windows/qwindowsscreen.h
 +++ b/src/plugins/platforms/windows/qwindowsscreen.h
-@@ -138,7 +138,7 @@ public:
-     const WindowsScreenList &screens() const { return m_screens; }
- 
-     const QWindowsScreen *screenAtDp(const QPoint &p) const;
--    const QWindowsScreen *screenForHwnd(HWND hwnd) const;
-+    const QWindowsScreen *screenForHwnd(HWND hwnd);
- 
+@@ -143,6 +143,7 @@ public:
      static bool isSingleScreen();
  
-diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
-index 9d9180e4f57..affaf7542c9 100644
---- a/src/plugins/platforms/windows/qwindowswindow.cpp
-+++ b/src/plugins/platforms/windows/qwindowswindow.cpp
-@@ -1939,12 +1939,12 @@ static inline bool equalDpi(const QDpi &d1, const QDpi &d2)
+ private:
++    void addScreen(const QWindowsScreenData &screenData);
+     void removeScreen(int index);
  
- void QWindowsWindow::checkForScreenChanged(ScreenChangeMode mode)
- {
--    if (parent() || QWindowsScreenManager::isSingleScreen())
-+    if (parent())
-         return;
- 
--    QPlatformScreen *currentScreen = screen();
-     const QWindowsScreen *newScreen =
-         QWindowsContext::instance()->screenManager().screenForHwnd(m_data.hwnd);
-+    QPlatformScreen *currentScreen = screen();
-     if (newScreen == nullptr || newScreen == currentScreen)
-         return;
-     // For screens with different DPI: postpone until WM_DPICHANGE
-@@ -1964,9 +1964,11 @@ void QWindowsWindow::handleGeometryChange()
- {
-     const QRect previousGeometry = m_data.geometry;
-     m_data.geometry = geometry_sys();
--    if (testFlag(WithinDpiChanged)
--        && QWindowsContext::instance()->screenManager().screenForHwnd(m_data.hwnd) != screen()) {
--        return; // QGuiApplication will send resize when screen actually changes
-+    if (testFlag(WithinDpiChanged)) {
-+        const QWindowsScreen *newScreen =
-+            QWindowsContext::instance()->screenManager().screenForHwnd(m_data.hwnd);
-+        if (newScreen != screen())
-+            return; // QGuiApplication will send resize when screen actually changes
-     }
-     QWindowSystemInterface::handleGeometryChange(window(), m_data.geometry);
-     // QTBUG-32121: OpenGL/normal windows (with exception of ANGLE) do not receive
+     WindowsScreenList m_screens;
 diff --git a/src/plugins/platforms/windows/qwindowswindow.h b/src/plugins/platforms/windows/qwindowswindow.h
 index ac207aa48f4..27d467c3c65 100644
 --- a/src/plugins/platforms/windows/qwindowswindow.h
