@@ -9,7 +9,7 @@ index 65785c406c2..8d374300f19 100644
 +        auto pngs = QThemeIconEntries();
  
          // Add all relevant files
-         for (int i = 0; i < contentDirs.size(); ++i) {
+         for (qsizetype i = 0; i < contentDirs.size(); ++i) {
 @@ -519,7 +520,7 @@ QThemeIconInfo QIconLoader::findIconHelper(const QString &themeName,
                      iconEntry->filename = pngPath;
                      // Notice we ensure that pixmap entries always come before
