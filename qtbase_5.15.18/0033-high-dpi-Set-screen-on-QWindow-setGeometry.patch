@@ -1,0 +1,55 @@
+From 65e2983c08e34f445693e7a70ff9c43881c7de4a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Morten=20Johan=20S=C3=B8rvig?= <morten.sorvig@qt.io>
+Date: Mon, 25 May 2020 15:11:34 +0200
+Subject: [PATCH] high-dpi: Set screen on QWindow::setGeometry()
+
+Keep (requested) geometry and screen in sync, which
+is required for correct high-dpi scaling. The platform
+plugin can still override with new geometry (and screen),
+as usual.
+
+This has previously been fixed/worked around for QDialog,
+see QTBUG-52735. That fix can now be removed in favor
+of this change in QWindow.
+
+Change-Id: Ieadb1bfee5fb966c5c2052e9daa5ba124a87f3cd
+Reviewed-by: Volker Hilsheimer <volker.hilsheimer@qt.io>
+Reviewed-by: Friedemann Kleint <Friedemann.Kleint@qt.io>
+---
+ src/gui/kernel/qwindow.cpp | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/src/gui/kernel/qwindow.cpp b/src/gui/kernel/qwindow.cpp
+index fa3a0243a64..2724d5ef9bd 100644
+--- a/src/gui/kernel/qwindow.cpp
++++ b/src/gui/kernel/qwindow.cpp
+@@ -523,6 +523,13 @@ void QWindowPrivate::create(bool recursive, WId nativeHandle)
+     if (q->parent())
+         q->parent()->create();
+ 
++    // QPlatformWindow will poll geometry() during construction below. Set the
++    // screen here so that high-dpi scaling will use the correct scale factor.
++    if (q->isTopLevel()) {
++        if (QScreen *screen = screenForGeometry(geometry))
++            setTopLevelScreen(screen, false);
++    }
++
+     QPlatformIntegration *platformIntegration = QGuiApplicationPrivate::platformIntegration();
+     platformWindow = nativeHandle ? platformIntegration->createForeignWindow(q, nativeHandle)
+         : platformIntegration->createPlatformWindow(q);
+@@ -1746,8 +1753,11 @@ void QWindow::setGeometry(const QRect &rect)
+ 
+     d->positionPolicy = QWindowPrivate::WindowFrameExclusive;
+     if (d->platformWindow) {
+-        QRect nativeRect;
+         QScreen *newScreen = d->screenForGeometry(rect);
++        if (newScreen && isTopLevel())
++            d->setTopLevelScreen(newScreen, true);
++
++        QRect nativeRect;
+         if (newScreen && isTopLevel())
+             nativeRect = QHighDpi::toNativePixels(rect, newScreen);
+         else
+-- 
+2.51.0
+
