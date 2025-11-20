@@ -1,0 +1,12 @@
+diff --git a/src/gui/text/windows/qwindowsfontdatabasebase.cpp b/src/gui/text/windows/qwindowsfontdatabasebase.cpp
+index 990f20fa447..45521370817 100644
+--- a/src/gui/text/windows/qwindowsfontdatabasebase.cpp
++++ b/src/gui/text/windows/qwindowsfontdatabasebase.cpp
+@@ -1015,6 +1015,7 @@ QStringList QWindowsFontDatabaseBase::extraTryFontsForFamily(const QString &fami
+ {
+     QStringList result;
+     if (!QFontDatabase::writingSystems(family).contains(QFontDatabase::Symbol)) {
++        result << systemDefaultFont().family();
+         if (!tryFonts) {
+             LANGID lid = GetUserDefaultLangID();
+             switch (lid&0xff) {
