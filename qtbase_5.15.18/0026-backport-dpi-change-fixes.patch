@@ -246,7 +246,7 @@ index 5c095808f2d..917fce53b77 100644
  
      WindowsScreenList m_screens;
 diff --git a/src/plugins/platforms/windows/qwindowswindow.h b/src/plugins/platforms/windows/qwindowswindow.h
-index ac207aa48f4..27d467c3c65 100644
+index ac207aa48f4..272c304275a 100644
 --- a/src/plugins/platforms/windows/qwindowswindow.h
 +++ b/src/plugins/platforms/windows/qwindowswindow.h
 @@ -264,6 +264,7 @@ public:
@@ -257,6 +257,15 @@ index ac207aa48f4..27d467c3c65 100644
      QMargins frameMargins() const override;
      QMargins fullFrameMargins() const override;
      void setFullFrameMargins(const QMargins &newMargins);
+@@ -346,7 +347,7 @@ public:
+     void alertWindow(int durationMs = 0);
+     void stopAlertWindow();
+ 
+-    enum ScreenChangeMode { FromGeometryChange, FromDpiChange };
++    enum ScreenChangeMode { FromGeometryChange, FromDpiChange, FromScreenAdded };
+     void checkForScreenChanged(ScreenChangeMode mode = FromGeometryChange);
+ 
+     static void setTouchWindowTouchTypeStatic(QWindow *window, QWindowsWindowFunctions::TouchWindowTouchTypes touchTypes);
 @@ -370,7 +371,6 @@ private:
      inline bool isDropSiteEnabled() const { return m_dropTarget != nullptr; }
      void setDropSiteEnabled(bool enabled);
