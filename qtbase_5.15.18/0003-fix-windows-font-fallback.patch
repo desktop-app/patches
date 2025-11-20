@@ -1,8 +1,8 @@
 diff --git a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
-index 09d2d916fe..6da33fab94 100644
+index 9883a72a1e1..dbdf4ad1a0b 100644
 --- a/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
 +++ b/src/platformsupport/fontdatabases/windows/qwindowsfontdatabase.cpp
-@@ -1710,52 +1710,71 @@ HFONT QWindowsFontDatabase::systemFont()
+@@ -1747,51 +1747,75 @@ HFONT QWindowsFontDatabase::systemFont()
  
  static const char *other_tryFonts[] = {
      "Arial",
@@ -10,7 +10,6 @@ index 09d2d916fe..6da33fab94 100644
 -    "Gulim",
 -    "SimSun",
 -    "PMingLiU",
--    "Arial Unicode MS",
 +    "Yu Gothic UI",
 +    "Meiryo UI",
 +    "Yu Gothic",
@@ -20,6 +19,7 @@ index 09d2d916fe..6da33fab94 100644
 +    "Microsoft YaHei",
 +    "Microsoft JhengHei UI",
 +    "Microsoft JhengHei",
+     "Arial Unicode MS",
      0
  };
  
@@ -33,12 +33,12 @@ index 09d2d916fe..6da33fab94 100644
 -    "Gulim",
 -    "SimSun",
 -    "PMingLiU",
--    "Arial Unicode MS",
 +    "Malgun Gothic",
 +    "Microsoft YaHei UI",
 +    "Microsoft YaHei",
 +    "Microsoft JhengHei UI",
 +    "Microsoft JhengHei",
+     "Arial Unicode MS",
      0
  };
  
@@ -50,7 +50,6 @@ index 09d2d916fe..6da33fab94 100644
 -    "PMingLiU",
 -    "Gulim",
 -    "MS UI Gothic",
--    "Arial Unicode MS",
 +    "Microsoft JhengHei UI",
 +    "Microsoft JhengHei",
 +    "Malgun Gothic",
@@ -58,6 +57,7 @@ index 09d2d916fe..6da33fab94 100644
 +    "Meiryo UI",
 +    "Yu Gothic",
 +    "Meiryo",
+     "Arial Unicode MS",
      0
  };
  
@@ -69,7 +69,6 @@ index 09d2d916fe..6da33fab94 100644
 -    "SimSun",
 -    "Gulim",
 -    "MS UI Gothic",
--    "Arial Unicode MS",
 +    "Microsoft YaHei UI",
 +    "Microsoft YaHei",
 +    "Malgun Gothic",
@@ -77,6 +76,7 @@ index 09d2d916fe..6da33fab94 100644
 +    "Meiryo UI",
 +    "Yu Gothic",
 +    "Meiryo",
+     "Arial Unicode MS",
      0
  };
  
@@ -87,7 +87,6 @@ index 09d2d916fe..6da33fab94 100644
 -    "PMingLiU",
 -    "SimSun",
 -    "MS UI Gothic",
--    "Arial Unicode MS",
 +    "Microsoft JhengHei UI",
 +    "Microsoft JhengHei",
 +    "Microsoft YaHei UI",
@@ -96,21 +95,18 @@ index 09d2d916fe..6da33fab94 100644
 +    "Meiryo UI",
 +    "Yu Gothic",
 +    "Meiryo",
+     "Arial Unicode MS",
      0
  };
- 
-@@ -1892,6 +1911,10 @@ QStringList QWindowsFontDatabase::extraTryFontsForFamily(const QString &family)
-             ++tf;
-         }
-     }
-+    result.append(QStringLiteral("Nirmala UI"));
-+    result.append(QStringLiteral("Iskoola Pota"));
-+    result.append(QStringLiteral("Ebrima"));
-+    result.append(QStringLiteral("Arial Unicode MS"));
-     result.append(QStringLiteral("Segoe UI Emoji"));
-     result.append(QStringLiteral("Segoe UI Symbol"));
-     return result;
-@@ -1918,7 +1941,7 @@ QString QWindowsFontDatabase::familyForStyleHint(QFont::StyleHint styleHint)
+@@ -1898,6 +1922,7 @@ QStringList QWindowsFontDatabase::extraTryFontsForFamily(const QString &family)
+     QStringList result;
+     QFontDatabase db;
+     if (!db.writingSystems(family).contains(QFontDatabase::Symbol)) {
++        result << systemDefaultFont().family();
+         if (!tryFonts) {
+             LANGID lid = GetUserDefaultLangID();
+             switch (lid&0xff) {
+@@ -1955,7 +1980,7 @@ QString QWindowsFontDatabase::familyForStyleHint(QFont::StyleHint styleHint)
      default:
          break;
      }
@@ -119,7 +115,7 @@ index 09d2d916fe..6da33fab94 100644
  }
  
  QStringList QWindowsFontDatabase::fallbacksForFamily(const QString &family, QFont::Style style, QFont::StyleHint styleHint, QChar::Script script) const
-@@ -2042,7 +2065,7 @@ QFontEngine *QWindowsFontDatabase::createEngine(const QFontDef &request, const Q
+@@ -2079,7 +2104,7 @@ QFontEngine *QWindowsFontDatabase::createEngine(const QFontDef &request, const Q
  
  QFont QWindowsFontDatabase::systemDefaultFont()
  {
