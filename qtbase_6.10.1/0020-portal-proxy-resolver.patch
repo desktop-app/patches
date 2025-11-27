@@ -43,13 +43,14 @@ diff --git a/src/network/kernel/qnetworkproxy_generic.cpp b/src/network/kernel/q
 index b915ee8fc8..8168d0cae8 100644
 --- a/src/network/kernel/qnetworkproxy_generic.cpp
 +++ b/src/network/kernel/qnetworkproxy_generic.cpp
-@@ -6,6 +6,11 @@
+@@ -6,6 +6,12 @@
  #include <QtCore/QByteArray>
  #include <QtCore/QUrl>
  
 +#if QT_CONFIG(dbus)
 +#include <QtDBus/QDBusConnection>
 +#include <QtDBus/QDBusMessage>
++#include <QtDBus/QDBusReply>
 +#endif
 +
  #ifndef QT_NO_NETWORKPROXY
