@@ -1,0 +1,76 @@
+From 60f74542177106607e33e30005ac38c97bbe3cd3 Mon Sep 17 00:00:00 2001
+From: Reza Bakhshi Laktasaraei <r.bakhshi72@gmail.com>
+Date: Tue, 16 Dec 2025 05:06:28 +0330
+Subject: [PATCH] Add group position support to Qt accessibility and expose it
+ via Windows UIA
+
+---
+ src/gui/accessible/qaccessible.cpp             |  9 +++++++++
+ src/gui/accessible/qaccessible.h               |  1 +
+ .../uiautomation/qwindowsuiamainprovider.cpp   | 18 ++++++++++++++++++
+ 3 files changed, 28 insertions(+)
+
+diff --git a/src/gui/accessible/qaccessible.cpp b/src/gui/accessible/qaccessible.cpp
+index 32d0e6ca91c..be89bd6f5f6 100644
+--- a/src/gui/accessible/qaccessible.cpp
++++ b/src/gui/accessible/qaccessible.cpp
+@@ -1825,6 +1825,15 @@ void QAccessibleInterface::virtual_hook(int /*id*/, void * /*data*/)
+ {
+ }
+ 
++void QAccessibleInterface::groupPosition(int *groupLevel, int *similarItemsInGroup, int *positionInGroup) const
++{
++    if (groupLevel) *groupLevel = 0;
++    if (similarItemsInGroup)
++        *similarItemsInGroup = 0;
++    if (positionInGroup)
++        *positionInGroup = 0;
++}
++
+ /*!
+     \fn void *QAccessibleInterface::interface_cast(QAccessible::InterfaceType type)
+ 
+diff --git a/src/gui/accessible/qaccessible.h b/src/gui/accessible/qaccessible.h
+index f7564a3076b..34085901856 100644
+--- a/src/gui/accessible/qaccessible.h
++++ b/src/gui/accessible/qaccessible.h
+@@ -510,6 +510,7 @@ public:
+     { return reinterpret_cast<QAccessibleTableCellInterface *>(interface_cast(QAccessible::TableCellInterface)); }
+ 
+     virtual void virtual_hook(int id, void *data);
++    virtual void groupPosition(int *groupLevel, int *similarItemsInGroup, int *positionInGroup) const;
+ 
+     virtual void *interface_cast(QAccessible::InterfaceType)
+     { return nullptr; }
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+index 6a4a7feb8af..938e5896468 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+@@ -494,6 +494,24 @@ HRESULT QWindowsUiaMainProvider::GetPropertyValue(PROPERTYID idProp, VARIANT *pR
+         setVariantString(name, pRetVal);
+         break;
+     }
++    case UIA_PositionInSetPropertyId:
++    case UIA_SizeOfSetPropertyId:
++    case UIA_LevelPropertyId: {
++        int level = 0;
++        int setSize = 0;
++        int posInSet = 0;
++
++        accessible->groupPosition(&level, &setSize, &posInSet);
++
++        if (idProp == UIA_PositionInSetPropertyId && posInSet > 0) {
++            setVariantI4(posInSet, pRetVal);
++        } else if (idProp == UIA_SizeOfSetPropertyId && setSize > 0) {
++            setVariantI4(setSize, pRetVal);
++        } else if (idProp == UIA_LevelPropertyId && level > 0) {
++            setVariantI4(level, pRetVal);
++        }
++        break;
++    }
+     default:
+         break;
+     }
+-- 
+2.45.2.windows.1
+
