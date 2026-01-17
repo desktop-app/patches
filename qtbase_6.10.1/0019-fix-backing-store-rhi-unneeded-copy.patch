@@ -1,5 +1,5 @@
 diff --git a/src/gui/CMakeLists.txt b/src/gui/CMakeLists.txt
-index d864b4ea3d6..0982822e6e6 100644
+index 1ce10a3e850..de4b2715ba1 100644
 --- a/src/gui/CMakeLists.txt
 +++ b/src/gui/CMakeLists.txt
 @@ -217,6 +217,7 @@ qt_internal_add_module(Gui
@@ -28,7 +28,7 @@ index d864b4ea3d6..0982822e6e6 100644
          platform/darwin/qutimimeconverter.mm platform/darwin/qutimimeconverter.h
          platform/darwin/qapplekeymapper.mm platform/darwin/qapplekeymapper_p.h
 diff --git a/src/gui/painting/qbackingstoredefaultcompositor.cpp b/src/gui/painting/qbackingstoredefaultcompositor.cpp
-index 41ab7c97f8c..c0e322e998f 100644
+index fae9dabca66..9a335495f5f 100644
 --- a/src/gui/painting/qbackingstoredefaultcompositor.cpp
 +++ b/src/gui/painting/qbackingstoredefaultcompositor.cpp
 @@ -99,8 +99,6 @@ QRhiTexture *QBackingStoreDefaultCompositor::toTexture(const QImage &sourceImage
@@ -41,7 +41,7 @@ index 41ab7c97f8c..c0e322e998f 100644
      if (resized) {
          if (!m_texture)
 diff --git a/src/plugins/platforms/cocoa/qcocoaintegration.mm b/src/plugins/platforms/cocoa/qcocoaintegration.mm
-index 63553b986ed..c8aa694c3bc 100644
+index 350fe09e059..3fb0f013c0c 100644
 --- a/src/plugins/platforms/cocoa/qcocoaintegration.mm
 +++ b/src/plugins/platforms/cocoa/qcocoaintegration.mm
 @@ -312,15 +312,6 @@ QPlatformBackingStore *QCocoaIntegration::createPlatformBackingStore(QWindow *wi
@@ -61,7 +61,7 @@ index 63553b986ed..c8aa694c3bc 100644
          // terms of rhiFlush().
          return new QRhiBackingStore(window);
 diff --git a/src/plugins/platforms/wayland/qwaylandintegration.cpp b/src/plugins/platforms/wayland/qwaylandintegration.cpp
-index 9158013fe78..7a5529b52f3 100644
+index 669d47ee3b8..01390d40d76 100644
 --- a/src/plugins/platforms/wayland/qwaylandintegration.cpp
 +++ b/src/plugins/platforms/wayland/qwaylandintegration.cpp
 @@ -29,6 +29,7 @@
@@ -86,11 +86,38 @@ index 9158013fe78..7a5529b52f3 100644
      return new QWaylandShmBackingStore(window, mDisplay.data());
  }
  
+diff --git a/src/plugins/platforms/windows/qwindowsgdiintegration.cpp b/src/plugins/platforms/windows/qwindowsgdiintegration.cpp
+index 14fd03fc1f9..6c3b1f9342d 100644
+--- a/src/plugins/platforms/windows/qwindowsgdiintegration.cpp
++++ b/src/plugins/platforms/windows/qwindowsgdiintegration.cpp
+@@ -8,6 +8,7 @@
+ 
+ #include <QtCore/qdebug.h>
+ #include <QtGui/private/qpixmap_raster_p.h>
++#include <QtGui/private/qrhibackingstore_p.h>
+ 
+ QT_BEGIN_NAMESPACE
+ 
+@@ -37,6 +38,14 @@ QPlatformPixmap *QWindowsGdiIntegration::createPlatformPixmap(QPlatformPixmap::P
+ 
+ QPlatformBackingStore *QWindowsGdiIntegration::createPlatformBackingStore(QWindow *window) const
+ {
++    switch (window->surfaceType()) {
++    case QSurface::Direct3DSurface:
++    case QSurface::OpenGLSurface:
++    case QSurface::VulkanSurface:
++        return new QRhiBackingStore(window);
++    default:
++        break;
++    }
+     return new QWindowsBackingStore(window);
+ }
+ 
 diff --git a/src/plugins/platforms/xcb/qxcbintegration.cpp b/src/plugins/platforms/xcb/qxcbintegration.cpp
-index 9de57a26b92..eb90e1bb271 100644
+index 67242c0c001..5334c3a3ac8 100644
 --- a/src/plugins/platforms/xcb/qxcbintegration.cpp
 +++ b/src/plugins/platforms/xcb/qxcbintegration.cpp
-@@ -30,6 +30,7 @@
+@@ -31,6 +31,7 @@
  #include <stdio.h>
  
  #include <QtGui/private/qguiapplication_p.h>
@@ -98,7 +125,7 @@ index 9de57a26b92..eb90e1bb271 100644
  
  #if QT_CONFIG(xcb_xlib)
  #define register        /* C++17 deprecated register */
-@@ -285,6 +286,13 @@ QPlatformBackingStore *QXcbIntegration::createPlatformBackingStore(QWindow *wind
+@@ -286,6 +287,13 @@ QPlatformBackingStore *QXcbIntegration::createPlatformBackingStore(QWindow *wind
          backingStore = new QXcbNativeBackingStore(window);
  #endif
      } else {
