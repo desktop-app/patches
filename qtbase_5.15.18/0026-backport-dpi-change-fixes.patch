@@ -185,10 +185,27 @@ index ebce163ed32..6143c5058de 100644
  
  /*!
 diff --git a/src/plugins/platforms/windows/qwindowscontext.cpp b/src/plugins/platforms/windows/qwindowscontext.cpp
-index 3e0059ca900..e529b27276b 100644
+index 3e0059ca900..d9fb96d0aa6 100644
 --- a/src/plugins/platforms/windows/qwindowscontext.cpp
 +++ b/src/plugins/platforms/windows/qwindowscontext.cpp
-@@ -1448,7 +1448,7 @@ bool QWindowsContext::windowsProc(HWND hwnd, UINT message,
+@@ -218,6 +218,7 @@ void QWindowsUser32DLL::init()
+         getWindowDpiAwarenessContext = (GetWindowDpiAwarenessContext)library.resolve("GetWindowDpiAwarenessContext");
+         getAwarenessFromDpiAwarenessContext = (GetAwarenessFromDpiAwarenessContext)library.resolve("GetAwarenessFromDpiAwarenessContext");
+         systemParametersInfoForDpi = (SystemParametersInfoForDpi)library.resolve("SystemParametersInfoForDpi");
++        getDpiForWindow = (GetDpiForWindow)library.resolve("GetDpiForWindow");
+     }
+ }
+ 
+@@ -1443,12 +1444,16 @@ bool QWindowsContext::windowsProc(HWND hwnd, UINT message,
+ #endif
+     }   break;
+     case QtWindows::DpiChangedEvent: {
++
++        const UINT dpi = HIWORD(wParam);
++        platformWindow->setSavedDpi(dpi);
++
+         // Try to apply the suggested size first and then notify ScreenChanged
+         // so that the resize event sent from QGuiApplication incorporates it
          // WM_DPICHANGED is sent with a size that avoids resize loops (by
          // snapping back to the previous screen, see QTBUG-65580).
          const bool doResize = resizeOnDpiChanged(platformWindow->window());
@@ -197,7 +214,7 @@ index 3e0059ca900..e529b27276b 100644
              platformWindow->setFlag(QWindowsWindow::WithinDpiChanged);
              platformWindow->updateFullFrameMargins();
              const auto prcNewWindow = reinterpret_cast<RECT *>(lParam);
-@@ -1457,6 +1457,7 @@ bool QWindowsContext::windowsProc(HWND hwnd, UINT message,
+@@ -1457,6 +1462,7 @@ bool QWindowsContext::windowsProc(HWND hwnd, UINT message,
              SetWindowPos(hwnd, nullptr, prcNewWindow->left, prcNewWindow->top,
                           prcNewWindow->right - prcNewWindow->left,
                           prcNewWindow->bottom - prcNewWindow->top, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -205,6 +222,28 @@ index 3e0059ca900..e529b27276b 100644
              platformWindow->clearFlag(QWindowsWindow::WithinDpiChanged);
          }
          platformWindow->checkForScreenChanged(QWindowsWindow::FromDpiChange);
+diff --git a/src/plugins/platforms/windows/qwindowscontext.h b/src/plugins/platforms/windows/qwindowscontext.h
+index 8eca31e8bc5..2b63edd950c 100644
+--- a/src/plugins/platforms/windows/qwindowscontext.h
++++ b/src/plugins/platforms/windows/qwindowscontext.h
+@@ -107,6 +107,7 @@ struct QWindowsUser32DLL
+     typedef int  (WINAPI *GetWindowDpiAwarenessContext)(HWND);
+     typedef int  (WINAPI *GetAwarenessFromDpiAwarenessContext)(int);
+     typedef BOOL (WINAPI *SystemParametersInfoForDpi)(UINT, UINT, PVOID, UINT, UINT);
++    typedef int  (WINAPI *GetDpiForWindow)(HWND);
+ 
+     // Windows pointer functions (Windows 8 or later).
+     EnableMouseInPointer enableMouseInPointer = nullptr;
+@@ -123,6 +124,9 @@ struct QWindowsUser32DLL
+     // Windows Vista onwards
+     SetProcessDPIAware setProcessDPIAware = nullptr;
+ 
++    // Windows 10 version 1607 onwards
++    GetDpiForWindow getDpiForWindow = nullptr;
++
+     // Clipboard listeners are present on Windows Vista onwards
+     // but missing in MinGW 4.9 stub libs. Can be removed in MinGW 5.
+     AddClipboardFormatListener addClipboardFormatListener = nullptr;
 diff --git a/src/plugins/platforms/windows/qwindowsscreen.cpp b/src/plugins/platforms/windows/qwindowsscreen.cpp
 index 6aeecdb7fa7..a1526ab7004 100644
 --- a/src/plugins/platforms/windows/qwindowsscreen.cpp
@@ -272,8 +311,36 @@ index 5c095808f2d..917fce53b77 100644
      void removeScreen(int index);
  
      WindowsScreenList m_screens;
+diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
+index 9d9180e4f57..769170ddadb 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.cpp
++++ b/src/plugins/platforms/windows/qwindowswindow.cpp
+@@ -1389,6 +1389,8 @@ void QWindowsWindow::initialize()
+         if (obtainedScreen && screen() != obtainedScreen)
+             QWindowSystemInterface::handleWindowScreenChanged<QWindowSystemInterface::SynchronousDelivery>(w, obtainedScreen->screen());
+     }
++    if (QWindowsContext::user32dll.getDpiForWindow)
++       setSavedDpi(QWindowsContext::user32dll.getDpiForWindow(handle()));
+ }
+ 
+ QSurfaceFormat QWindowsWindow::format() const
+@@ -1949,10 +1951,11 @@ void QWindowsWindow::checkForScreenChanged(ScreenChangeMode mode)
+         return;
+     // For screens with different DPI: postpone until WM_DPICHANGE
+     // Check on currentScreen as it can be 0 when resuming a session (QTBUG-80436).
+-    if (mode == FromGeometryChange && currentScreen != nullptr
+-        && !equalDpi(currentScreen->logicalDpi(), newScreen->logicalDpi())) {
++    const QDpi currentDpi = savedDpi() ? QDpi(savedDpi(), savedDpi()) : currentScreen ? currentScreen->logicalDpi() : 0;
++    const bool changingDpi = !equalDpi(currentDpi, newScreen->logicalDpi());
++    if (mode == FromGeometryChange && currentScreen != nullptr && changingDpi)
+         return;
+-    }
++
+     qCDebug(lcQpaWindows).noquote().nospace() << __FUNCTION__
+         << ' ' << window() << " \"" << (currentScreen ? currentScreen->name() : QString())
+         << "\"->\"" << newScreen->name() << '"';
 diff --git a/src/plugins/platforms/windows/qwindowswindow.h b/src/plugins/platforms/windows/qwindowswindow.h
-index ac207aa48f4..272c304275a 100644
+index ac207aa48f4..5401597c66f 100644
 --- a/src/plugins/platforms/windows/qwindowswindow.h
 +++ b/src/plugins/platforms/windows/qwindowswindow.h
 @@ -264,6 +264,7 @@ public:
@@ -293,7 +360,17 @@ index ac207aa48f4..272c304275a 100644
      void checkForScreenChanged(ScreenChangeMode mode = FromGeometryChange);
  
      static void setTouchWindowTouchTypeStatic(QWindow *window, QWindowsWindowFunctions::TouchWindowTouchTypes touchTypes);
-@@ -370,7 +371,6 @@ private:
+@@ -359,6 +360,9 @@ public:
+     static const char *embeddedNativeParentHandleProperty;
+     static const char *hasBorderInFullScreenProperty;
+ 
++    void setSavedDpi(int dpi) { m_savedDpi = dpi; }
++    int savedDpi() const { return m_savedDpi; }
++
+ private:
+     inline void show_sys() const;
+     inline QWindowsWindowData setWindowFlags_sys(Qt::WindowFlags wt, unsigned flags = 0) const;
+@@ -370,7 +374,6 @@ private:
      inline bool isDropSiteEnabled() const { return m_dropTarget != nullptr; }
      void setDropSiteEnabled(bool enabled);
      void updateDropSite(bool topLevel);
@@ -301,3 +378,11 @@ index ac207aa48f4..272c304275a 100644
      void handleWindowStateChange(Qt::WindowStates state);
      inline void destroyIcon();
      void fireExpose(const QRegion &region, bool force=false);
+@@ -392,6 +395,7 @@ private:
+     HICON m_iconSmall = nullptr;
+     HICON m_iconBig = nullptr;
+     void *m_surface = nullptr;
++    int m_savedDpi = 0;
+ 
+     static bool m_screenForGLInitialized;
+ 
