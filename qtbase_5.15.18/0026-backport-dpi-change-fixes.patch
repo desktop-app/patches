@@ -330,7 +330,7 @@ index 9d9180e4f57..769170ddadb 100644
      // Check on currentScreen as it can be 0 when resuming a session (QTBUG-80436).
 -    if (mode == FromGeometryChange && currentScreen != nullptr
 -        && !equalDpi(currentScreen->logicalDpi(), newScreen->logicalDpi())) {
-+    const QDpi currentDpi = savedDpi() ? QDpi(savedDpi(), savedDpi()) : currentScreen ? currentScreen->logicalDpi() : 0;
++    const QDpi currentDpi = savedDpi() ? QDpi(savedDpi(), savedDpi()) : currentScreen ? currentScreen->logicalDpi() : QDpi();
 +    const bool changingDpi = !equalDpi(currentDpi, newScreen->logicalDpi());
 +    if (mode == FromGeometryChange && currentScreen != nullptr && changingDpi)
          return;
