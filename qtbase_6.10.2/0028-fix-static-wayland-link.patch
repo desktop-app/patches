@@ -1,5 +1,5 @@
 diff --git a/src/gui/CMakeLists.txt b/src/gui/CMakeLists.txt
-index dd54e567c98..93f8e5639af 100644
+index 8c0f11924d1..4cbca9a7dea 100644
 --- a/src/gui/CMakeLists.txt
 +++ b/src/gui/CMakeLists.txt
 @@ -58,7 +58,7 @@ if(QT_FEATURE_opengl)
@@ -8,6 +8,6 @@ index dd54e567c98..93f8e5639af 100644
  qt_internal_add_module(Gui
 -    PLUGIN_TYPES accessiblebridge platforms platforms/darwin xcbglintegrations platformthemes platforminputcontexts generic iconengines imageformats egldeviceintegrations
 +    PLUGIN_TYPES accessiblebridge platforms platforms/darwin xcbglintegrations platformthemes platforminputcontexts generic iconengines imageformats egldeviceintegrations wayland-decoration-client wayland-graphics-integration-client wayland-shell-integration
-     FEATURE_DEPENDENCIES
-         Qt::Network
      QMAKE_MODULE_CONFIG "${qmake_module_config}"
+     SOURCES
+         compat/removed_api.cpp

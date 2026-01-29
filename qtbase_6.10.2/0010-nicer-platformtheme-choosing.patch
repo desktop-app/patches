@@ -1,16 +1,18 @@
 diff --git a/src/gui/kernel/qguiapplication.cpp b/src/gui/kernel/qguiapplication.cpp
-index 5fd48a55344..a2fd8c8f83d 100644
+index b7901e166dd..02eeb33ec70 100644
 --- a/src/gui/kernel/qguiapplication.cpp
 +++ b/src/gui/kernel/qguiapplication.cpp
-@@ -1355,17 +1355,18 @@ static void init_platform(const QString &pluginNamesWithArguments, const QString
+@@ -1357,19 +1357,18 @@ static void init_platform(const QString &pluginNamesWithArguments, const QString
          themeNames.append(platformThemeName);
      }
  
+-#if defined(Q_OS_UNIX) && !defined(Q_OS_DARWIN)
 -    // 2) Special case - check whether it's a flatpak or snap app to use xdg-desktop-portal platform theme for portals support
 -    if (checkNeedPortalSupport()) {
 -        qCDebug(lcQpaTheme) << "Adding xdgdesktopportal to list of theme names";
 -        themeNames.append(QStringLiteral("xdgdesktopportal"));
 -    }
+-#endif
 -
 -    // 3) Ask the platform integration for a list of theme names
 +    // 2) Ask the platform integration for a list of theme names
@@ -29,7 +31,7 @@ index 5fd48a55344..a2fd8c8f83d 100644
      for (const QString &themeName : std::as_const(themeNames)) {
          qCDebug(lcQpaTheme) << "Attempting to create platform theme" << themeName << "via QPlatformThemeFactory::create";
 diff --git a/src/gui/platform/unix/qgenericunixtheme.cpp b/src/gui/platform/unix/qgenericunixtheme.cpp
-index afd2c4cd7de..f55671c5fb0 100644
+index 204e94468d8..2cb01580dfb 100644
 --- a/src/gui/platform/unix/qgenericunixtheme.cpp
 +++ b/src/gui/platform/unix/qgenericunixtheme.cpp
 @@ -150,6 +150,8 @@ QStringList QGenericUnixTheme::themeNames()
