@@ -1,0 +1,13 @@
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+index 403c45cefc0..84ba21e3df8 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+@@ -126,7 +126,7 @@ void QWindowsUiaMainProvider::notifyStateChange(QAccessibleStateChangeEvent *eve
+     if (QAccessibleInterface *accessible = event->accessibleInterface()) {
+         if (event->changedStates().checked || event->changedStates().checkStateMixed) {
+            // Notifies states changes in checkboxes.
+-           if (accessible->role() == QAccessible::CheckBox) {
++           if (accessible->state().checkable) {
+                 if (QWindowsUiaMainProvider *provider = providerForAccessible(accessible)) {
+                     VARIANT oldVal, newVal;
+                     clearVariant(&oldVal);
