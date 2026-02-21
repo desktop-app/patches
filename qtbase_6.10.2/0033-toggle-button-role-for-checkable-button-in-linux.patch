@@ -1,0 +1,12 @@
+diff --git a/src/gui/accessible/linux/atspiadaptor.cpp b/src/gui/accessible/linux/atspiadaptor.cpp
+--- a/src/gui/accessible/linux/atspiadaptor.cpp
++++ b/src/gui/accessible/linux/atspiadaptor.cpp
+@@ -1681,6 +1681,8 @@
+ AtspiRole AtSpiAdaptor::getRole(QAccessibleInterface *interface) const
+ {
+     if ((interface->role() == QAccessible::EditableText) && interface->state().passwordEdit)
+         return ATSPI_ROLE_PASSWORD_TEXT;
++    if (interface->role() == QAccessible::Button && interface->state().checkable)
++        return ATSPI_ROLE_TOGGLE_BUTTON;
+     return QSpiAccessibleBridge::namesForRole(interface->role()).spiRole();
+ }
