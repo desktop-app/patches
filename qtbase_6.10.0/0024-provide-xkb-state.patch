@@ -1,0 +1,96 @@
+diff --git a/src/gui/kernel/qguiapplication_platform.h b/src/gui/kernel/qguiapplication_platform.h
+index 98e19427ae7..eddc92d886c 100644
+--- a/src/gui/kernel/qguiapplication_platform.h
++++ b/src/gui/kernel/qguiapplication_platform.h
+@@ -21,6 +21,7 @@
+ #if QT_CONFIG(xcb)
+ typedef struct _XDisplay Display;
+ struct xcb_connection_t;
++struct xkb_state;
+ #endif
+ 
+ #if QT_CONFIG(wayland)
+@@ -59,6 +60,7 @@ struct Q_GUI_EXPORT QX11Application
+     QT_DECLARE_NATIVE_INTERFACE(QX11Application, 1, QGuiApplication)
+     virtual Display *display() const = 0;
+     virtual xcb_connection_t *connection() const = 0;
++    virtual xkb_state *xkbState() const = 0;
+ };
+ #endif
+ 
+diff --git a/src/plugins/platforms/offscreen/qoffscreenintegration_x11.h b/src/plugins/platforms/offscreen/qoffscreenintegration_x11.h
+index 7b2ad6e1ce0..dfe7f1fbf73 100644
+--- a/src/plugins/platforms/offscreen/qoffscreenintegration_x11.h
++++ b/src/plugins/platforms/offscreen/qoffscreenintegration_x11.h
+@@ -34,6 +34,7 @@ public:
+ #if QT_CONFIG(xcb)
+     Display *display() const override;
+     xcb_connection_t *connection() const override { return nullptr; }
++    xkb_state *xkbState() const override { return nullptr; }
+ #endif
+     QScopedPointer<QOffscreenX11Connection> m_connection;
+ };
+diff --git a/src/plugins/platforms/wayland/qwaylandinputdevice_p.h b/src/plugins/platforms/wayland/qwaylandinputdevice_p.h
+index bcaf025840d..be672ffabab 100644
+--- a/src/plugins/platforms/wayland/qwaylandinputdevice_p.h
++++ b/src/plugins/platforms/wayland/qwaylandinputdevice_p.h
+@@ -271,6 +271,7 @@ public:
+     struct ::wl_keyboard *wl_keyboard() { return QtWayland::wl_keyboard::object(); }
+ 
+ #if QT_CONFIG(xkbcommon)
++    xkb_state *xkbState() const { return mXkbState.get(); }
+     virtual int keysymToQtKey(xkb_keysym_t keysym, Qt::KeyboardModifiers modifiers, xkb_state *state, xkb_keycode_t code) {
+         return QXkbCommon::keysymToQtKey(keysym, modifiers, state, code);
+     }
+diff --git a/src/plugins/platforms/xcb/qxcbkeyboard.h b/src/plugins/platforms/xcb/qxcbkeyboard.h
+index 9528b8a7e47..30ac14808f8 100644
+--- a/src/plugins/platforms/xcb/qxcbkeyboard.h
++++ b/src/plugins/platforms/xcb/qxcbkeyboard.h
+@@ -49,6 +49,8 @@ public:
+ 
+     void handleStateChanges(xkb_state_component changedComponents);
+ 
++    xkb_state *xkbState() const { return m_xkbState.get(); }
++
+ protected:
+     void handleKeyEvent(xcb_window_t sourceWindow, QEvent::Type type, xcb_keycode_t code,
+                         quint16 state, xcb_timestamp_t time, bool fromSendEvent);
+diff --git a/src/plugins/platforms/xcb/qxcbnativeinterface.cpp b/src/plugins/platforms/xcb/qxcbnativeinterface.cpp
+index 06f5241d8c0..03bb8c331b0 100644
+--- a/src/plugins/platforms/xcb/qxcbnativeinterface.cpp
++++ b/src/plugins/platforms/xcb/qxcbnativeinterface.cpp
+@@ -4,6 +4,7 @@
+ #include "qxcbnativeinterface.h"
+ 
+ #include "qxcbcursor.h"
++#include "qxcbkeyboard.h"
+ #include "qxcbscreen.h"
+ #include "qxcbwindow.h"
+ #include "qxcbintegration.h"
+@@ -345,6 +346,14 @@ xcb_connection_t *QXcbNativeInterface::connection() const
+     return integration->connection()->xcb_connection();
+ }
+ 
++xkb_state *QXcbNativeInterface::xkbState() const
++{
++    QXcbIntegration *integration = QXcbIntegration::instance();
++    if (QXcbConnection *connection = integration->connection())
++        return connection->keyboard()->xkbState();
++    return nullptr;
++}
++
+ void *QXcbNativeInterface::atspiBus()
+ {
+     QXcbIntegration *integration = static_cast<QXcbIntegration *>(QGuiApplicationPrivate::platformIntegration());
+diff --git a/src/plugins/platforms/xcb/qxcbnativeinterface.h b/src/plugins/platforms/xcb/qxcbnativeinterface.h
+index 45be5c7ef4c..5e9b729405a 100644
+--- a/src/plugins/platforms/xcb/qxcbnativeinterface.h
++++ b/src/plugins/platforms/xcb/qxcbnativeinterface.h
+@@ -78,6 +78,7 @@ public:
+ 
+     Display *display() const override;
+     xcb_connection_t *connection() const override;
++    xkb_state *xkbState() const override;
+ 
+     void *atspiBus();
+     static void setStartupId(const char *);

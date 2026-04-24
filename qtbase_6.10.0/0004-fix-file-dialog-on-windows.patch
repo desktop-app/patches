@@ -1,0 +1,14 @@
+diff --git a/src/plugins/platforms/windows/qwindowsdialoghelpers.cpp b/src/plugins/platforms/windows/qwindowsdialoghelpers.cpp
+index 6fc90035ed..b34f8623bb 100644
+--- a/src/plugins/platforms/windows/qwindowsdialoghelpers.cpp
++++ b/src/plugins/platforms/windows/qwindowsdialoghelpers.cpp
+@@ -1449,7 +1456,8 @@ static QString createTemporaryItemCopy(QWindowsShellItem &qItem, QString *errorM
+ static QUrl itemToDialogUrl(QWindowsShellItem &qItem, QString *errorMessage)
+ {
+     QUrl url = qItem.url();
+-    if (url.isLocalFile() || url.scheme().startsWith(u"http"))
++    // Patch: Make loaded 'http' resources copy.
++    if (url.isLocalFile()/*|| url.scheme().startsWith(u"http")*/)
+         return url;
+     const QString path = qItem.path();
+     if (path.isEmpty() && !qItem.isDir() && qItem.canStream()) {

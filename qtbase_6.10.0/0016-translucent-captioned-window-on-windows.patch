@@ -1,0 +1,36 @@
+diff --git a/src/plugins/platforms/windows/qwindowsbackingstore.cpp b/src/plugins/platforms/windows/qwindowsbackingstore.cpp
+index e580b0243d9..9ce20294a4d 100644
+--- a/src/plugins/platforms/windows/qwindowsbackingstore.cpp
++++ b/src/plugins/platforms/windows/qwindowsbackingstore.cpp
+@@ -56,8 +56,13 @@ void QWindowsBackingStore::flush(QWindow *window, const QRegion &region,
+     if (rw->isLayered() && hasAlpha && QWindowsWindow::hasNoNativeFrame(rw->handle(), flags)) {
+         // Windows with alpha: Use blend function to update.
+         QRect r = QHighDpi::toNativePixels(window->frameGeometry(), window);
+-        QMargins frameMargins = rw->frameMargins();
+-        QRect dirtyRect = br.translated(offset + QPoint(frameMargins.left(), frameMargins.top()));
++        QMargins frameMargins = QHighDpi::toNativePixels(window->frameMargins(), window);
++        if (!(flags & Qt::FramelessWindowHint)) {
++            r = r.marginsRemoved(frameMargins);
++        }
++        QRect dirtyRect = (flags & Qt::FramelessWindowHint)
++            ? br.translated(offset + QPoint(frameMargins.left(), frameMargins.top()))
++            : br.translated(offset);
+ 
+         SIZE size = {r.width(), r.height()};
+         POINT ptDst = {r.x(), r.y()};
+diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
+index bf6840cf6fe..86d8c5d0638 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.cpp
++++ b/src/plugins/platforms/windows/qwindowswindow.cpp
+@@ -480,8 +480,9 @@ static bool shouldShowMaximizeButton(const QWindow *w, Qt::WindowFlags flags)
+ 
+ bool QWindowsWindow::hasNoNativeFrame(HWND hwnd, Qt::WindowFlags flags)
+ {
+-    const LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
+-    return (style & WS_CHILD) || (flags & Qt::FramelessWindowHint);
++    Q_UNUSED(hwnd);
++    Q_UNUSED(flags);
++    return true;
+ }
+ 
+ // Set the WS_EX_LAYERED flag on a HWND if required. This is required for

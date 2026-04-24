@@ -1,0 +1,28 @@
+diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
+index b2b1fc9647b..bc0ab9b10d5 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.cpp
++++ b/src/plugins/platforms/windows/qwindowswindow.cpp
+@@ -2627,6 +2627,7 @@ void QWindowsWindow::handleWindowStateChange(Qt::WindowStates state)
+ {
+     qCDebug(lcQpaWindow) << __FUNCTION__ << this << window()
+                  << "\n    from " << m_windowState << " to " << state;
++    const Qt::WindowStates oldState = m_windowState;
+     m_windowState = state;
+     QWindowSystemInterface::handleWindowStateChanged(window(), state);
+     if (state & Qt::WindowMinimized) {
+@@ -2651,9 +2652,14 @@ void QWindowsWindow::handleWindowStateChange(Qt::WindowStates state)
+         }
+         // QTBUG-17548: We send expose events when receiving WM_Paint, but for
+         // layered windows and transient children, we won't receive any WM_Paint.
++        // Restore-from-minimized for QRhi-backed top-level windows that use
++        // DirectComposition (no GDI redirection surface) likewise does not
++        // deliver WM_Paint reliably — the swap chain stays on its pre-minimize
++        // frame and input dispatch is stalled until something else triggers
++        // a paint pass. Fire expose synthetically there too.
+         QWindow *w = window();
+         bool exposeEventsSent = false;
+-        if (isLayered()) {
++        if (isLayered() || (oldState & Qt::WindowMinimized)) {
+             fireFullExpose();
+             exposeEventsSent = true;
+         }
