@@ -1,0 +1,20 @@
+diff --git a/src/plugins/platforms/windows/qwindowsmimeregistry.cpp b/src/plugins/platforms/windows/qwindowsmimeregistry.cpp
+index 71faf4fe3b..d7f708529d 100644
+--- a/src/plugins/platforms/windows/qwindowsmimeregistry.cpp
++++ b/src/plugins/platforms/windows/qwindowsmimeregistry.cpp
+@@ -584,13 +584,13 @@ bool QWindowsMimeURI::convertFromMime(const FORMATETC &formatetc, const QMimeDat
+ bool QWindowsMimeURI::canConvertToMime(const QString &mimeType, IDataObject *pDataObj) const
+ {
+     return mimeType == u"text/uri-list"
+-           && (canGetData(CF_HDROP, pDataObj) || canGetData(CF_INETURL_W, pDataObj) || canGetData(CF_INETURL, pDataObj));
++           && (canGetData(CF_HDROP, pDataObj));
+ }
+ 
+ QString QWindowsMimeURI::mimeForFormat(const FORMATETC &formatetc) const
+ {
+     QString format;
+-    if (getCf(formatetc) == CF_HDROP || getCf(formatetc) == CF_INETURL_W || getCf(formatetc) == CF_INETURL)
++    if (getCf(formatetc) == CF_HDROP)
+         format = u"text/uri-list"_s;
+     return format;
+ }

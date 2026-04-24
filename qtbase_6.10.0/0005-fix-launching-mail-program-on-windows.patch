@@ -1,0 +1,15 @@
+diff --git a/src/plugins/platforms/windows/qwindowsservices.cpp b/src/plugins/platforms/windows/qwindowsservices.cpp
+index fbad934a05..18cdc84bc0 100644
+--- a/src/plugins/platforms/windows/qwindowsservices.cpp
++++ b/src/plugins/platforms/windows/qwindowsservices.cpp
+@@ -110,6 +110,10 @@ static inline bool launchMail(const QUrl &url)
+             command.prepend(doubleQuote);
+         }
+     }
++
++    // Patch: Fix mail launch if no param is expected in this command.
++    if (command.indexOf(QStringLiteral("%1")) < 0) return false;
++
+     // Pass the url as the parameter. Should use QProcess::startDetached(),
+     // but that cannot handle a Windows command line [yet].
+     command.replace("%1"_L1, url.toString(QUrl::FullyEncoded));

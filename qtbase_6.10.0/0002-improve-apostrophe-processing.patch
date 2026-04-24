@@ -1,0 +1,169 @@
+diff --git a/src/gui/text/qtextcursor.cpp b/src/gui/text/qtextcursor.cpp
+index 884a16ca78..f27376c237 100644
+--- a/src/gui/text/qtextcursor.cpp
++++ b/src/gui/text/qtextcursor.cpp
+@@ -474,6 +474,9 @@ bool QTextCursorPrivate::movePosition(QTextCursor::MoveOperation op, QTextCursor
+         const int len = blockIt.length() - 1;
+         if (relativePos >= len)
+             return false;
++        // Patch: Improved apostrophe processing.
++        relativePos = engine->toEdge(relativePos, len, true);
++#if 0
+         if (engine->atWordSeparator(relativePos)) {
+             ++relativePos;
+             while (relativePos < len && engine->atWordSeparator(relativePos))
+@@ -482,6 +485,9 @@ bool QTextCursorPrivate::movePosition(QTextCursor::MoveOperation op, QTextCursor
+             while (relativePos < len && !attributes[relativePos].whiteSpace && !engine->atWordSeparator(relativePos))
+                 ++relativePos;
+         }
++#else
++        Q_UNUSED(attributes);
++#endif
+         newPosition = blockIt.position() + relativePos;
+         break;
+     }
+diff --git a/src/gui/text/qtextengine.cpp b/src/gui/text/qtextengine.cpp
+index c6da4b8f4a..2753238059 100644
+--- a/src/gui/text/qtextengine.cpp
++++ b/src/gui/text/qtextengine.cpp
+@@ -2803,7 +2803,8 @@ bool QTextEngine::atWordSeparator(int position) const
+     case '&':
+     case '^':
+     case '*':
+-    case '\'':
++    // Patch: Make the apostrophe a non-separator for words.
++    //case '\'':
+     case '"':
+     case '`':
+     case '~':
+@@ -2816,6 +2817,74 @@ bool QTextEngine::atWordSeparator(int position) const
+     return false;
+ }
+ 
++// Patch: Improved apostrophe processing.
++// We should consider apostrophes as word separators when there is more than
++// one apostrophe in a row, or when the apostrophe is at the beginning or end
++// of the word.
++int QTextEngine::toEdge(int pos, int len, bool isRightDirection) {
++    const auto step = isRightDirection ? 1 : -1;
++    const auto next = isRightDirection ? 0 : -1;
++
++    QCharAttributes *attributes = const_cast<QCharAttributes *>(this->attributes());
++
++    const auto atApostrophe = [&](int position) {
++        return layoutData->string.at(position).unicode() == '\'';
++    };
++
++    const auto atSepOrApost = [&](int position) {
++        return atApostrophe(position) || atWordSeparator(position);
++    };
++
++    const auto inBounds = [&](int position) {
++        return isRightDirection
++            ? position < len
++            : position > 0;
++    };
++
++    const auto atSepOrSpace = [&](int position) {
++        return attributes[position].whiteSpace || atWordSeparator(position);
++    };
++
++    const auto isApostropheInWord = [&](int position) {
++        if (!atApostrophe(position)) {
++            return false;
++        }
++        auto p = position - 1;
++        if (p <= 0 || atSepOrSpace(p)) {
++            return false;
++        }
++        p = position + 1;
++        if (p >= len || atSepOrSpace(p)) {
++            return false;
++        }
++        return true;
++    };
++
++    auto counter = 0;
++    while (inBounds(pos) && atSepOrApost(pos + next)) {
++        counter++;
++        pos += step;
++    }
++    // If it's not the single apostrophe, then that's non-letter part of text.
++    if (counter > 1 || (counter == 1 && !isApostropheInWord(pos - step + next))) {
++        return pos;
++    }
++
++    bool isPrevApostrophe = false;
++    while (inBounds(pos) && !atSepOrSpace(pos + next)) {
++        bool isNextApostrophe = atApostrophe(pos + next);
++        if (isPrevApostrophe && isNextApostrophe) {
++            break;
++        }
++        pos += step;
++        isPrevApostrophe = isNextApostrophe;
++    }
++    if (isPrevApostrophe) {
++        pos += -step;
++    }
++    return pos;
++}
++
+ void QTextEngine::setPreeditArea(int position, const QString &preeditText)
+ {
+     if (preeditText.isEmpty()) {
+diff --git a/src/gui/text/qtextengine_p.h b/src/gui/text/qtextengine_p.h
+index c653bfc92f..a7cc0ef51f 100644
+--- a/src/gui/text/qtextengine_p.h
++++ b/src/gui/text/qtextengine_p.h
+@@ -585,6 +585,8 @@ private:
+ 
+ public:
+     bool atWordSeparator(int position) const;
++    // Patch: Improved apostrophe processing.
++    int toEdge(int pos, int len, bool isRightDirection);
+ 
+     QString elidedText(Qt::TextElideMode mode, QFixed width, int flags = 0, int from = 0, int count = -1) const;
+ 
+diff --git a/src/gui/text/qtextlayout.cpp b/src/gui/text/qtextlayout.cpp
+index 365131f508..4dd6009845 100644
+--- a/src/gui/text/qtextlayout.cpp
++++ b/src/gui/text/qtextlayout.cpp
+@@ -637,6 +637,12 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
+         while (oldPos < len && !attributes[oldPos].graphemeBoundary)
+             oldPos++;
+     } else {
++        // Patch: Skip to the end of the current word, not to the start of the next one.
++        while (oldPos < len && attributes[oldPos].whiteSpace)
++            oldPos++;
++        // Patch: Improved apostrophe processing.
++        oldPos = d->toEdge(oldPos, len, true);
++#if 0
+         if (oldPos < len && d->atWordSeparator(oldPos)) {
+             oldPos++;
+             while (oldPos < len && d->atWordSeparator(oldPos))
+@@ -647,6 +653,7 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
+         }
+         while (oldPos < len && attributes[oldPos].whiteSpace)
+             oldPos++;
++#endif
+     }
+ 
+     return oldPos;
+@@ -676,6 +683,9 @@ int QTextLayout::previousCursorPosition(int oldPos, CursorMode mode) const
+         while (oldPos > 0 && attributes[oldPos - 1].whiteSpace)
+             oldPos--;
+ 
++        // Patch: Improved apostrophe processing.
++        oldPos = d->toEdge(oldPos, len, false);
++#if 0
+         if (oldPos && d->atWordSeparator(oldPos-1)) {
+             oldPos--;
+             while (oldPos && d->atWordSeparator(oldPos-1))
+@@ -684,6 +694,7 @@ int QTextLayout::previousCursorPosition(int oldPos, CursorMode mode) const
+             while (oldPos > 0 && !attributes[oldPos - 1].whiteSpace && !d->atWordSeparator(oldPos-1))
+                 oldPos--;
+         }
++#endif
+     }
+ 
+     return oldPos;
