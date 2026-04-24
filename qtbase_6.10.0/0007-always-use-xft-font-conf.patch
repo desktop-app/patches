@@ -1,0 +1,20 @@
+diff --git a/src/gui/text/unix/qfontconfigdatabase.cpp b/src/gui/text/unix/qfontconfigdatabase.cpp
+index f6c593806e..4995ecf279 100644
+--- a/src/gui/text/unix/qfontconfigdatabase.cpp
++++ b/src/gui/text/unix/qfontconfigdatabase.cpp
+@@ -964,14 +964,7 @@ void QFontconfigDatabase::setupFontEngine(QFontEngineFT *engine, const QFontDef
+ {
+     bool antialias = !(fontDef.styleStrategy & QFont::NoAntialias);
+     bool forcedAntialiasSetting = !antialias || isDprScaling();
+-
+-    const QPlatformServices *services = QGuiApplicationPrivate::platformIntegration()->services();
+-    bool preferXftConf = false;
+-
+-    if (services) {
+-        const QList<QByteArray> desktopEnv = services->desktopEnvironment().split(':');
+-        preferXftConf = !(desktopEnv.contains("KDE") || desktopEnv.contains("LXQT") || desktopEnv.contains("UKUI"));
+-    }
++    bool preferXftConf = true;
+ 
+     QFontEngine::GlyphFormat format;
+     // try and get the pattern

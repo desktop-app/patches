@@ -1,0 +1,20 @@
+diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms/cocoa/qcocoawindow.mm
+index 70cfa42974..bc1b47b55c 100644
+--- a/src/plugins/platforms/cocoa/qcocoawindow.mm
++++ b/src/plugins/platforms/cocoa/qcocoawindow.mm
+@@ -556,6 +556,15 @@ NSUInteger QCocoaWindow::windowStyleMask(Qt::WindowFlags flags)
+         }
+     }();
+ 
++    // Patch: allow creating panels floating on all spaces in macOS.
++    // If you call "setCollectionBehavior:NSWindowCollectionBehaviorFullScreenAuxiliary" before
++    // setting the "NSWindowStyleMaskNonactivatingPanel" bit in the style mask it won't work after that.
++    // So we need a way to set that bit before Qt sets collection behavior the way it does.
++    QVariant nonactivatingPanelMask = window()->property("_td_macNonactivatingPanelMask");
++    if (nonactivatingPanelMask.isValid() && nonactivatingPanelMask.toBool()) {
++        styleMask |= NSWindowStyleMaskNonactivatingPanel;
++    }
++
+     // We determine which buttons to show in updateTitleBarButtons,
+     // so we can enable all the relevant style masks here to ensure
+     // that behaviors that don't involve the title bar buttons are
