@@ -1,0 +1,185 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Fri, 3 Apr 2026 23:30:00
+Subject: [PATCH] fix right-click popup focus race on inactive macOS window
+
+macOS does not make a window key on right-click. For Qt popup menus opened
+from an inactive window this creates two related problems:
+
+1. popup rendering can fail when parent window is not key.
+2. popup close on outside click can race with app activation delivery and
+   occasionally steal focus back.
+
+Fix by:
+- making the window key on rightMouseDown and marking that activation as
+  temporary;
+- filtering stale global monitor events by timestamp;
+- ignoring self-activation notifications;
+- during temporary unwind, deactivating first and only then closing popups;
+- blocking requestActivateWindow while temporary popup unwind is in progress.
+
+diff --git a/src/plugins/platforms/cocoa/qcocoawindow.h b/src/plugins/platforms/cocoa/qcocoawindow.h
+index 89a84df7..63f0bf2d 100644
+--- a/src/plugins/platforms/cocoa/qcocoawindow.h
++++ b/src/plugins/platforms/cocoa/qcocoawindow.h
+@@ -227,6 +227,7 @@ public: // for QNSView
+     static void closeAllPopups();
+     static void setupPopupMonitor();
+     static void removePopupMonitor();
++    void markTemporarilyActivatedByRightClick();
+ 
+     CALayer *contentLayer() const override;
+ 
+@@ -282,6 +283,8 @@ public: // for QNSView
+ 
+     static inline id s_globalMouseMonitor = 0;
+     static inline id s_applicationActivationObserver = 0;
++    static inline bool s_temporarilyActivatedByRightClick = false;
++    static inline bool s_unwindingTemporaryRightClickActivation = false;
+ 
+ #if QT_CONFIG(vulkan)
+     VkSurfaceKHR m_vulkanSurface = nullptr;
+@@ -297,4 +300,3 @@ QDebug operator<<(QDebug debug, const QCocoaWindow *window);
+ QT_END_NAMESPACE
+ 
+ #endif // QCOCOAWINDOW_H
+-
+diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms/cocoa/qcocoawindow.mm
+index f6481ea2..3d60c661 100644
+--- a/src/plugins/platforms/cocoa/qcocoawindow.mm
++++ b/src/plugins/platforms/cocoa/qcocoawindow.mm
+@@ -1753,18 +1763,27 @@ Posted whenever an NSView object that has attached surfaces (that is,
+ 
+ void QCocoaWindow::requestActivateWindow()
+ {
++    if (s_unwindingTemporaryRightClickActivation) {
++        return;
++    }
++
+     QMacAutoReleasePool pool;
+     [m_view.window makeFirstResponder:m_view];
+     [m_view.window makeKeyWindow];
+ }
+ 
++void QCocoaWindow::markTemporarilyActivatedByRightClick()
++{
++    if (!NSApp.isActive)
++        s_temporarilyActivatedByRightClick = true;
++}
++
+ /*
+     Closes all popups, and removes observers and monitors.
+ */
+ void QCocoaWindow::closeAllPopups()
+ {
+     QGuiApplicationPrivate::instance()->closeAllPopups();
+-
+     removePopupMonitor();
+ }
+ 
+@@ -1778,6 +1797,8 @@ Posted whenever an NSView object that has attached surfaces (that is,
+         [[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:s_applicationActivationObserver];
+         s_applicationActivationObserver = nil;
+     }
++    s_unwindingTemporaryRightClickActivation = false;
++    s_temporarilyActivatedByRightClick = false;
+ }
+ 
+ void QCocoaWindow::setupPopupMonitor()
+@@ -1792,13 +1813,24 @@ Posted whenever an NSView object that has attached surfaces (that is,
+         constexpr NSEventMask mouseButtonMask = NSEventTypeLeftMouseDown | NSEventTypeLeftMouseUp
+                                                 | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown
+                                                 | NSEventMaskMouseMoved;
++        // Remember the timestamp of the event that opened the popup.
++        // The global monitor may receive a stale mouse-down event from the
++        // system that predates the popup (e.g. the right-click that activated
++        // the app and opened the context menu). Filter by timestamp so we
++        // only close popups on genuinely new clicks.
++        const NSTimeInterval openerTs = NSApp.currentEvent
++            ? NSApp.currentEvent.timestamp : 0.;
+         s_globalMouseMonitor = [NSEvent addGlobalMonitorForEventsMatchingMask:mouseButtonMask
+                                         handler:^(NSEvent *e){
+             if (!QGuiApplicationPrivate::instance()->activePopupWindow()) {
++                s_temporarilyActivatedByRightClick = false;
+                 removePopupMonitor();
+                 return;
+             }
+             const auto eventType = cocoaEvent2QtMouseEvent(e);
++            if (eventType != QEvent::MouseMove && e.timestamp <= openerTs) {
++                return;
++            }
+             if (eventType == QEvent::MouseMove) {
+                 if (s_windowUnderMouse) {
+                     QWindow *window = s_windowUnderMouse->window();
+@@ -1810,7 +1842,20 @@ Posted whenever an NSView object that has attached surfaces (that is,
+                                                              buttons, button, eventType);
+                 }
+             } else {
+-                closeAllPopups();
++                const auto temporaryActivation = s_temporarilyActivatedByRightClick;
++                s_temporarilyActivatedByRightClick = false;
++                if (temporaryActivation) {
++                    removePopupMonitor();
++                    dispatch_async(dispatch_get_main_queue(), ^{
++                        if (NSApp.isActive)
++                            [NSApp deactivate];
++                        s_unwindingTemporaryRightClickActivation = true;
++                        closeAllPopups();
++                        s_unwindingTemporaryRightClickActivation = false;
++                    });
++                } else {
++                    closeAllPopups();
++                }
+             }
+         }];
+     }
+@@ -1821,8 +1866,25 @@ Posted whenever an NSView object that has attached surfaces (that is,
+         s_applicationActivationObserver = [[[NSWorkspace sharedWorkspace] notificationCenter]
+                                             addObserverForName:NSWorkspaceDidActivateApplicationNotification
+                                                         object:nil queue:nil
+-                                                    usingBlock:^(NSNotification *){
+-            closeAllPopups();
++                                                    usingBlock:^(NSNotification *notification){
++            NSRunningApplication *activatedApp = [notification.userInfo objectForKey:NSWorkspaceApplicationKey];
++            if ([activatedApp isEqual:[NSRunningApplication currentApplication]]) {
++                return;
++            }
++            const auto temporaryActivation = s_temporarilyActivatedByRightClick;
++            s_temporarilyActivatedByRightClick = false;
++            if (temporaryActivation) {
++                removePopupMonitor();
++                dispatch_async(dispatch_get_main_queue(), ^{
++                    if (NSApp.isActive)
++                        [NSApp deactivate];
++                    s_unwindingTemporaryRightClickActivation = true;
++                    closeAllPopups();
++                    s_unwindingTemporaryRightClickActivation = false;
++                });
++            } else {
++                closeAllPopups();
++            }
+         }];
+     }
+ }
+diff --git a/src/plugins/platforms/cocoa/qnsview_mouse.mm b/src/plugins/platforms/cocoa/qnsview_mouse.mm
+index ca7e9c80..de738aca 100644
+--- a/src/plugins/platforms/cocoa/qnsview_mouse.mm
++++ b/src/plugins/platforms/cocoa/qnsview_mouse.mm
+@@ -441,6 +441,18 @@ - (void)mouseUp:(NSEvent *)theEvent
+ 
+ - (void)rightMouseDown:(NSEvent *)theEvent
+ {
++    // macOS does not make a window key on right-click.  We need the
++    // window to be key so that Qt can render popup content (QNSPanel
++    // with WA_TranslucentBackground requires an active backing store).
++    // Mark the activation as "temporary" so that when the popup closes,
++    // the window can resign key status back to the previous owner.
++    if (m_platformWindow && !self.window.isKeyWindow
++        && [self.window canBecomeKeyWindow]) {
++        m_platformWindow->markTemporarilyActivatedByRightClick();
++        [self.window makeKeyWindow];
++        if (m_platformWindow)
++            m_platformWindow->windowDidBecomeKey();
++    }
+     const bool accepted = [self handleMouseDownEvent:theEvent];
+     if (!accepted)
+         [super rightMouseDown:theEvent];

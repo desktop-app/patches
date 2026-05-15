@@ -1,0 +1,12 @@
+diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms/cocoa/qcocoawindow.mm
+index f6481ea2b4c..a1b2c3d4e5f 100644
+--- a/src/plugins/platforms/cocoa/qcocoawindow.mm
++++ b/src/plugins/platforms/cocoa/qcocoawindow.mm
+@@ -656,6 +656,7 @@ a normal (not maximized or full screen) top-level window.
+     // Don't wipe existing states for style flags we don't control here
+     styleMask |= (m_view.window.styleMask & (
+           NSWindowStyleMaskFullScreen
++        | NSWindowStyleMaskFullSizeContentView
+         | NSWindowStyleMaskUnifiedTitleAndToolbar
+         | NSWindowStyleMaskDocModalWindow
+         | NSWindowStyleMaskNonactivatingPanel

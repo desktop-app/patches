@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Mon, 18 May 2026 09:00:00
+Subject: [PATCH] respected external hiding of macOS title bar buttons
+
+QCocoaWindow::updateTitleBarButtons used to drive .hidden on every
+standard window button on each call, both to YES and to NO. Make it
+only force .hidden = YES when Qt actually wants the buttons hidden
+(all of them disabled, or Qt::FramelessWindowHint), and leave the
+property alone otherwise. Apps that draw their own traffic-light
+replacements can then call [button setHidden:YES] once and have it
+stay sticky.
+
+Why this regressed between Qt 6.2 and 6.11:
+
+* 4c78ef80ca7 (Qt 6.3, Sep 2021) — macOS: Handle window titlebar
+  buttons independently from style mask. Stopped controlling button
+  presence through NSWindowStyleMask{Closable,Miniaturizable,Resizable}
+  bits and started managing visibility through per-button .hidden and
+  .enabled instead. Those style mask bits also drive non-button
+  behavior (programmatic minimize, edge resize), so they are now
+  always on and the buttons are individually hidden via a new
+  updateTitleBarButtons function. Up to this point Qt never touched
+  .hidden on standard buttons, so external setHidden:YES was sticky.
+
+* 1bde2036051 (Qt 6.6, Mar 2023, QTBUG-104905) — macOS: Disable
+  interaction for modally blocked transient parent windows. Wired
+  updateTitleBarButtons to QEvent::WindowBlocked / WindowUnblocked
+  via windowEvent, and added a branch inside it that forces
+  hideButtons = false when the parent is blocked by a modal sheet.
+  The combination flips .hidden back to NO on every modal attach
+  and detach, undoing any externally applied setHidden:YES.
+
+In tdesktop the media-view overlay paints its own traffic lights
+and calls setHidden:YES on the three standard window buttons after
+show. When Save As opens a window-modal NSSavePanel, Qt receives
+WindowBlocked, updateTitleBarButtons sets .hidden = NO on all three
+buttons, and they remain visible after the sheet is dismissed.
+
+The change is narrowly scoped — only the unhide branch is removed.
+Qt still controls .enabled normally, .hidden = YES still happens
+when Qt wants the buttons gone, and the style mask is untouched.
+The only behavioral loss is that buttons no longer auto-reappear
+when an app removes FramelessWindowHint or CustomizeWindowHint at
+runtime; such apps can call setHidden:NO themselves.
+
+diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms/cocoa/qcocoawindow.mm
+--- a/src/plugins/platforms/cocoa/qcocoawindow.mm
++++ b/src/plugins/platforms/cocoa/qcocoawindow.mm
+@@ -713,9 +713,17 @@ void QCocoaWindow::updateTitleBarButtons(Qt::WindowFlags windowFlags)
+         hideButtons &= !enabled;
+     }
+
+-    // Hide buttons in case we disabled all of them
+-    for (const auto &[button, buttonHint] : buttons)
+-        [m_view.window standardWindowButton:button].hidden = hideButtons;
++    // Hide buttons in case we disabled all of them, or if the window is
++    // frameless. Never actively unhide: applications may keep the standard
++    // buttons hidden (for example to draw their own traffic lights), and
++    // Qt's modal-blocking path used to flip them back to visible on every
++    // QEvent::WindowBlocked/WindowUnblocked, which broke such setups.
++    const bool wantHide = hideButtons
++        || bool(windowFlags & Qt::FramelessWindowHint);
++    if (wantHide) {
++        for (const auto &[button, buttonHint] : buttons)
++            [m_view.window standardWindowButton:button].hidden = YES;
++    }
+ }
+
+ void QCocoaWindow::setWindowFlags(Qt::WindowFlags flags)

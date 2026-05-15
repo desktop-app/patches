@@ -1,0 +1,111 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Mon, 18 May 2026 11:30:00
+Subject: [PATCH] skipped redundant NSApp main menu reset on macOS
+
+QCocoaMenuBar::updateMenuBarImmediately resets NSApp.mainMenu to nil
+and back to the same NSMenu pointer on every call where the current
+main menu already matches the menubar being installed. The intent of
+the nil-then-restore dance is to force NSApplication to re-run
+_customizeMainMenu, so that newly added sub menus get text input
+items, the Emoji & Symbols entry on Edit, etc.
+
+In practice updateMenuBarImmediately runs not only when the menu
+structure changes, but also on every active window switch via the
+focus-driven path through QGuiApplication active window changes. On
+macOS 26 (Tahoe) NSApplication's setMainMenu is significantly heavier
+than on previous releases: AppKit unregisters every key equivalent
+from NSMenuKEUniquer on nil-assignment and re-registers all of them
+on the next assignment. Each unregister/register pair walks the menu
+tree and does objc_initWeak / objc_destroyWeak on every menu item.
+With a long-lived application that switches windows or activates
+from the dock repeatedly, the obj-c weak reference table for those
+menu items accumulates entries, and the linear weak_table_t scans in
+weak_register_no_lock / weak_entry_for_referent grow visibly slower
+over time. The end-user symptom is a 1-2 second hang on Cmd+C inside
+text inputs after the app has been running for days.
+
+Track whether the menubar's top-level structure has changed since
+the last full main menu installation. Set the new
+m_needsAppKitCustomization flag on construction and whenever
+insertMenu, removeMenu, or handleReparent runs. In
+updateMenuBarImmediately, if the NSMenu pointer is unchanged from
+NSApp.mainMenu and the flag is clear, skip both the nil reset and
+the reassignment entirely. The dance still runs the first time and
+after every real structural change, so AppKit auto-customization is
+preserved; it just stops firing on focus-only updates.
+
+diff --git a/src/plugins/platforms/cocoa/qcocoamenubar.h b/src/plugins/platforms/cocoa/qcocoamenubar.h
+--- a/src/plugins/platforms/cocoa/qcocoamenubar.h
++++ b/src/plugins/platforms/cocoa/qcocoamenubar.h
+@@ -52,6 +52,11 @@ private:
+     NSMenuItem *nativeItemForMenu(QCocoaMenu *menu) const;
+
+     QList<QPointer<QCocoaMenu> > m_menus;
+     NSMenu *m_nativeMenu;
+     QPointer<QCocoaWindow> m_window;
++    // Set whenever the menubar's top-level structure changes
++    // (insertMenu, removeMenu, handleReparent, construction). Cleared
++    // by updateMenuBarImmediately after AppKit re-customizes the main
++    // menu, so subsequent focus-only updates skip the nil reset dance.
++    bool m_needsAppKitCustomization = true;
+ };
+
+ QT_END_NAMESPACE
+diff --git a/src/plugins/platforms/cocoa/qcocoamenubar.mm b/src/plugins/platforms/cocoa/qcocoamenubar.mm
+--- a/src/plugins/platforms/cocoa/qcocoamenubar.mm
++++ b/src/plugins/platforms/cocoa/qcocoamenubar.mm
+@@ -119,8 +119,9 @@ void QCocoaMenuBar::insertMenu(QPlatformMenu *platformMenu, QPlatformMenu *befor
+         }
+     }
+
+     syncMenu_helper(menu, false /*internaCall*/);
+
++    m_needsAppKitCustomization = true;
+     if (needsImmediateUpdate())
+         updateMenuBarImmediately();
+ }
+@@ -136,7 +137,8 @@ void QCocoaMenuBar::removeMenu(QPlatformMenu *platformMenu)
+     NSMenuItem *item = nativeItemForMenu(menu);
+     if (menu->attachedItem() == item)
+         menu->setAttachedItem(nil);
+     m_menus.removeOne(menu);
++    m_needsAppKitCustomization = true;
+
+     QMacAutoReleasePool pool;
+
+@@ -231,8 +233,9 @@ void QCocoaMenuBar::handleReparent(QWindow *newParentWindow)
+     } else {
+         newParentWindow->create();
+         m_window = static_cast<QCocoaWindow*>(newParentWindow->handle());
+         m_window->setMenubar(this);
+     }
+
++    m_needsAppKitCustomization = true;
+     updateMenuBarImmediately();
+ }
+@@ -324,19 +327,23 @@ void QCocoaMenuBar::updateMenuBarImmediately()
+     [mergedItems release];
+
+     NSMenu *newMainMenu = mb->nsMenu();
+-    if (NSApp.mainMenu == newMainMenu) {
++    if (NSApp.mainMenu != newMainMenu) {
++        NSApp.mainMenu = newMainMenu;
++        mb->m_needsAppKitCustomization = false;
++    } else if (mb->m_needsAppKitCustomization) {
+         // NSApplication triggers _customizeMainMenu when the menu
+         // changes, which takes care of adding text input items to
+         // the edit menu e.g., but this doesn't happen if the menu
+         // is the same. In our case we might be re-using an existing
+         // menu, but the menu might have new sub menus that need to
+         // be customized. To ensure NSApplication does the right
+         // thing we reset the main menu first.
+         qCDebug(lcQpaMenus) << "Clearing main menu temporarily";
+         NSApp.mainMenu = nil;
++        NSApp.mainMenu = newMainMenu;
++        mb->m_needsAppKitCustomization = false;
+     }
+-    NSApp.mainMenu = newMainMenu;
+
+     insertWindowMenu();
+     [loader qtTranslateApplicationMenu];
+ }
