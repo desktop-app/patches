@@ -49,7 +49,7 @@ diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms
 @@ -713,9 +713,17 @@ void QCocoaWindow::updateTitleBarButtons(Qt::WindowFlags windowFlags)
          hideButtons &= !enabled;
      }
-
+ 
 -    // Hide buttons in case we disabled all of them
 -    for (const auto &[button, buttonHint] : buttons)
 -        [m_view.window standardWindowButton:button].hidden = hideButtons;
@@ -65,5 +65,5 @@ diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms
 +            [m_view.window standardWindowButton:button].hidden = YES;
 +    }
  }
-
+ 
  void QCocoaWindow::setWindowFlags(Qt::WindowFlags flags)
