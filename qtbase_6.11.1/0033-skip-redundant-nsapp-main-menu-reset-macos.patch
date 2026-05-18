@@ -39,7 +39,7 @@ diff --git a/src/plugins/platforms/cocoa/qcocoamenubar.h b/src/plugins/platforms
 +++ b/src/plugins/platforms/cocoa/qcocoamenubar.h
 @@ -52,6 +52,11 @@ private:
      NSMenuItem *nativeItemForMenu(QCocoaMenu *menu) const;
-
+ 
      QList<QPointer<QCocoaMenu> > m_menus;
      NSMenu *m_nativeMenu;
      QPointer<QCocoaWindow> m_window;
@@ -49,7 +49,7 @@ diff --git a/src/plugins/platforms/cocoa/qcocoamenubar.h b/src/plugins/platforms
 +    // menu, so subsequent focus-only updates skip the nil reset dance.
 +    bool m_needsAppKitCustomization = true;
  };
-
+ 
  QT_END_NAMESPACE
 diff --git a/src/plugins/platforms/cocoa/qcocoamenubar.mm b/src/plugins/platforms/cocoa/qcocoamenubar.mm
 --- a/src/plugins/platforms/cocoa/qcocoamenubar.mm
@@ -57,9 +57,9 @@ diff --git a/src/plugins/platforms/cocoa/qcocoamenubar.mm b/src/plugins/platform
 @@ -119,8 +119,9 @@ void QCocoaMenuBar::insertMenu(QPlatformMenu *platformMenu, QPlatformMenu *befor
          }
      }
-
+ 
      syncMenu_helper(menu, false /*internaCall*/);
-
+ 
 +    m_needsAppKitCustomization = true;
      if (needsImmediateUpdate())
          updateMenuBarImmediately();
@@ -70,22 +70,22 @@ diff --git a/src/plugins/platforms/cocoa/qcocoamenubar.mm b/src/plugins/platform
          menu->setAttachedItem(nil);
      m_menus.removeOne(menu);
 +    m_needsAppKitCustomization = true;
-
+ 
      QMacAutoReleasePool pool;
-
+ 
 @@ -231,8 +233,9 @@ void QCocoaMenuBar::handleReparent(QWindow *newParentWindow)
      } else {
          newParentWindow->create();
          m_window = static_cast<QCocoaWindow*>(newParentWindow->handle());
          m_window->setMenubar(this);
      }
-
+ 
 +    m_needsAppKitCustomization = true;
      updateMenuBarImmediately();
  }
 @@ -324,19 +327,23 @@ void QCocoaMenuBar::updateMenuBarImmediately()
      [mergedItems release];
-
+ 
      NSMenu *newMainMenu = mb->nsMenu();
 -    if (NSApp.mainMenu == newMainMenu) {
 +    if (NSApp.mainMenu != newMainMenu) {
@@ -105,7 +105,7 @@ diff --git a/src/plugins/platforms/cocoa/qcocoamenubar.mm b/src/plugins/platform
 +        mb->m_needsAppKitCustomization = false;
      }
 -    NSApp.mainMenu = newMainMenu;
-
+ 
      insertWindowMenu();
      [loader qtTranslateApplicationMenu];
  }
