@@ -1,0 +1,986 @@
+diff --git a/src/gui/opengl/qopenglframebufferobject.cpp b/src/gui/opengl/qopenglframebufferobject.cpp
+index 340b1f5f40a..cbd75a4156a 100644
+--- a/src/gui/opengl/qopenglframebufferobject.cpp
++++ b/src/gui/opengl/qopenglframebufferobject.cpp
+@@ -467,6 +467,25 @@ namespace
+     {
+         funcs->glDeleteTextures(1, &id);
+     }
++
++    bool framebufferCreated(QOpenGLExtensions &funcs, GLuint framebuffer)
++    {
++        return framebuffer && funcs.glIsFramebuffer(framebuffer);
++    }
++
++    bool renderbufferCreated(QOpenGLExtensions &funcs, GLuint renderbuffer)
++    {
++        return renderbuffer && funcs.glIsRenderbuffer(renderbuffer);
++    }
++
++    bool textureCreated(QOpenGLExtensions &funcs, GLenum target, GLuint texture)
++    {
++        if (!texture)
++            return false;
++
++        funcs.glBindTexture(target, texture);
++        return funcs.glIsTexture(texture);
++    }
+ }
+ 
+ void QOpenGLFramebufferObjectPrivate::init(QOpenGLFramebufferObject *qfbo, const QSize &size,
+@@ -508,6 +527,10 @@ void QOpenGLFramebufferObjectPrivate::init(QOpenGLFramebufferObject *qfbo, const
+ 
+     funcs.glGenFramebuffers(1, &fbo);
+     funcs.glBindFramebuffer(GL_FRAMEBUFFER, fbo);
++    if (Q_UNLIKELY(!framebufferCreated(funcs, fbo))) {
++        valid = false;
++        return;
++    }
+ 
+     QOpenGLContextPrivate::get(ctx)->qgl_current_fbo_invalid = true;
+ 
+@@ -540,7 +563,10 @@ void QOpenGLFramebufferObjectPrivate::initTexture(int idx)
+     GLuint texture = 0;
+ 
+     funcs.glGenTextures(1, &texture);
+-    funcs.glBindTexture(target, texture);
++    if (Q_UNLIKELY(!textureCreated(funcs, target, texture))) {
++        valid = false;
++        return;
++    }
+ 
+     funcs.glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+     funcs.glTexParameteri(target, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+@@ -605,6 +631,10 @@ void QOpenGLFramebufferObjectPrivate::initColorBuffer(int idx, GLint *samples)
+ 
+     funcs.glGenRenderbuffers(1, &color_buffer);
+     funcs.glBindRenderbuffer(GL_RENDERBUFFER, color_buffer);
++    if (Q_UNLIKELY(!renderbufferCreated(funcs, color_buffer))) {
++        valid = false;
++        return;
++    }
+     funcs.glRenderbufferStorageMultisample(GL_RENDERBUFFER, *samples, storageFormat, color.size.width(), color.size.height());
+     funcs.glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + idx,
+                                     GL_RENDERBUFFER, color_buffer);
+@@ -661,7 +691,10 @@ void QOpenGLFramebufferObjectPrivate::initDepthStencilAttachments(QOpenGLContext
+     if (attachment == QOpenGLFramebufferObject::CombinedDepthStencil) {
+         funcs.glGenRenderbuffers(1, &depth_buffer);
+         funcs.glBindRenderbuffer(GL_RENDERBUFFER, depth_buffer);
+-        Q_ASSERT(funcs.glIsRenderbuffer(depth_buffer));
++        if (Q_UNLIKELY(!renderbufferCreated(funcs, depth_buffer))) {
++            valid = false;
++            return;
++        }
+ 
+         if (samples != 0 ) {
+             funcs.glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples,
+@@ -687,7 +720,10 @@ void QOpenGLFramebufferObjectPrivate::initDepthStencilAttachments(QOpenGLContext
+         // depth and stencil buffer needs another extension
+         funcs.glGenRenderbuffers(1, &depth_buffer);
+         funcs.glBindRenderbuffer(GL_RENDERBUFFER, depth_buffer);
+-        Q_ASSERT(funcs.glIsRenderbuffer(depth_buffer));
++        if (Q_UNLIKELY(!renderbufferCreated(funcs, depth_buffer))) {
++            valid = false;
++            return;
++        }
+         if (samples != 0 && funcs.hasOpenGLExtension(QOpenGLExtensions::FramebufferMultisample))
+             funcs.glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples,
+                 GL_DEPTH24_STENCIL8, dsSize.width(), dsSize.height());
+@@ -713,7 +749,10 @@ void QOpenGLFramebufferObjectPrivate::initDepthStencilAttachments(QOpenGLContext
+     {
+         funcs.glGenRenderbuffers(1, &depth_buffer);
+         funcs.glBindRenderbuffer(GL_RENDERBUFFER, depth_buffer);
+-        Q_ASSERT(funcs.glIsRenderbuffer(depth_buffer));
++        if (Q_UNLIKELY(!renderbufferCreated(funcs, depth_buffer))) {
++            valid = false;
++            return;
++        }
+         if (samples != 0 && funcs.hasOpenGLExtension(QOpenGLExtensions::FramebufferMultisample)) {
+             if (ctx->isOpenGLES()) {
+                 if (funcs.hasOpenGLExtension(QOpenGLExtensions::Depth24))
+@@ -751,7 +790,10 @@ void QOpenGLFramebufferObjectPrivate::initDepthStencilAttachments(QOpenGLContext
+     if (stencil_buffer == 0 && (attachment == QOpenGLFramebufferObject::CombinedDepthStencil)) {
+         funcs.glGenRenderbuffers(1, &stencil_buffer);
+         funcs.glBindRenderbuffer(GL_RENDERBUFFER, stencil_buffer);
+-        Q_ASSERT(funcs.glIsRenderbuffer(stencil_buffer));
++        if (Q_UNLIKELY(!renderbufferCreated(funcs, stencil_buffer))) {
++            valid = false;
++            return;
++        }
+ 
+ #ifdef QT_OPENGL_ES
+         GLenum storage = GL_STENCIL_INDEX8;
+diff --git a/src/gui/painting/qplatformbackingstore.cpp b/src/gui/painting/qplatformbackingstore.cpp
+index fd9ff74ef78..9cd51d28837 100644
+--- a/src/gui/painting/qplatformbackingstore.cpp
++++ b/src/gui/painting/qplatformbackingstore.cpp
+@@ -90,7 +90,10 @@ public:
+         , backingStore(nullptr)
+ #ifndef QT_NO_OPENGL
+         , textureId(0)
++        , needsSwizzle(false)
++        , premultiplied(false)
+         , blitter(nullptr)
++        , resourcesContext(nullptr)
+ #endif
+     {
+     }
+@@ -98,21 +101,34 @@ public:
+     ~QPlatformBackingStorePrivate()
+     {
+ #ifndef QT_NO_OPENGL
++        bool current = false;
+         if (context) {
+             QOffscreenSurface offscreenSurface;
+             offscreenSurface.setFormat(context->format());
+             offscreenSurface.create();
+-            if (context->makeCurrent(&offscreenSurface)) {
+-                // Trying to fix a crash on context loss.
+-                if (textureId)
+-                    context->functions()->glDeleteTextures(1, &textureId);
+-                if (blitter)
+-                    blitter->destroy();
+-            }
++            current = context->makeCurrent(&offscreenSurface);
+         }
+-        delete blitter;
++        resetOpenGLResources(current ? context->functions() : nullptr);
+ #endif
+     }
++#ifndef QT_NO_OPENGL
++    void resetOpenGLResources(QOpenGLFunctions *funcs)
++    {
++        if (textureId && funcs)
++            funcs->glDeleteTextures(1, &textureId);
++        textureId = 0;
++        textureSize = QSize();
++        needsSwizzle = false;
++        premultiplied = false;
++        if (blitter) {
++            if (funcs)
++                blitter->destroy();
++            delete blitter;
++            blitter = nullptr;
++        }
++        resourcesContext = nullptr;
++    }
++#endif
+     QWindow *window;
+     QBackingStore *backingStore;
+ #ifndef QT_NO_OPENGL
+@@ -122,6 +138,7 @@ public:
+     mutable bool needsSwizzle;
+     mutable bool premultiplied;
+     QOpenGLTextureBlitter *blitter;
++    QOpenGLContext *resourcesContext;
+ #endif
+ };
+ 
+@@ -343,9 +360,11 @@ void QPlatformBackingStore::composeAndFlush(QWindow *window, const QRegion &regi
+     bool current = d_ptr->context->makeCurrent(window);
+ 
+     if (!current && !d_ptr->context->isValid()) {
+-        delete d_ptr->blitter;
+-        d_ptr->blitter = nullptr;
+-        d_ptr->textureId = 0;
++        d_ptr->resetOpenGLResources(nullptr);
++        d_ptr->context.reset(new QOpenGLContext);
++        d_ptr->context->setFormat(d_ptr->window->requestedFormat());
++        d_ptr->context->setScreen(d_ptr->window->screen());
++        d_ptr->context->setShareContext(qt_window_private(d_ptr->window)->shareContext());
+         current = d_ptr->context->create() && d_ptr->context->makeCurrent(window);
+     }
+ 
+@@ -360,13 +379,21 @@ void QPlatformBackingStore::composeAndFlush(QWindow *window, const QRegion &regi
+     QWindowPrivate::get(window)->lastComposeTime.start();
+ 
+     QOpenGLFunctions *funcs = d_ptr->context->functions();
++    QOpenGLContext *currentContext = QOpenGLContext::currentContext();
++    if (d_ptr->resourcesContext && d_ptr->resourcesContext != currentContext)
++        d_ptr->resetOpenGLResources(nullptr);
++
+     funcs->glViewport(0, 0, qRound(window->width() * window->devicePixelRatio()), qRound(window->height() * window->devicePixelRatio()));
+     funcs->glClearColor(0, 0, 0, translucentBackground ? 0 : 1);
+     funcs->glClear(GL_COLOR_BUFFER_BIT);
+ 
+     if (!d_ptr->blitter) {
+         d_ptr->blitter = new QOpenGLTextureBlitter;
+-        d_ptr->blitter->create();
++        if (!d_ptr->blitter->create()) {
++            d_ptr->resetOpenGLResources(nullptr);
++            return;
++        }
++        d_ptr->resourcesContext = currentContext;
+     }
+ 
+     d_ptr->blitter->bind();
+@@ -397,11 +424,16 @@ void QPlatformBackingStore::composeAndFlush(QWindow *window, const QRegion &regi
+     GLuint textureId = 0;
+     QOpenGLTextureBlitter::Origin origin = QOpenGLTextureBlitter::OriginTopLeft;
+     if (QPlatformGraphicsBuffer *graphicsBuffer = this->graphicsBuffer()) {
+-        if (graphicsBuffer->size() != d_ptr->textureSize) {
++        if (graphicsBuffer->size() != d_ptr->textureSize || !d_ptr->textureId) {
+             if (d_ptr->textureId)
+                 funcs->glDeleteTextures(1, &d_ptr->textureId);
+             funcs->glGenTextures(1, &d_ptr->textureId);
+             funcs->glBindTexture(GL_TEXTURE_2D, d_ptr->textureId);
++            if (!d_ptr->textureId) {
++                d_ptr->resetOpenGLResources(funcs);
++                return;
++            }
++            d_ptr->resourcesContext = currentContext;
+             QOpenGLContext *ctx = QOpenGLContext::currentContext();
+             if (!ctx->isOpenGLES() || ctx->format().majorVersion() >= 3) {
+                 funcs->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+@@ -540,6 +572,7 @@ GLuint QPlatformBackingStore::toTexture(const QRegion &dirtyRegion, QSize *textu
+     QOpenGLContext *ctx = QOpenGLContext::currentContext();
+     GLenum internalFormat = basicFormat;
+     GLuint pixelType = GL_UNSIGNED_BYTE;
++    QOpenGLFunctions *funcs = ctx->functions();
+ 
+     bool needsConversion = false;
+     *flags = { };
+@@ -598,6 +631,10 @@ GLuint QPlatformBackingStore::toTexture(const QRegion &dirtyRegion, QSize *textu
+     // Must rely on the input only, not d_ptr.
+     // With the default composeAndFlush() textureSize is &d_ptr->textureSize.
+     bool resized = *textureSize != imageSize;
++    if (!d_ptr->textureId) {
++        resized = true;
++        *textureSize = QSize();
++    }
+     if (dirtyRegion.isEmpty() && !resized)
+         return d_ptr->textureId;
+ 
+@@ -616,8 +653,6 @@ GLuint QPlatformBackingStore::toTexture(const QRegion &dirtyRegion, QSize *textu
+     const bool hasUnpackRowLength = !ctx->isOpenGLES() || ctx->format().majorVersion() >= 3;
+ #endif // DESKTOP_APP_QT_STATIC_ANGLE
+ 
+-    QOpenGLFunctions *funcs = ctx->functions();
+-
+     if (hasUnpackRowLength) {
+         funcs->glPixelStorei(GL_UNPACK_ROW_LENGTH, strideInPixels);
+     } else if (strideInPixels != image.width()) {
+@@ -632,6 +667,11 @@ GLuint QPlatformBackingStore::toTexture(const QRegion &dirtyRegion, QSize *textu
+             funcs->glDeleteTextures(1, &d_ptr->textureId);
+         funcs->glGenTextures(1, &d_ptr->textureId);
+         funcs->glBindTexture(GL_TEXTURE_2D, d_ptr->textureId);
++        if (!d_ptr->textureId) {
++            d_ptr->textureId = 0;
++            *textureSize = QSize();
++            return 0;
++        }
+         if (!ctx->isOpenGLES() || ctx->format().majorVersion() >= 3) {
+             funcs->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+             funcs->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+diff --git a/src/plugins/platforms/windows/qwindowseglcontext.cpp b/src/plugins/platforms/windows/qwindowseglcontext.cpp
+index 84e9f95b465..3cb1c037e11 100644
+--- a/src/plugins/platforms/windows/qwindowseglcontext.cpp
++++ b/src/plugins/platforms/windows/qwindowseglcontext.cpp
+@@ -76,6 +76,15 @@ QT_BEGIN_NAMESPACE
+ QWindowsLibEGL QWindowsEGLStaticContext::libEGL;
+ QWindowsLibGLESv2 QWindowsEGLStaticContext::libGLESv2;
+ 
++static bool shouldRecoverFromEglError(EGLint error)
++{
++    return error == EGL_CONTEXT_LOST
++        || error == EGL_BAD_ALLOC
++        || error == EGL_BAD_ACCESS
++        || error == EGL_BAD_DISPLAY
++        || error == EGL_NOT_INITIALIZED;
++}
++
+ #if !defined(QT_STATIC) || defined(QT_OPENGL_DYNAMIC)
+ 
+ #ifdef Q_CC_MINGW
+@@ -149,6 +158,7 @@ bool QWindowsLibEGL::init()
+     eglCreatePbufferSurface = RESOLVE((EGLSurface (EGLAPIENTRY *)(EGLDisplay , EGLConfig, const EGLint *)), eglCreatePbufferSurface);
+     eglDestroySurface = RESOLVE((EGLBoolean (EGLAPIENTRY *)(EGLDisplay , EGLSurface )), eglDestroySurface);
+     eglBindAPI = RESOLVE((EGLBoolean (EGLAPIENTRY * )(EGLenum )), eglBindAPI);
++    eglReleaseThread = RESOLVE((EGLBoolean (EGLAPIENTRY *)(void)), eglReleaseThread);
+     eglSwapInterval = RESOLVE((EGLBoolean (EGLAPIENTRY *)(EGLDisplay , EGLint )), eglSwapInterval);
+     eglCreateContext = RESOLVE((EGLContext (EGLAPIENTRY *)(EGLDisplay , EGLConfig , EGLContext , const EGLint *)), eglCreateContext);
+     eglDestroyContext = RESOLVE((EGLBoolean (EGLAPIENTRY *)(EGLDisplay, EGLContext)), eglDestroyContext);
+@@ -205,6 +215,10 @@ bool QWindowsLibGLESv2::init()
+ 
+ QWindowsEGLStaticContext::QWindowsEGLStaticContext(EGLDisplay display)
+     : m_display(display)
++    , m_refs(1)
++    , m_lost(0)
++    , m_terminated(0)
++    , m_retired(0)
+ {
+ }
+ 
+@@ -343,12 +357,57 @@ QWindowsEGLStaticContext *QWindowsEGLStaticContext::create(QWindowsOpenGLTester:
+ 
+ QWindowsEGLStaticContext::~QWindowsEGLStaticContext()
+ {
++    terminate();
++}
++
++void QWindowsEGLStaticContext::terminate()
++{
++    if (!m_terminated.testAndSetRelaxed(0, 1))
++        return;
++
+     qCDebug(lcQpaGl) << __FUNCTION__ << "Releasing EGL display " << m_display;
+-    libEGL.eglTerminate(m_display);
++    if (libEGL.eglMakeCurrent)
++        libEGL.eglMakeCurrent(m_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
++    if (libEGL.eglReleaseThread)
++        libEGL.eglReleaseThread();
++    if (libEGL.eglTerminate)
++        libEGL.eglTerminate(m_display);
++    if (libEGL.eglReleaseThread)
++        libEGL.eglReleaseThread();
++}
++
++void QWindowsEGLStaticContext::ref()
++{
++    m_refs.ref();
++}
++
++void QWindowsEGLStaticContext::deref()
++{
++    if (!m_refs.deref() && m_retired.loadAcquire())
++        delete this;
++}
++
++void QWindowsEGLStaticContext::retire()
++{
++    terminate();
++    if (m_retired.testAndSetRelaxed(0, 1))
++        deref();
++}
++
++void QWindowsEGLStaticContext::markLost(EGLint error)
++{
++    if (!shouldRecoverFromEglError(error))
++        return;
++
++    if (m_lost.testAndSetRelaxed(0, 1))
++        terminate();
+ }
+ 
+ QWindowsOpenGLContext *QWindowsEGLStaticContext::createContext(QOpenGLContext *context)
+ {
++    if (!isValid())
++        return nullptr;
++
+     return new QWindowsEGLContext(this, context->format(), context->shareHandle());
+ }
+ 
+@@ -360,6 +419,7 @@ void *QWindowsEGLStaticContext::createWindowSurface(void *nativeWindow, void *na
+     if (surface == EGL_NO_SURFACE) {
+         *err = libEGL.eglGetError();
+         qWarning("%s: Could not create the EGL window surface: 0x%x", __FUNCTION__, *err);
++        markLost(*err);
+     }
+ 
+     return surface;
+@@ -367,6 +427,9 @@ void *QWindowsEGLStaticContext::createWindowSurface(void *nativeWindow, void *na
+ 
+ void QWindowsEGLStaticContext::destroyWindowSurface(void *nativeSurface)
+ {
++    if (m_terminated.loadAcquire())
++        return;
++
+     libEGL.eglDestroySurface(m_display, nativeSurface);
+ }
+ 
+@@ -442,9 +505,19 @@ QWindowsEGLContext::QWindowsEGLContext(QWindowsEGLStaticContext *staticContext,
+     if (!m_staticContext)
+         return;
+ 
++    m_staticContext->ref();
++
+     m_eglConfig = chooseConfig(format);
++    if (!m_eglConfig)
++        return;
++
+     m_format = m_staticContext->formatFromConfig(m_eglDisplay, m_eglConfig, format);
+-    m_shareContext = share ? static_cast<QWindowsEGLContext *>(share)->m_eglContext : nullptr;
++    if (share) {
++        auto *shareContext = static_cast<QWindowsEGLContext *>(share);
++        if (shareContext->m_staticContext == m_staticContext && shareContext->isValid()) {
++            m_shareContext = shareContext->m_eglContext;
++        }
++    }
+ 
+     QVector<EGLint> contextAttrs;
+     const int major = m_format.majorVersion();
+@@ -467,6 +540,7 @@ QWindowsEGLContext::QWindowsEGLContext(QWindowsEGLStaticContext *staticContext,
+     if (m_eglContext == EGL_NO_CONTEXT) {
+         int err = QWindowsEGLStaticContext::libEGL.eglGetError();
+         qWarning("QWindowsEGLContext: Failed to create context, eglError: %x, this: %p", err, this);
++        m_staticContext->markLost(err);
+         // ANGLE gives bad alloc when it fails to reset a previously lost D3D device.
+         // A common cause for this is disabling the graphics adapter used by the app.
+         if (err == EGL_BAD_ALLOC)
+@@ -482,8 +556,11 @@ QWindowsEGLContext::QWindowsEGLContext(QWindowsEGLStaticContext *staticContext,
+         EGL_NONE
+     };
+     EGLSurface pbuffer = QWindowsEGLStaticContext::libEGL.eglCreatePbufferSurface(m_eglDisplay, m_eglConfig, pbufferAttributes);
+-    if (pbuffer == EGL_NO_SURFACE)
++    if (pbuffer == EGL_NO_SURFACE) {
++        const int err = QWindowsEGLStaticContext::libEGL.eglGetError();
++        m_staticContext->markLost(err);
+         return;
++    }
+ 
+     EGLDisplay prevDisplay = QWindowsEGLStaticContext::libEGL.eglGetCurrentDisplay();
+     if (prevDisplay == EGL_NO_DISPLAY) // when no context is current
+@@ -512,9 +589,14 @@ QWindowsEGLContext::QWindowsEGLContext(QWindowsEGLStaticContext *staticContext,
+ QWindowsEGLContext::~QWindowsEGLContext()
+ {
+     if (m_eglContext != EGL_NO_CONTEXT) {
+-        QWindowsEGLStaticContext::libEGL.eglDestroyContext(m_eglDisplay, m_eglContext);
++        if (m_staticContext && m_staticContext->isValid())
++            QWindowsEGLStaticContext::libEGL.eglDestroyContext(m_eglDisplay, m_eglContext);
+         m_eglContext = EGL_NO_CONTEXT;
+     }
++    if (m_staticContext) {
++        m_staticContext->deref();
++        m_staticContext = nullptr;
++    }
+ }
+ 
+ bool QWindowsEGLContext::makeCurrent(QPlatformSurface *surface)
+@@ -523,10 +605,15 @@ bool QWindowsEGLContext::makeCurrent(QPlatformSurface *surface)
+ 
+     QWindowsEGLStaticContext::libEGL.eglBindAPI(m_api);
+ 
++    if (!m_staticContext->isValid()) {
++        m_eglContext = EGL_NO_CONTEXT;
++        return false;
++    }
++
+     auto *window = static_cast<QWindowsWindow *>(surface);
+     window->aboutToMakeCurrent();
+     int err = 0;
+-    auto eglSurface = static_cast<EGLSurface>(window->surface(m_eglConfig, &err));
++    auto eglSurface = static_cast<EGLSurface>(window->surface(m_staticContext, m_eglConfig, &err));
+     if (eglSurface == EGL_NO_SURFACE) {
+         if (err == EGL_CONTEXT_LOST) {
+             m_eglContext = EGL_NO_CONTEXT;
+@@ -535,9 +622,11 @@ bool QWindowsEGLContext::makeCurrent(QPlatformSurface *surface)
+             // With ANGLE this means no (D3D) device and can happen when disabling/changing graphics adapters.
+             qCDebug(lcQpaGl) << "Bad access (missing device?) in createWindowSurface() for context" << this;
+             // Simulate context loss as the context is useless.
+-            QWindowsEGLStaticContext::libEGL.eglDestroyContext(m_eglDisplay, m_eglContext);
++            if (m_eglContext != EGL_NO_CONTEXT)
++                QWindowsEGLStaticContext::libEGL.eglDestroyContext(m_eglDisplay, m_eglContext);
+             m_eglContext = EGL_NO_CONTEXT;
+         }
++        m_staticContext->markLost(err);
+         return false;
+     }
+ 
+@@ -568,6 +657,7 @@ bool QWindowsEGLContext::makeCurrent(QPlatformSurface *surface)
+         } else {
+             qWarning("%s: Failed to make surface current. eglError: %x, this: %p", __FUNCTION__, err, this);
+         }
++        m_staticContext->markLost(err);
+     }
+ 
+     return ok;
+@@ -575,6 +665,9 @@ bool QWindowsEGLContext::makeCurrent(QPlatformSurface *surface)
+ 
+ void QWindowsEGLContext::doneCurrent()
+ {
++    if (!m_staticContext->isValid())
++        return;
++
+     QWindowsEGLStaticContext::libEGL.eglBindAPI(m_api);
+     bool ok = QWindowsEGLStaticContext::libEGL.eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+     if (!ok)
+@@ -585,14 +678,20 @@ void QWindowsEGLContext::doneCurrent()
+ void QWindowsEGLContext::swapBuffers(QPlatformSurface *surface)
+ {
+     QWindowsEGLStaticContext::libEGL.eglBindAPI(m_api);
++    if (!m_staticContext->isValid()) {
++        m_eglContext = EGL_NO_CONTEXT;
++        return;
++    }
++
+     auto *window = static_cast<QWindowsWindow *>(surface);
+     int err = 0;
+-    auto eglSurface = static_cast<EGLSurface>(window->surface(m_eglConfig, &err));
++    auto eglSurface = static_cast<EGLSurface>(window->surface(m_staticContext, m_eglConfig, &err));
+     if (eglSurface == EGL_NO_SURFACE) {
+         if (err == EGL_CONTEXT_LOST) {
+             m_eglContext = EGL_NO_CONTEXT;
+             qCDebug(lcQpaGl) << "Got EGL context lost in createWindowSurface() for context" << this;
+         }
++        m_staticContext->markLost(err);
+         return;
+     }
+ 
+@@ -605,6 +704,7 @@ void QWindowsEGLContext::swapBuffers(QPlatformSurface *surface)
+         } else {
+             qWarning("%s: Failed to swap buffers. eglError: %d, this: %p", __FUNCTION__, err, this);
+         }
++        m_staticContext->markLost(err);
+     }
+ }
+ 
+@@ -926,7 +1026,14 @@ EGLConfig QWindowsEGLContext::chooseConfig(const QSurfaceFormat &format)
+     do {
+         // Get the number of matching configurations for this set of properties.
+         EGLint matching = 0;
+-        if (!QWindowsEGLStaticContext::libEGL.eglChooseConfig(display, configureAttributes.constData(), nullptr, 0, &matching) || !matching)
++        if (!QWindowsEGLStaticContext::libEGL.eglChooseConfig(display, configureAttributes.constData(), nullptr, 0, &matching)) {
++            const int err = QWindowsEGLStaticContext::libEGL.eglGetError();
++            m_staticContext->markLost(err);
++            if (shouldRecoverFromEglError(err))
++                return nullptr;
++            continue;
++        }
++        if (!matching)
+             continue;
+ 
+         // Fetch all of the matching configurations and find the
+@@ -941,7 +1048,13 @@ EGLConfig QWindowsEGLContext::chooseConfig(const QSurfaceFormat &format)
+         int confAttrAlpha = i == -1 ? 0 : configureAttributes.at(i+1);
+ 
+         QVector<EGLConfig> configs(matching);
+-        QWindowsEGLStaticContext::libEGL.eglChooseConfig(display, configureAttributes.constData(), configs.data(), configs.size(), &matching);
++        if (!QWindowsEGLStaticContext::libEGL.eglChooseConfig(display, configureAttributes.constData(), configs.data(), configs.size(), &matching)) {
++            const int err = QWindowsEGLStaticContext::libEGL.eglGetError();
++            m_staticContext->markLost(err);
++            if (shouldRecoverFromEglError(err))
++                return nullptr;
++            continue;
++        }
+         if (!cfg && matching > 0)
+             cfg = configs.constFirst();
+ 
+diff --git a/src/plugins/platforms/windows/qwindowseglcontext.h b/src/plugins/platforms/windows/qwindowseglcontext.h
+index d96e2661590..2de5c7c337d 100644
+--- a/src/plugins/platforms/windows/qwindowseglcontext.h
++++ b/src/plugins/platforms/windows/qwindowseglcontext.h
+@@ -43,6 +43,7 @@
+ #include "qwindowsopenglcontext.h"
+ #include "qwindowsopengltester.h"
+ #include <EGL/egl.h>
++#include <QtCore/qatomic.h>
+ 
+ QT_BEGIN_NAMESPACE
+ 
+@@ -66,6 +67,7 @@ struct QWindowsLibEGL
+                                                        const EGLint *attrib_list);
+     EGLBoolean (EGLAPIENTRY * eglDestroySurface)(EGLDisplay dpy, EGLSurface surface);
+     EGLBoolean (EGLAPIENTRY * eglBindAPI)(EGLenum api);
++    EGLBoolean (EGLAPIENTRY * eglReleaseThread)(void);
+     EGLBoolean (EGLAPIENTRY * eglSwapInterval)(EGLDisplay dpy, EGLint interval);
+     EGLContext (EGLAPIENTRY * eglCreateContext)(EGLDisplay dpy, EGLConfig config,
+                                                 EGLContext share_context,
+@@ -116,6 +118,11 @@ public:
+     ~QWindowsEGLStaticContext() override;
+ 
+     EGLDisplay display() const { return m_display; }
++    bool isValid() const override { return !m_lost.loadAcquire(); }
++    void markLost(EGLint error);
++    void ref() override;
++    void deref() override;
++    void retire() override;
+ 
+     QWindowsOpenGLContext *createContext(QOpenGLContext *context) override;
+     void *moduleHandle() const override { return libGLESv2.moduleHandle(); }
+@@ -133,8 +140,13 @@ private:
+     explicit QWindowsEGLStaticContext(EGLDisplay display);
+     static bool initializeAngle(QWindowsOpenGLTester::Renderers preferredType, HDC dc,
+                                 EGLDisplay *display, EGLint *major, EGLint *minor);
++    void terminate();
+ 
+     const EGLDisplay m_display;
++    QAtomicInt m_refs;
++    QAtomicInt m_lost;
++    QAtomicInt m_terminated;
++    QAtomicInt m_retired;
+ };
+ 
+ class QWindowsEGLContext : public QWindowsOpenGLContext
+@@ -152,7 +164,7 @@ public:
+ 
+     QSurfaceFormat format() const override { return m_format; }
+     bool isSharing() const override { return m_shareContext != EGL_NO_CONTEXT; }
+-    bool isValid() const override { return m_eglContext != EGL_NO_CONTEXT; }
++    bool isValid() const override { return m_eglContext != EGL_NO_CONTEXT && m_staticContext && m_staticContext->isValid(); }
+ 
+     void *nativeContext() const override { return m_eglContext; }
+     void *nativeDisplay() const override { return m_eglDisplay; }
+@@ -161,11 +173,11 @@ public:
+ private:
+     EGLConfig chooseConfig(const QSurfaceFormat &format);
+ 
+-    QWindowsEGLStaticContext *m_staticContext;
+-    EGLContext m_eglContext;
+-    EGLContext m_shareContext;
+-    EGLDisplay m_eglDisplay;
+-    EGLConfig m_eglConfig;
++    QWindowsEGLStaticContext *m_staticContext = nullptr;
++    EGLContext m_eglContext = EGL_NO_CONTEXT;
++    EGLContext m_shareContext = EGL_NO_CONTEXT;
++    EGLDisplay m_eglDisplay = EGL_NO_DISPLAY;
++    EGLConfig m_eglConfig = nullptr;
+     QSurfaceFormat m_format;
+     EGLenum m_api = EGL_OPENGL_ES_API;
+     int m_swapInterval = -1;
+diff --git a/src/plugins/platforms/windows/qwindowsintegration.cpp b/src/plugins/platforms/windows/qwindowsintegration.cpp
+index f4bf58ee310..a957e07055c 100644
+--- a/src/plugins/platforms/windows/qwindowsintegration.cpp
++++ b/src/plugins/platforms/windows/qwindowsintegration.cpp
+@@ -267,6 +267,10 @@ QWindowsIntegrationPrivate::QWindowsIntegrationPrivate(const QStringList &paramL
+ 
+ QWindowsIntegrationPrivate::~QWindowsIntegrationPrivate()
+ {
++#ifndef QT_NO_OPENGL
++    if (!m_staticOpenGLContext.isNull())
++        m_staticOpenGLContext.take()->retire();
++#endif // QT_NO_OPENGL
+     delete m_fontDatabase;
+ }
+ 
+@@ -470,8 +474,16 @@ QPlatformOpenGLContext *QWindowsIntegration::createPlatformOpenGLContext(QOpenGL
+     qCDebug(lcQpaGl) << __FUNCTION__ << context->format();
+     if (QWindowsStaticOpenGLContext *staticOpenGLContext = QWindowsIntegration::staticOpenGLContext()) {
+         QScopedPointer<QWindowsOpenGLContext> result(staticOpenGLContext->createContext(context));
+-        if (result->isValid())
++        if (result && result->isValid())
+             return result.take();
++        if (!staticOpenGLContext->isValid()) {
++            staticOpenGLContext = QWindowsIntegration::staticOpenGLContext();
++            if (staticOpenGLContext) {
++                result.reset(staticOpenGLContext->createContext(context));
++                if (result && result->isValid())
++                    return result.take();
++            }
++        }
+     }
+     return nullptr;
+ }
+@@ -496,6 +508,8 @@ QWindowsStaticOpenGLContext *QWindowsIntegration::staticOpenGLContext()
+         return nullptr;
+     QWindowsIntegrationPrivate *d = integration->d.data();
+     QMutexLocker lock(&d->m_staticContextLock);
++    if (!d->m_staticOpenGLContext.isNull() && !d->m_staticOpenGLContext->isValid())
++        d->m_staticOpenGLContext.take()->retire();
+     if (d->m_staticOpenGLContext.isNull())
+         d->m_staticOpenGLContext.reset(QWindowsStaticOpenGLContext::create());
+     return d->m_staticOpenGLContext.data();
+diff --git a/src/plugins/platforms/windows/qwindowsnativeinterface.cpp b/src/plugins/platforms/windows/qwindowsnativeinterface.cpp
+index 1195f15a597..b5232d22cfe 100644
+--- a/src/plugins/platforms/windows/qwindowsnativeinterface.cpp
++++ b/src/plugins/platforms/windows/qwindowsnativeinterface.cpp
+@@ -116,7 +116,7 @@ void *QWindowsNativeInterface::nativeResourceForWindow(const QByteArray &resourc
+     case QWindow::VulkanSurface:
+ #if QT_CONFIG(vulkan)
+         if (type == VkSurface)
+-            return bw->surface(nullptr, nullptr); // returns the address of the VkSurfaceKHR, not the value, as expected
++            return bw->surface(nullptr, nullptr, nullptr); // returns the address of the VkSurfaceKHR, not the value, as expected
+ #endif
+         break;
+     default:
+diff --git a/src/plugins/platforms/windows/qwindowsopenglcontext.h b/src/plugins/platforms/windows/qwindowsopenglcontext.h
+index 1416a7e575e..40281b8eb97 100644
+--- a/src/plugins/platforms/windows/qwindowsopenglcontext.h
++++ b/src/plugins/platforms/windows/qwindowsopenglcontext.h
+@@ -60,6 +60,10 @@ public:
+     virtual void *moduleHandle() const = 0;
+     virtual QOpenGLContext::OpenGLModuleType moduleType() const = 0;
+     virtual bool supportsThreadedOpenGL() const { return false; }
++    virtual bool isValid() const { return true; }
++    virtual void ref() { }
++    virtual void deref() { }
++    virtual void retire() { delete this; }
+ 
+     // If the windowing system interface needs explicitly created window surfaces (like EGL),
+     // reimplement these.
+diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
+index 1c7d6bdedc6..2feb54df9d7 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.cpp
++++ b/src/plugins/platforms/windows/qwindowswindow.cpp
+@@ -1412,6 +1412,24 @@ void QWindowsWindow::fireFullExpose(bool force)
+     fireExpose(QRect(QPoint(0, 0), m_data.geometry.size()), force);
+ }
+ 
++void QWindowsWindow::destroyOpenGLSurface()
++{
++#ifndef QT_NO_OPENGL
++    if (m_surface) {
++        auto surface = m_surface;
++        auto staticContext = m_surfaceStaticContext;
++        m_surface = nullptr;
++        m_surfaceStaticContext = nullptr;
++        if (staticContext) {
++            staticContext->destroyWindowSurface(surface);
++            staticContext->deref();
++        } else if (QWindowsStaticOpenGLContext *currentStaticContext = QWindowsIntegration::staticOpenGLContext()) {
++            currentStaticContext->destroyWindowSurface(surface);
++        }
++    }
++#endif // QT_NO_OPENGL
++}
++
+ void QWindowsWindow::destroyWindow()
+ {
+     qCDebug(lcQpaWindows) << __FUNCTION__ << this << window() << m_data.hwnd;
+@@ -1440,11 +1458,7 @@ void QWindowsWindow::destroyWindow()
+         }
+ #endif
+ #ifndef QT_NO_OPENGL
+-        if (m_surface) {
+-            if (QWindowsStaticOpenGLContext *staticOpenGLContext = QWindowsIntegration::staticOpenGLContext())
+-                staticOpenGLContext->destroyWindowSurface(m_surface);
+-            m_surface = nullptr;
+-        }
++        destroyOpenGLSurface();
+ #endif
+         DestroyWindow(m_data.hwnd);
+         context->removeWindow(m_data.hwnd);
+@@ -2998,9 +3012,10 @@ void QWindowsWindow::setCustomMargins(const QMargins &newCustomMargins)
+     }
+ }
+ 
+-void *QWindowsWindow::surface(void *nativeConfig, int *err)
++void *QWindowsWindow::surface(QWindowsStaticOpenGLContext *staticOpenGLContext, void *nativeConfig, int *err)
+ {
+ #if QT_CONFIG(vulkan)
++    Q_UNUSED(staticOpenGLContext);
+     Q_UNUSED(nativeConfig);
+     Q_UNUSED(err);
+     if (window()->surfaceType() == QSurface::VulkanSurface) {
+@@ -3016,14 +3031,23 @@ void *QWindowsWindow::surface(void *nativeConfig, int *err)
+         return &m_vkSurface;
+     }
+ #elif defined(QT_NO_OPENGL)
++    Q_UNUSED(staticOpenGLContext)
+     Q_UNUSED(err)
+     Q_UNUSED(nativeConfig)
+     return 0;
+ #endif
+ #ifndef QT_NO_OPENGL
++    if (m_surface && m_surfaceStaticContext != staticOpenGLContext)
++        destroyOpenGLSurface();
++
+     if (!m_surface) {
+-        if (QWindowsStaticOpenGLContext *staticOpenGLContext = QWindowsIntegration::staticOpenGLContext())
++        if (staticOpenGLContext) {
+             m_surface = staticOpenGLContext->createWindowSurface(m_data.hwnd, nativeConfig, err);
++            if (m_surface) {
++                m_surfaceStaticContext = staticOpenGLContext;
++                m_surfaceStaticContext->ref();
++            }
++        }
+     }
+ 
+     return m_surface;
+@@ -3041,11 +3065,7 @@ void QWindowsWindow::invalidateSurface()
+     }
+ #endif
+ #ifndef QT_NO_OPENGL
+-    if (m_surface) {
+-        if (QWindowsStaticOpenGLContext *staticOpenGLContext = QWindowsIntegration::staticOpenGLContext())
+-            staticOpenGLContext->destroyWindowSurface(m_surface);
+-        m_surface = nullptr;
+-    }
++    destroyOpenGLSurface();
+ #endif // QT_NO_OPENGL
+ }
+ 
+diff --git a/src/plugins/platforms/windows/qwindowswindow.h b/src/plugins/platforms/windows/qwindowswindow.h
+index 5401597c66f..de687d623c0 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.h
++++ b/src/plugins/platforms/windows/qwindowswindow.h
+@@ -55,6 +55,7 @@ QT_BEGIN_NAMESPACE
+ 
+ class QWindowsOleDropTarget;
+ class QWindowsMenuBar;
++class QWindowsStaticOpenGLContext;
+ class QDebug;
+ 
+ struct QWindowsGeometryHint
+@@ -338,7 +339,7 @@ public:
+     bool isEnabled() const;
+     void setWindowIcon(const QIcon &icon) override;
+ 
+-    void *surface(void *nativeConfig, int *err);
++    void *surface(QWindowsStaticOpenGLContext *staticOpenGLContext, void *nativeConfig, int *err);
+     void invalidateSurface() override;
+     void aboutToMakeCurrent();
+ 
+@@ -376,6 +377,7 @@ private:
+     void updateDropSite(bool topLevel);
+     void handleWindowStateChange(Qt::WindowStates state);
+     inline void destroyIcon();
++    void destroyOpenGLSurface();
+     void fireExpose(const QRegion &region, bool force=false);
+     void fireFullExpose(bool force=false);
+     void calculateFullFrameMargins();
+@@ -395,6 +397,7 @@ private:
+     HICON m_iconSmall = nullptr;
+     HICON m_iconBig = nullptr;
+     void *m_surface = nullptr;
++    QWindowsStaticOpenGLContext *m_surfaceStaticContext = nullptr;
+     int m_savedDpi = 0;
+ 
+     static bool m_screenForGLInitialized;
+diff --git a/src/widgets/kernel/qopenglwidget.cpp b/src/widgets/kernel/qopenglwidget.cpp
+index 7764aaed8d2..f0a3bdb54a5 100644
+--- a/src/widgets/kernel/qopenglwidget.cpp
++++ b/src/widgets/kernel/qopenglwidget.cpp
+@@ -663,7 +663,7 @@ void QOpenGLWidgetPaintDevice::ensureActiveTarget()
+     if (QOpenGLContext::currentContext() != wd->context) {
+         d->w->makeCurrent();
+         if (!wd->initialized)
+-            return; // Trying to fix a crash on context loss.
++            return;
+     } else
+         wd->fbo->bind();
+ 
+@@ -715,8 +715,10 @@ void QOpenGLWidgetPrivate::reset()
+     Q_Q(QOpenGLWidget);
+ 
+     // Destroy the OpenGL resources first. These need the context to be current.
+-    if (initialized)
+-        q->makeCurrent();
++    const bool wasInitialized = initialized;
++    const bool madeCurrent = wasInitialized && context && surface && context->makeCurrent(surface);
++    if (wasInitialized && !madeCurrent)
++        initialized = false;
+ 
+     delete paintDevice;
+     paintDevice = nullptr;
+@@ -725,7 +727,7 @@ void QOpenGLWidgetPrivate::reset()
+     delete resolvedFbo;
+     resolvedFbo = nullptr;
+ 
+-    if (initialized)
++    if (madeCurrent)
+         q->doneCurrent();
+ 
+     // Delete the context first, then the surface. Slots connected to
+@@ -745,7 +747,6 @@ void QOpenGLWidgetPrivate::recreateFbo()
+     emit q->aboutToResize();
+ 
+     if (!context->makeCurrent(surface)) {
+-        // Trying to fix a crash on context loss.
+         reset();
+         return;
+     }
+@@ -768,12 +769,24 @@ void QOpenGLWidgetPrivate::recreateFbo()
+ 
+     const QSize deviceSize = q->size() * q->devicePixelRatioF();
+     fbo = new QOpenGLFramebufferObject(deviceSize, format);
+-    if (samples > 0)
++    if (!fbo->isValid()) {
++        reset();
++        return;
++    }
++    if (samples > 0) {
+         resolvedFbo = new QOpenGLFramebufferObject(deviceSize);
++        if (!resolvedFbo->isValid()) {
++            reset();
++            return;
++        }
++    }
+ 
+     textureFormat = fbo->format().internalTextureFormat();
+ 
+-    fbo->bind();
++    if (!fbo->bind()) {
++        reset();
++        return;
++    }
+     context->functions()->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+     flushPending = true; // Make sure the FBO is initialized before use
+ 
+@@ -814,6 +827,8 @@ void QOpenGLWidgetPrivate::initialize()
+     // will share in order to make the texture usable by the underlying window's backingstore.
+     QWidget *tlw = q->window();
+     QOpenGLContext *shareContext = qt_gl_global_share_context();
++    if (shareContext && !shareContext->isValid())
++        shareContext = nullptr;
+     if (!shareContext)
+         shareContext = get(tlw)->shareContext();
+     // If shareContext is null, showing content on-screen will not work.
+@@ -921,7 +936,7 @@ void QOpenGLWidgetPrivate::render()
+ 
+     q->makeCurrent();
+     if (!initialized)
+-        return; // Trying to fix a crash on context loss.
++        return;
+ 
+     if (updateBehavior == QOpenGLWidget::NoPartialUpdate && hasBeenComposed) {
+         invalidateFbo();
+@@ -971,7 +986,7 @@ QImage QOpenGLWidgetPrivate::grabFramebuffer()
+         recreateFbo();
+ 
+     if (!fbo)
+-        return QImage(); // Trying to fix a crash on context loss.
++        return QImage();
+ 
+     if (!inPaintGL)
+         render();
+@@ -979,12 +994,12 @@ QImage QOpenGLWidgetPrivate::grabFramebuffer()
+     if (resolvedFbo) {
+         resolveSamples();
+         if (!initialized)
+-            return QImage(); // Trying to fix a crash on context loss.
++            return QImage();
+         resolvedFbo->bind();
+     } else {
+         q->makeCurrent();
+         if (!initialized)
+-            return QImage(); // Trying to fix a crash on context loss.
++            return QImage();
+     }
+ 
+     const bool hasAlpha = q->format().hasAlpha();
+@@ -1195,9 +1210,7 @@ void QOpenGLWidget::makeCurrent()
+         return;
+ 
+     if (!d->context->makeCurrent(d->surface)) {
+-        // Trying to fix a crash on context loss.
+-        // If makeCurrent() failed, that means we're not initialized any more.
+-        d->initialized = false; // This prevents infinite recursion to makeCurrent().
++        d->initialized = false;
+         d->reset();
+     }
+ 
+@@ -1330,7 +1343,7 @@ void QOpenGLWidget::resizeEvent(QResizeEvent *e)
+ 
+     d->recreateFbo();
+     if (!d->fbo)
+-        return; // Trying to fix a crash on context loss.
++        return;
+ 
+     resizeGL(width(), height());
+     d->sendPaintEvent(QRect(QPoint(0, 0), size()));
+diff --git a/src/widgets/kernel/qwidget.cpp b/src/widgets/kernel/qwidget.cpp
+index b3702550c9c..f841ef65db5 100644
+--- a/src/widgets/kernel/qwidget.cpp
++++ b/src/widgets/kernel/qwidget.cpp
+@@ -12042,6 +12042,9 @@ QOpenGLContext *QWidgetPrivate::shareContext() const
+     if (!extra || !extra->topextra || !extra->topextra->window)
+         return nullptr;
+ 
++    if (extra->topextra->shareContext && !extra->topextra->shareContext->isValid())
++        extra->topextra->retiredShareContexts.push_back(std::move(extra->topextra->shareContext));
++
+     if (!extra->topextra->shareContext) {
+         auto ctx = qt_make_unique<QOpenGLContext>();
+         ctx->setShareContext(qt_gl_global_share_context());
+diff --git a/src/widgets/kernel/qwidget_p.h b/src/widgets/kernel/qwidget_p.h
+index c432f4b5d55..ab74b1513a0 100644
+--- a/src/widgets/kernel/qwidget_p.h
++++ b/src/widgets/kernel/qwidget_p.h
+@@ -129,6 +129,7 @@ struct QTLWExtra {
+     QWidgetWindow *window;
+ #ifndef QT_NO_OPENGL
+     mutable std::unique_ptr<QOpenGLContext> shareContext;
++    mutable std::vector<std::unique_ptr<QOpenGLContext>> retiredShareContexts;
+ #endif
+ 
+     // Implicit pointers (shared_null).
