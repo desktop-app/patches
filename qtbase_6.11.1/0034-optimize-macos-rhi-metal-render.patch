@@ -1,0 +1,469 @@
+commit 9c6de8136157ef9cc7a2967ea7fd47fbecc2c338
+Author: John Preston <johnprestonmail@gmail.com>
+Date:   Thu May 28 17:20:21 2026 +0400
+
+    Make macOS RHI widgets windows more efficient.
+
+diff --git a/src/gui/painting/qbackingstoredefaultcompositor.cpp b/src/gui/painting/qbackingstoredefaultcompositor.cpp
+index f2a056732b7..9be1a25f51d 100644
+--- a/src/gui/painting/qbackingstoredefaultcompositor.cpp
++++ b/src/gui/painting/qbackingstoredefaultcompositor.cpp
+@@ -409,7 +409,9 @@ void QBackingStoreDefaultCompositor::updateUniforms(PerQuadData *d, QRhiResource
+     resourceUpdates->updateDynamicBuffer(d->ubuf, 116, 4, &textureSwizzle);
+ }
+ 
+-void QBackingStoreDefaultCompositor::ensureResources(QRhiResourceUpdateBatch *resourceUpdates, QRhiRenderPassDescriptor *rpDesc)
++void QBackingStoreDefaultCompositor::ensureResources(QRhiResourceUpdateBatch *resourceUpdates,
++                                                     QRhiRenderPassDescriptor *rpDesc,
++                                                     QRhiTexture *backingStoreTexture)
+ {
+     static const float vertexData[] = {
+         -1, -1, 0,   0, 0,
+@@ -443,7 +445,7 @@ void QBackingStoreDefaultCompositor::ensureResources(QRhiResourceUpdateBatch *re
+     }
+ 
+     if (!m_widgetQuadData.isValid())
+-        m_widgetQuadData = createPerQuadData(m_texture.get());
++        m_widgetQuadData = createPerQuadData(backingStoreTexture);
+ 
+     QRhiShaderResourceBindings *srb = m_widgetQuadData.srb; // just for the layout
+     if (!m_psNoBlend)
+@@ -509,28 +511,34 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+     if (frameResult != QRhi::FrameOpSuccess)
+         return QPlatformBackingStore::FlushFailed;
+ 
++    QRhiCommandBuffer *cb = swapchain->currentFrameCommandBuffer();
++
+     // Prepare resource updates.
+     QRhiResourceUpdateBatch *resourceUpdates = rhi->nextResourceUpdateBatch();
+     QPlatformBackingStore::TextureFlags flags;
+ 
+     const QRegion dirtyRegion = scaledDirtyRegion(region, sourceTransformFactor, offset);
++    QRhiTexture *backingStoreTexture = backingStore->toNativeTexture(rhi, resourceUpdates, dirtyRegion, &flags);
++    const bool gotNativeTexture = backingStoreTexture;
+     bool gotTextureFromGraphicsBuffer = false;
+-    if (QPlatformGraphicsBuffer *graphicsBuffer = backingStore->graphicsBuffer()) {
+-        if (graphicsBuffer->lock(QPlatformGraphicsBuffer::SWReadAccess)) {
+-            const QImage::Format format = QImage::toImageFormat(graphicsBuffer->format());
+-            const QSize size = graphicsBuffer->size();
+-            QImage wrapperImage(graphicsBuffer->data(), size.width(), size.height(), graphicsBuffer->bytesPerLine(), format);
+-            toTexture(wrapperImage, rhi, resourceUpdates, dirtyRegion, &flags);
+-            gotTextureFromGraphicsBuffer = true;
+-            graphicsBuffer->unlock();
+-            if (graphicsBuffer->origin() == QPlatformGraphicsBuffer::OriginBottomLeft)
+-                flags |= QPlatformBackingStore::TextureFlip;
++    if (!backingStoreTexture) {
++        if (QPlatformGraphicsBuffer *graphicsBuffer = backingStore->graphicsBuffer()) {
++            if (graphicsBuffer->lock(QPlatformGraphicsBuffer::SWReadAccess)) {
++                const QImage::Format format = QImage::toImageFormat(graphicsBuffer->format());
++                const QSize size = graphicsBuffer->size();
++                QImage wrapperImage(graphicsBuffer->data(), size.width(), size.height(), graphicsBuffer->bytesPerLine(), format);
++                backingStoreTexture = toTexture(wrapperImage, rhi, resourceUpdates, dirtyRegion, &flags);
++                gotTextureFromGraphicsBuffer = true;
++                graphicsBuffer->unlock();
++                if (graphicsBuffer->origin() == QPlatformGraphicsBuffer::OriginBottomLeft)
++                    flags |= QPlatformBackingStore::TextureFlip;
++            }
+         }
+     }
+-    if (!gotTextureFromGraphicsBuffer)
+-        toTexture(backingStore, rhi, resourceUpdates, dirtyRegion, &flags);
++    if (!backingStoreTexture && !gotTextureFromGraphicsBuffer)
++        backingStoreTexture = toTexture(backingStore, rhi, resourceUpdates, dirtyRegion, &flags);
+ 
+-    ensureResources(resourceUpdates, swapchain->renderPassDescriptor());
++    ensureResources(resourceUpdates, swapchain->renderPassDescriptor(), backingStoreTexture);
+ 
+     UpdateUniformOptions uniformOptions;
+ #if Q_BYTE_ORDER == Q_LITTLE_ENDIAN
+@@ -557,19 +565,31 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+     const bool invertTargetY = !rhi->isYUpInNDC();
+     const bool invertSource = !rhi->isYUpInFramebuffer();
+ 
+-    if (m_texture) {
++    bool backingStoreTextureUsed = false;
++    if (backingStoreTexture) {
+         // The backingstore is for the entire tlw. In case of native children, offset tells the position
+         // relative to the tlw. The window rect is scaled by the source device pixel ratio to get
+         // the source rect.
+         const QPoint sourceWindowOffset = scaledOffset(offset, sourceTransformFactor);
+-        const QRect srcRect = toBottomLeftRect(sourceWindowRect.translated(sourceWindowOffset), m_texture->pixelSize().height());
+-        const QMatrix3x3 source = sourceTransform(srcRect, m_texture->pixelSize(), origin);
+-        QMatrix4x4 target; // identity
+-        if (invertTargetY)
+-            target.data()[5] = -1.0f;
+-        updateUniforms(&m_widgetQuadData, resourceUpdates, target, source, uniformOptions);
+-        if (needsLinearSampler)
+-            updatePerQuadData(&m_widgetQuadData, m_texture.get(), nullptr, NeedsLinearFiltering);
++        const QRect sourceRect = sourceWindowRect.translated(sourceWindowOffset);
++        const QRect clippedSourceRect = sourceRect & QRect(QPoint(), backingStoreTexture->pixelSize());
++        if (!clippedSourceRect.isEmpty()) {
++            const auto sourceToTarget = dpr / sourceTransformFactor;
++            const auto targetTopLeft = QPointF(
++                (clippedSourceRect.x() - sourceWindowOffset.x()) * sourceToTarget,
++                (clippedSourceRect.y() - sourceWindowOffset.y()) * sourceToTarget);
++            const auto targetSize = QSizeF(
++                clippedSourceRect.width() * sourceToTarget,
++                clippedSourceRect.height() * sourceToTarget);
++            const auto targetRect = QRectF(targetTopLeft, targetSize);
++            const QRect srcRect = toBottomLeftRect(clippedSourceRect, backingStoreTexture->pixelSize().height());
++            const QMatrix3x3 source = sourceTransform(srcRect, backingStoreTexture->pixelSize(), origin);
++            const QMatrix4x4 target = targetTransform(targetRect, deviceWindowRect, invertTargetY);
++            updateUniforms(&m_widgetQuadData, resourceUpdates, target, source, uniformOptions);
++            updatePerQuadData(&m_widgetQuadData, backingStoreTexture, nullptr,
++                              needsLinearSampler ? UpdateQuadDataOptions(NeedsLinearFiltering) : UpdateQuadDataOptions());
++            backingStoreTextureUsed = true;
++        }
+     }
+ 
+     const int textureWidgetCount = textures->count();
+@@ -608,7 +628,6 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+     }
+ 
+     // Record the render pass (with committing the resource updates).
+-    QRhiCommandBuffer *cb = swapchain->currentFrameCommandBuffer();
+     const QSize outputSizeInPixels = swapchain->currentPixelSize();
+     QColor clearColor = translucentBackground ? Qt::transparent : Qt::black;
+ 
+@@ -646,7 +665,7 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+         cb->setGraphicsPipeline(premultiplied ? m_psPremulBlend.get() : m_psBlend.get());
+ 
+         // Backingstore texture with the normal widgets.
+-        if (m_texture) {
++        if (backingStoreTextureUsed) {
+             cb->setShaderResources(m_widgetQuadData.srb);
+             cb->draw(6);
+         }
+@@ -680,6 +699,9 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+     } else
+         render();
+ 
++    if (gotNativeTexture)
++        backingStore->nativeTextureWasComposited(backingStoreTextureUsed ? cb : nullptr);
++
+     rhi->endFrame(swapchain);
+ 
+     return QPlatformBackingStore::FlushSuccess;
+diff --git a/src/gui/painting/qbackingstoredefaultcompositor_p.h b/src/gui/painting/qbackingstoredefaultcompositor_p.h
+index cdc9d098099..04271b34cbf 100644
+--- a/src/gui/painting/qbackingstoredefaultcompositor_p.h
++++ b/src/gui/painting/qbackingstoredefaultcompositor_p.h
+@@ -55,7 +55,8 @@ private:
+     };
+     Q_DECLARE_FLAGS(UpdateQuadDataOptions, UpdateQuadDataOption)
+ 
+-    void ensureResources(QRhiResourceUpdateBatch *resourceUpdates, QRhiRenderPassDescriptor *rpDesc);
++    void ensureResources(QRhiResourceUpdateBatch *resourceUpdates, QRhiRenderPassDescriptor *rpDesc,
++                         QRhiTexture *backingStoreTexture);
+     QRhiTexture *toTexture(const QImage &image,
+                            QRhi *rhi,
+                            QRhiResourceUpdateBatch *resourceUpdates,
+diff --git a/src/gui/painting/qplatformbackingstore.cpp b/src/gui/painting/qplatformbackingstore.cpp
+index 2acc5ef7c52..3fc5a01021e 100644
+--- a/src/gui/painting/qplatformbackingstore.cpp
++++ b/src/gui/painting/qplatformbackingstore.cpp
+@@ -277,6 +277,23 @@ QRhiTexture *QPlatformBackingStore::toTexture(QRhiResourceUpdateBatch *resourceU
+         dirtyRegion, flags);
+ }
+ 
++QRhiTexture *QPlatformBackingStore::toNativeTexture(QRhi *rhi,
++                                                    QRhiResourceUpdateBatch *resourceUpdates,
++                                                    const QRegion &dirtyRegion,
++                                                    TextureFlags *flags) const
++{
++    Q_UNUSED(rhi);
++    Q_UNUSED(resourceUpdates);
++    Q_UNUSED(dirtyRegion);
++    Q_UNUSED(flags);
++    return nullptr;
++}
++
++void QPlatformBackingStore::nativeTextureWasComposited(QRhiCommandBuffer *commandBuffer)
++{
++    Q_UNUSED(commandBuffer);
++}
++
+ /*!
+     \fn QPaintDevice* QPlatformBackingStore::paintDevice()
+ 
+diff --git a/src/gui/painting/qplatformbackingstore.h b/src/gui/painting/qplatformbackingstore.h
+index 86035b98bea..8ca82aea009 100644
+--- a/src/gui/painting/qplatformbackingstore.h
++++ b/src/gui/painting/qplatformbackingstore.h
+@@ -34,6 +34,7 @@ class QPlatformTextureList;
+ class QPlatformTextureListPrivate;
+ class QPlatformGraphicsBuffer;
+ class QRhi;
++class QRhiCommandBuffer;
+ class QRhiTexture;
+ class QRhiResourceUpdateBatch;
+ 
+@@ -165,6 +166,11 @@ public:
+     virtual QRhiTexture *toTexture(QRhiResourceUpdateBatch *resourceUpdates,
+                                    const QRegion &dirtyRegion,
+                                    TextureFlags *flags) const;
++    virtual QRhiTexture *toNativeTexture(QRhi *rhi,
++                                         QRhiResourceUpdateBatch *resourceUpdates,
++                                         const QRegion &dirtyRegion,
++                                         TextureFlags *flags) const;
++    virtual void nativeTextureWasComposited(QRhiCommandBuffer *commandBuffer);
+ 
+     virtual QPlatformGraphicsBuffer *graphicsBuffer() const;
+ 
+diff --git a/src/plugins/platforms/cocoa/qcocoabackingstore.h b/src/plugins/platforms/cocoa/qcocoabackingstore.h
+index 93d724e2d1d..59ad797f40b 100644
+--- a/src/plugins/platforms/cocoa/qcocoabackingstore.h
++++ b/src/plugins/platforms/cocoa/qcocoabackingstore.h
+@@ -12,6 +12,7 @@
+ #include <QScopedPointer>
+ #include "qiosurfacegraphicsbuffer.h"
+ 
++#include <memory>
+ #include <unordered_map>
+ 
+ QT_BEGIN_NAMESPACE
+@@ -49,6 +50,11 @@ public:
+                          qreal sourceTransformFactor) override;
+ 
+     QImage toImage() const override;
++    QRhiTexture *toNativeTexture(QRhi *rhi,
++                                 QRhiResourceUpdateBatch *resourceUpdates,
++                                 const QRegion &dirtyRegion,
++                                 TextureFlags *flags) const override;
++    void nativeTextureWasComposited(QRhiCommandBuffer *commandBuffer) override;
+     QPlatformGraphicsBuffer *graphicsBuffer() const override;
+ 
+ private:
+@@ -63,16 +69,24 @@ private:
+     public:
+         GraphicsBuffer(const QSize &size, qreal devicePixelRatio,
+                 const QPixelFormat &format, QCFType<CGColorSpaceRef> colorSpace);
++        ~GraphicsBuffer();
+ 
+         QRegion dirtyRegion; // In unscaled coordinates
+         QImage *asImage();
+         qreal devicePixelRatio() const { return m_devicePixelRatio; }
+         bool isDirty() const { return !dirtyRegion.isEmpty(); }
+         QRegion validRegion() const;
++        QRhiTexture *rhiTexture(QRhi *rhi);
++        bool beginRhiUse(QRhiCommandBuffer *commandBuffer);
+ 
+     private:
++        void resetRhiTexture(bool unregisterCallback = true);
++
+         qreal m_devicePixelRatio;
+         QImage m_image;
++        QRhi *m_rhi = nullptr;
++        std::unique_ptr<QRhiTexture> m_rhiTexture;
++        void *m_metalTexture = nullptr;
+     };
+ 
+     void updateDirtyStates(const QRegion &paintedRegion);
+@@ -88,6 +102,7 @@ private:
+     QMacNotificationObserver m_backingPropertiesObserver;
+ 
+     std::list<std::unique_ptr<GraphicsBuffer>> m_buffers;
++    mutable GraphicsBuffer *m_rhiCompositedBuffer = nullptr;
+ 
+     void flushSubWindow(QWindow *window);
+     std::unordered_map<QWindow*, std::unique_ptr<QCALayerBackingStore>> m_subWindowBackingstores;
+diff --git a/src/plugins/platforms/cocoa/qcocoabackingstore.mm b/src/plugins/platforms/cocoa/qcocoabackingstore.mm
+index 703cbff3d52..61fe966668f 100644
+--- a/src/plugins/platforms/cocoa/qcocoabackingstore.mm
++++ b/src/plugins/platforms/cocoa/qcocoabackingstore.mm
+@@ -12,6 +12,11 @@
+ #include <QtCore/qmath.h>
+ #include <QtCore/private/qcore_mac_p.h>
+ #include <QtGui/qpainter.h>
++#include <rhi/qrhi.h>
++#if QT_CONFIG(metal)
++#include <rhi/qrhi_platform.h>
++#include <Metal/Metal.h>
++#endif
+ 
+ #include <QuartzCore/CATransaction.h>
+ 
+@@ -514,6 +519,49 @@
+     return m_buffers.back().get();
+ }
+ 
++QRhiTexture *QCALayerBackingStore::toNativeTexture(QRhi *rhi,
++                                                   QRhiResourceUpdateBatch *resourceUpdates,
++                                                   const QRegion &dirtyRegion,
++                                                   TextureFlags *flags) const
++{
++    Q_UNUSED(resourceUpdates);
++    Q_UNUSED(dirtyRegion);
++
++#if QT_CONFIG(metal)
++    if (!rhi || rhi->backend() != QRhi::Metal || !m_buffers.back()
++        || window()->format().swapBehavior() == QSurfaceFormat::SingleBuffer) {
++        return nullptr;
++    }
++
++    QRhiTexture *texture = m_buffers.back()->rhiTexture(rhi);
++    if (!texture)
++        return nullptr;
++
++    *flags = TexturePremultiplied;
++    m_rhiCompositedBuffer = m_buffers.back().get();
++    return texture;
++#else
++    Q_UNUSED(rhi);
++    Q_UNUSED(flags);
++    return nullptr;
++#endif
++}
++
++void QCALayerBackingStore::nativeTextureWasComposited(QRhiCommandBuffer *commandBuffer)
++{
++#if QT_CONFIG(metal)
++    GraphicsBuffer *buffer = m_rhiCompositedBuffer;
++    m_rhiCompositedBuffer = nullptr;
++    if (!buffer || !buffer->beginRhiUse(commandBuffer))
++        return;
++
++    if (buffer == m_buffers.back().get() && m_buffers.back() != m_buffers.front())
++        std::swap(m_buffers.back(), m_buffers.front());
++#else
++    Q_UNUSED(commandBuffer);
++#endif
++}
++
+ void QCALayerBackingStore::updateDirtyStates(const QRegion &paintedRegion)
+ {
+     // Update dirty state of buffers based on what was painted. The back buffer will be
+@@ -620,6 +668,11 @@ QRect destinationRect((rect.topLeft() + destinationOffset) * destinationDevicePi
+     setColorSpace(colorSpace);
+ }
+ 
++QCALayerBackingStore::GraphicsBuffer::~GraphicsBuffer()
++{
++    resetRhiTexture();
++}
++
+ QRegion QCALayerBackingStore::GraphicsBuffer::validRegion() const
+ {
+ 
+@@ -627,6 +680,107 @@ QRect destinationRect((rect.topLeft() + destinationOffset) * destinationDevicePi
+     return fullRegion - dirtyRegion;
+ }
+ 
++void QCALayerBackingStore::GraphicsBuffer::resetRhiTexture(bool unregisterCallback)
++{
++    if (unregisterCallback && m_rhi)
++        m_rhi->removeCleanupCallback(this);
++
++    m_rhiTexture.reset();
++#if QT_CONFIG(metal)
++    if (m_metalTexture) {
++        [(id<MTLTexture>)m_metalTexture release];
++        m_metalTexture = nullptr;
++    }
++#else
++    m_metalTexture = nullptr;
++#endif
++    m_rhi = nullptr;
++}
++
++QRhiTexture *QCALayerBackingStore::GraphicsBuffer::rhiTexture(QRhi *rhi)
++{
++#if QT_CONFIG(metal)
++    if (!rhi || rhi->backend() != QRhi::Metal)
++        return nullptr;
++
++    if (m_rhi != rhi)
++        resetRhiTexture();
++
++    if (m_rhiTexture)
++        return m_rhiTexture.get();
++
++    const auto *handles = static_cast<const QRhiMetalNativeHandles *>(rhi->nativeHandles());
++    if (!handles || !handles->dev)
++        return nullptr;
++
++    auto *desc = [[MTLTextureDescriptor alloc] init];
++    desc.textureType = MTLTextureType2D;
++    desc.pixelFormat = MTLPixelFormatBGRA8Unorm;
++    desc.width = NSUInteger(size().width());
++    desc.height = NSUInteger(size().height());
++    desc.mipmapLevelCount = 1;
++    desc.sampleCount = 1;
++    desc.usage = MTLTextureUsageShaderRead;
++
++    id<MTLDevice> device = (id<MTLDevice>)handles->dev;
++    id<MTLTexture> texture = [device newTextureWithDescriptor:desc iosurface:surface() plane:0];
++    [desc release];
++    if (!texture)
++        return nullptr;
++
++    m_rhiTexture.reset(rhi->newTexture(QRhiTexture::BGRA8, size()));
++    if (!m_rhiTexture) {
++        [texture release];
++        return nullptr;
++    }
++
++    const auto nativeTexture = QRhiTexture::NativeTexture{ quint64(quintptr(texture)), 0 };
++    if (!m_rhiTexture->createFrom(nativeTexture)) {
++        [texture release];
++        m_rhiTexture.reset();
++        return nullptr;
++    }
++
++    m_rhi = rhi;
++    m_metalTexture = texture;
++    m_rhi->addCleanupCallback(this, [this](QRhi *) {
++        resetRhiTexture(false);
++    });
++    return m_rhiTexture.get();
++#else
++    Q_UNUSED(rhi);
++    return nullptr;
++#endif
++}
++
++bool QCALayerBackingStore::GraphicsBuffer::beginRhiUse(QRhiCommandBuffer *commandBuffer)
++{
++#if QT_CONFIG(metal)
++    if (!commandBuffer || !m_metalTexture)
++        return false;
++
++    const auto *handles = static_cast<const QRhiMetalCommandBufferNativeHandles *>(commandBuffer->nativeHandles());
++    if (!handles || !handles->commandBuffer)
++        return false;
++
++    auto surfaceRef = surface();
++    CFRetain(surfaceRef);
++    IOSurfaceIncrementUseCount(surfaceRef);
++
++    id<MTLTexture> texture = [(id<MTLTexture>)m_metalTexture retain];
++    id<MTLCommandBuffer> metalCommandBuffer = (id<MTLCommandBuffer>)handles->commandBuffer;
++    [metalCommandBuffer addCompletedHandler:^(id<MTLCommandBuffer>) {
++        IOSurfaceDecrementUseCount(surfaceRef);
++        CFRelease(surfaceRef);
++        [texture release];
++    }];
++    return true;
++#else
++    Q_UNUSED(commandBuffer);
++    return false;
++#endif
++}
++
+ QImage *QCALayerBackingStore::GraphicsBuffer::asImage()
+ {
+     if (m_image.isNull()) {
+diff --git a/src/plugins/platforms/cocoa/qcocoaintegration.mm b/src/plugins/platforms/cocoa/qcocoaintegration.mm
+index ab0beac0389..d6a1d70abe5 100644
+--- a/src/plugins/platforms/cocoa/qcocoaintegration.mm
++++ b/src/plugins/platforms/cocoa/qcocoaintegration.mm
+@@ -331,6 +331,9 @@ QSurfaceFormat format() const override
+     case QSurface::RasterSurface:
+         return new QCALayerBackingStore(window);
+     case QSurface::MetalSurface:
++        if (window->inherits("QWidgetWindow"))
++            return new QCALayerBackingStore(window);
++        Q_FALLTHROUGH();
+     case QSurface::OpenGLSurface:
+     case QSurface::VulkanSurface:
+         // Otherwise we return a QRhiBackingStore, that implements flush() in
