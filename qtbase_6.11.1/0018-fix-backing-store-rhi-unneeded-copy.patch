@@ -28,7 +28,7 @@ index 57991122a68..04de8d0ef2e 100644
          platform/darwin/qutimimeconverter.mm platform/darwin/qutimimeconverter.h
          platform/darwin/qapplekeymapper.mm platform/darwin/qapplekeymapper_p.h
 diff --git a/src/gui/painting/qbackingstoredefaultcompositor.cpp b/src/gui/painting/qbackingstoredefaultcompositor.cpp
-index fae9dabca66..9a335495f5f 100644
+index 3130a8aea98..f2a056732b7 100644
 --- a/src/gui/painting/qbackingstoredefaultcompositor.cpp
 +++ b/src/gui/painting/qbackingstoredefaultcompositor.cpp
 @@ -99,8 +99,6 @@ QRhiTexture *QBackingStoreDefaultCompositor::toTexture(const QImage &sourceImage
@@ -40,6 +40,47 @@ index fae9dabca66..9a335495f5f 100644
  
      if (resized) {
          if (!m_texture)
+diff --git a/src/gui/painting/qrasterbackingstore.cpp b/src/gui/painting/qrasterbackingstore.cpp
+index 041071f3255..bfcd996a3c2 100644
+--- a/src/gui/painting/qrasterbackingstore.cpp
++++ b/src/gui/painting/qrasterbackingstore.cpp
+@@ -35,7 +35,7 @@ QImage::Format QRasterBackingStore::format() const
+ 
+ QPaintDevice *QRasterBackingStore::paintDevice()
+ {
+-    return &m_image;
++    return &m_wrappedImage;
+ }
+ 
+ QImage QRasterBackingStore::toImage() const
+@@ -68,12 +68,14 @@ void QRasterBackingStore::beginPaint(const QRegion &region)
+         m_image.setDevicePixelRatio(nativeWindowDevicePixelRatio);
+         if (m_image.hasAlphaChannel())
+             m_image.fill(Qt::transparent);
++        m_wrappedImage = QImage(m_image.bits(), m_image.width(), m_image.height(), m_image.format());
++        m_wrappedImage.setDevicePixelRatio(m_image.devicePixelRatio());
+     }
+ 
+     if (!m_image.hasAlphaChannel())
+         return;
+ 
+-    QPainter painter(&m_image);
++    QPainter painter(paintDevice());
+     painter.setCompositionMode(QPainter::CompositionMode_Source);
+     for (const QRect &rect : region)
+         painter.fillRect(rect, Qt::transparent);
+diff --git a/src/gui/painting/qrasterbackingstore_p.h b/src/gui/painting/qrasterbackingstore_p.h
+index be8d1226555..486989f77d9 100644
+--- a/src/gui/painting/qrasterbackingstore_p.h
++++ b/src/gui/painting/qrasterbackingstore_p.h
+@@ -38,6 +38,7 @@ protected:
+     virtual QImage::Format format() const;
+ 
+     QImage m_image;
++    QImage m_wrappedImage;
+     QSize m_requestedSize;
+ };
+ 
 diff --git a/src/plugins/platforms/cocoa/qcocoaintegration.mm b/src/plugins/platforms/cocoa/qcocoaintegration.mm
 index ab8863834f2..70b16095aab 100644
 --- a/src/plugins/platforms/cocoa/qcocoaintegration.mm
@@ -61,7 +102,7 @@ index ab8863834f2..70b16095aab 100644
          // terms of rhiFlush().
          return new QRhiBackingStore(window);
 diff --git a/src/plugins/platforms/wayland/qwaylandintegration.cpp b/src/plugins/platforms/wayland/qwaylandintegration.cpp
-index 8b6ac935713..4e70350b592 100644
+index 0f473245f64..d846d3a91d6 100644
 --- a/src/plugins/platforms/wayland/qwaylandintegration.cpp
 +++ b/src/plugins/platforms/wayland/qwaylandintegration.cpp
 @@ -30,6 +30,7 @@
