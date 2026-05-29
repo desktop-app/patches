@@ -1,0 +1,497 @@
+diff --git a/src/gui/rhi/qrhimetal.mm b/src/gui/rhi/qrhimetal.mm
+index a96520ee86d..9727ce5c6ca 100644
+--- a/src/gui/rhi/qrhimetal.mm
++++ b/src/gui/rhi/qrhimetal.mm
+@@ -234,7 +234,7 @@ void destroy() {
+                 id<MTLComputePipelineState> pipelineState;
+             } computePipeline;
+             struct {
+-                id<MTLRasterizationRateMap> rateMap;
++                id rateMap;
+             } shadingRateMap;
+         };
+     };
+@@ -319,7 +319,7 @@ void destroy() {
+ 
+ struct QMetalShadingRateMapData
+ {
+-    id<MTLRasterizationRateMap> rateMap = nil;
++    id rateMap = nil;
+ };
+ 
+ struct QMetalShaderResourceBindingsData {
+@@ -689,8 +689,10 @@ inline Int aligned(Int v, Int byteAlign)
+     [d->captureScope release];
+     d->captureScope = nil;
+ 
+-    [d->binArch release];
+-    d->binArch = nil;
++    if (@available(macOS 11.0, iOS 14.0, *)) {
++        [d->binArch release];
++        d->binArch = nil;
++    }
+ 
+     [d->cmdQueue release];
+     if (!importedCmdQueue)
+@@ -991,56 +993,57 @@ QByteArray QRhiMetal::pipelineCacheData()
+ QByteArray QRhiMetal::pipelineCacheData()
+ {
+     Q_STATIC_ASSERT(sizeof(QMetalPipelineCacheDataHeader) == 256);
+     QByteArray data;
+-    if (!d->binArch || !rhiFlags.testFlag(QRhi::EnablePipelineCacheDataSave))
++    if (!rhiFlags.testFlag(QRhi::EnablePipelineCacheDataSave))
+         return data;
+ 
+-    if (@available(macOS 11.0, iOS 14.0, *)) { } else {
+-        return data;
+-    }
+-
+-    QTemporaryFile tmp;
+-    if (!tmp.open()) {
+-        qCDebug(QRHI_LOG_INFO, "pipelineCacheData: Failed to create temporary file for Metal");
+-        return data;
+-    }
+-    tmp.close(); // the file exists until the tmp dtor runs
++    if (@available(macOS 11.0, iOS 14.0, *)) {
++        if (!d->binArch)
++            return data;
+ 
+-    const QString fn = QFileInfo(tmp.fileName()).absoluteFilePath();
+-    NSURL *url = QUrl::fromLocalFile(fn).toNSURL();
+-    NSError *err = nil;
+-    if (![d->binArch serializeToURL: url error: &err]) {
+-        const QString msg = QString::fromNSString(err.localizedDescription);
+-        qCDebug(QRHI_LOG_INFO, "Failed to serialize MTLBinaryArchive: %s", qPrintable(msg));
+-        return data;
+-    }
++        QTemporaryFile tmp;
++        if (!tmp.open()) {
++            qCDebug(QRHI_LOG_INFO, "pipelineCacheData: Failed to create temporary file for Metal");
++            return data;
++        }
++        tmp.close(); // the file exists until the tmp dtor runs
+ 
+-    QFile f(fn);
+-    if (!f.open(QIODevice::ReadOnly)) {
+-        qCDebug(QRHI_LOG_INFO, "pipelineCacheData: Failed to reopen temporary file");
+-        return data;
+-    }
+-    const QByteArray blob = f.readAll();
+-    f.close();
++        const QString fn = QFileInfo(tmp.fileName()).absoluteFilePath();
++        NSURL *url = QUrl::fromLocalFile(fn).toNSURL();
++        NSError *err = nil;
++        if (![d->binArch serializeToURL: url error: &err]) {
++            const QString msg = QString::fromNSString(err.localizedDescription);
++            qCDebug(QRHI_LOG_INFO, "Failed to serialize MTLBinaryArchive: %s", qPrintable(msg));
++            return data;
++        }
+ 
+-    const size_t headerSize = sizeof(QMetalPipelineCacheDataHeader);
+-    const quint32 dataSize = quint32(blob.size());
++        QFile f(fn);
++        if (!f.open(QIODevice::ReadOnly)) {
++            qCDebug(QRHI_LOG_INFO, "pipelineCacheData: Failed to reopen temporary file");
++            return data;
++        }
++        const QByteArray blob = f.readAll();
++        f.close();
+ 
+-    data.resize(headerSize + dataSize);
++        const size_t headerSize = sizeof(QMetalPipelineCacheDataHeader);
++        const quint32 dataSize = quint32(blob.size());
+ 
+-    QMetalPipelineCacheDataHeader header = {};
+-    header.rhiId = pipelineCacheRhiId();
+-    header.arch = quint32(sizeof(void*));
+-    header.dataSize = quint32(dataSize);
+-    header.osMajor = osMajor;
+-    header.osMinor = osMinor;
+-    const size_t driverStrLen = qMin(sizeof(header.driver) - 1, size_t(driverInfoStruct.deviceName.length()));
+-    if (driverStrLen)
+-        memcpy(header.driver, driverInfoStruct.deviceName.constData(), driverStrLen);
+-    header.driver[driverStrLen] = '\0';
++        data.resize(headerSize + dataSize);
+ 
+-    memcpy(data.data(), &header, headerSize);
+-    memcpy(data.data() + headerSize, blob.constData(), dataSize);
++        QMetalPipelineCacheDataHeader header = {};
++        header.rhiId = pipelineCacheRhiId();
++        header.arch = quint32(sizeof(void*));
++        header.dataSize = quint32(dataSize);
++        header.osMajor = osMajor;
++        header.osMinor = osMinor;
++        const size_t driverStrLen = qMin(sizeof(header.driver) - 1, size_t(driverInfoStruct.deviceName.length()));
++        if (driverStrLen)
++            memcpy(header.driver, driverInfoStruct.deviceName.constData(), driverStrLen);
++        header.driver[driverStrLen] = '\0';
++
++        memcpy(data.data(), &header, headerSize);
++        memcpy(data.data() + headerSize, blob.constData(), dataSize);
++    }
+     return data;
+ }
+ 
+@@ -2537,6 +2540,11 @@ static void endTessellationComputeEncoding(QMetalCommandBuffer *cbD)
+                 [commandBuffer commit];
+                 // Keep strong reference to Metal layer
+                 auto *metalLayer = swapChainD->d->layer;
++                QSize expectedSurfaceSize;
++#ifdef Q_OS_MACOS
++                if (swapChainD->window && swapChainD->window->inherits("QWidgetWindow"))
++                    expectedSurfaceSize = swapChainD->window->size() * swapChainD->window->devicePixelRatio();
++#endif
+                 auto presentWithTransaction = ^{
+                     [commandBuffer waitUntilScheduled];
+                     // If the layer has been resized while we waited to be scheduled we bail out,
+@@ -2545,7 +2553,9 @@ static void endTessellationComputeEncoding(QMetalCommandBuffer *cbD)
+                     // means we can access the layer directly. We also know that the layer is valid,
+                     // since the block keeps a strong reference to it, compared to the QRhiSwapChain
+                     // that can go away under our feet by the time we're scheduled.
+-                    const auto surfaceSize = QSizeF::fromCGSize(metalLayer.bounds.size) * metalLayer.contentsScale;
++                    const auto surfaceSize = expectedSurfaceSize.isEmpty()
++                        ? QSizeF::fromCGSize(metalLayer.bounds.size) * metalLayer.contentsScale
++                        : QSizeF(expectedSurfaceSize);
+                     const auto textureSize = QSizeF(drawable.texture.width, drawable.texture.height);
+                     if (textureSize == surfaceSize) {
+                         [drawable present];
+@@ -3554,6 +3564,15 @@ static inline MTLPixelFormat toMetalTextureFormat(QRhiTexture::Format format, QR
+ #endif
+ 
+     const bool srgb = flags.testFlag(QRhiTexture::sRGB);
++#ifdef Q_OS_MACOS
++#define QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(SRGB_FORMAT, NON_SRGB_FORMAT) \
++    do { \
++        if (@available(macOS 11.0, *)) { \
++            if (d->caps.isAppleGPU) \
++                return srgb ? SRGB_FORMAT : NON_SRGB_FORMAT; \
++        } \
++    } while (false)
++#endif
+     switch (format) {
+     case QRhiTexture::RGBA8:
+         return srgb ? MTLPixelFormatRGBA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm;
+@@ -3693,88 +3712,71 @@ static inline MTLPixelFormat toMetalTextureFormat(QRhiTexture::Format format, QR
+         return srgb ? MTLPixelFormatASTC_12x12_sRGB : MTLPixelFormatASTC_12x12_LDR;
+ #else
+     case QRhiTexture::ETC2_RGB8:
+-        if (d->caps.isAppleGPU)
+-            return srgb ? MTLPixelFormatETC2_RGB8_sRGB : MTLPixelFormatETC2_RGB8;
++        QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(MTLPixelFormatETC2_RGB8_sRGB, MTLPixelFormatETC2_RGB8);
+         qWarning("QRhiMetal: ETC2 compression not supported on this platform");
+         return MTLPixelFormatInvalid;
+     case QRhiTexture::ETC2_RGB8A1:
+-        if (d->caps.isAppleGPU)
+-            return srgb ? MTLPixelFormatETC2_RGB8A1_sRGB : MTLPixelFormatETC2_RGB8A1;
++        QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(MTLPixelFormatETC2_RGB8A1_sRGB, MTLPixelFormatETC2_RGB8A1);
+         qWarning("QRhiMetal: ETC2 compression not supported on this platform");
+         return MTLPixelFormatInvalid;
+     case QRhiTexture::ETC2_RGBA8:
+-        if (d->caps.isAppleGPU)
+-            return srgb ? MTLPixelFormatEAC_RGBA8_sRGB : MTLPixelFormatEAC_RGBA8;
++        QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(MTLPixelFormatEAC_RGBA8_sRGB, MTLPixelFormatEAC_RGBA8);
+         qWarning("QRhiMetal: ETC2 compression not supported on this platform");
+         return MTLPixelFormatInvalid;
+     case QRhiTexture::ASTC_4x4:
+-        if (d->caps.isAppleGPU)
+-            return srgb ? MTLPixelFormatASTC_4x4_sRGB : MTLPixelFormatASTC_4x4_LDR;
++        QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(MTLPixelFormatASTC_4x4_sRGB, MTLPixelFormatASTC_4x4_LDR);
+         qWarning("QRhiMetal: ASTC compression not supported on this platform");
+         return MTLPixelFormatInvalid;
+     case QRhiTexture::ASTC_5x4:
+-        if (d->caps.isAppleGPU)
+-            return srgb ? MTLPixelFormatASTC_5x4_sRGB : MTLPixelFormatASTC_5x4_LDR;
++        QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(MTLPixelFormatASTC_5x4_sRGB, MTLPixelFormatASTC_5x4_LDR);
+         qWarning("QRhiMetal: ASTC compression not supported on this platform");
+         return MTLPixelFormatInvalid;
+     case QRhiTexture::ASTC_5x5:
+-        if (d->caps.isAppleGPU)
+-            return srgb ? MTLPixelFormatASTC_5x5_sRGB : MTLPixelFormatASTC_5x5_LDR;
++        QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(MTLPixelFormatASTC_5x5_sRGB, MTLPixelFormatASTC_5x5_LDR);
+         qWarning("QRhiMetal: ASTC compression not supported on this platform");
+         return MTLPixelFormatInvalid;
+     case QRhiTexture::ASTC_6x5:
+-        if (d->caps.isAppleGPU)
+-            return srgb ? MTLPixelFormatASTC_6x5_sRGB : MTLPixelFormatASTC_6x5_LDR;
++        QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(MTLPixelFormatASTC_6x5_sRGB, MTLPixelFormatASTC_6x5_LDR);
+         qWarning("QRhiMetal: ASTC compression not supported on this platform");
+         return MTLPixelFormatInvalid;
+     case QRhiTexture::ASTC_6x6:
+-        if (d->caps.isAppleGPU)
+-            return srgb ? MTLPixelFormatASTC_6x6_sRGB : MTLPixelFormatASTC_6x6_LDR;
++        QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(MTLPixelFormatASTC_6x6_sRGB, MTLPixelFormatASTC_6x6_LDR);
+         qWarning("QRhiMetal: ASTC compression not supported on this platform");
+         return MTLPixelFormatInvalid;
+     case QRhiTexture::ASTC_8x5:
+-        if (d->caps.isAppleGPU)
+-            return srgb ? MTLPixelFormatASTC_8x5_sRGB : MTLPixelFormatASTC_8x5_LDR;
++        QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(MTLPixelFormatASTC_8x5_sRGB, MTLPixelFormatASTC_8x5_LDR);
+         qWarning("QRhiMetal: ASTC compression not supported on this platform");
+         return MTLPixelFormatInvalid;
+     case QRhiTexture::ASTC_8x6:
+-        if (d->caps.isAppleGPU)
+-            return srgb ? MTLPixelFormatASTC_8x6_sRGB : MTLPixelFormatASTC_8x6_LDR;
++        QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(MTLPixelFormatASTC_8x6_sRGB, MTLPixelFormatASTC_8x6_LDR);
+         qWarning("QRhiMetal: ASTC compression not supported on this platform");
+         return MTLPixelFormatInvalid;
+     case QRhiTexture::ASTC_8x8:
+-        if (d->caps.isAppleGPU)
+-            return srgb ? MTLPixelFormatASTC_8x8_sRGB : MTLPixelFormatASTC_8x8_LDR;
++        QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(MTLPixelFormatASTC_8x8_sRGB, MTLPixelFormatASTC_8x8_LDR);
+         qWarning("QRhiMetal: ASTC compression not supported on this platform");
+         return MTLPixelFormatInvalid;
+     case QRhiTexture::ASTC_10x5:
+-        if (d->caps.isAppleGPU)
+-            return srgb ? MTLPixelFormatASTC_10x5_sRGB : MTLPixelFormatASTC_10x5_LDR;
++        QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(MTLPixelFormatASTC_10x5_sRGB, MTLPixelFormatASTC_10x5_LDR);
+         qWarning("QRhiMetal: ASTC compression not supported on this platform");
+         return MTLPixelFormatInvalid;
+     case QRhiTexture::ASTC_10x6:
+-        if (d->caps.isAppleGPU)
+-            return srgb ? MTLPixelFormatASTC_10x6_sRGB : MTLPixelFormatASTC_10x6_LDR;
++        QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(MTLPixelFormatASTC_10x6_sRGB, MTLPixelFormatASTC_10x6_LDR);
+         qWarning("QRhiMetal: ASTC compression not supported on this platform");
+         return MTLPixelFormatInvalid;
+     case QRhiTexture::ASTC_10x8:
+-        if (d->caps.isAppleGPU)
+-            return srgb ? MTLPixelFormatASTC_10x8_sRGB : MTLPixelFormatASTC_10x8_LDR;
++        QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(MTLPixelFormatASTC_10x8_sRGB, MTLPixelFormatASTC_10x8_LDR);
+         qWarning("QRhiMetal: ASTC compression not supported on this platform");
+         return MTLPixelFormatInvalid;
+     case QRhiTexture::ASTC_10x10:
+-        if (d->caps.isAppleGPU)
+-            return srgb ? MTLPixelFormatASTC_10x10_sRGB : MTLPixelFormatASTC_10x10_LDR;
++        QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(MTLPixelFormatASTC_10x10_sRGB, MTLPixelFormatASTC_10x10_LDR);
+         qWarning("QRhiMetal: ASTC compression not supported on this platform");
+         return MTLPixelFormatInvalid;
+     case QRhiTexture::ASTC_12x10:
+-        if (d->caps.isAppleGPU)
+-            return srgb ? MTLPixelFormatASTC_12x10_sRGB : MTLPixelFormatASTC_12x10_LDR;
++        QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(MTLPixelFormatASTC_12x10_sRGB, MTLPixelFormatASTC_12x10_LDR);
+         qWarning("QRhiMetal: ASTC compression not supported on this platform");
+         return MTLPixelFormatInvalid;
+     case QRhiTexture::ASTC_12x12:
+-        if (d->caps.isAppleGPU)
+-            return srgb ? MTLPixelFormatASTC_12x12_sRGB : MTLPixelFormatASTC_12x12_LDR;
++        QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT(MTLPixelFormatASTC_12x12_sRGB, MTLPixelFormatASTC_12x12_LDR);
+         qWarning("QRhiMetal: ASTC compression not supported on this platform");
+         return MTLPixelFormatInvalid;
+ #endif
+@@ -3783,6 +3785,9 @@ static inline MTLPixelFormat toMetalTextureFormat(QRhiTexture::Format format, QR
+         Q_UNREACHABLE();
+         return MTLPixelFormatInvalid;
+     }
++#ifdef Q_OS_MACOS
++#undef QRHI_MTL_RETURN_MACOS11_COMPRESSED_FORMAT
++#endif
+ }
+ 
+ QMetalRenderBuffer::QMetalRenderBuffer(QRhiImplementation *rhi, Type type, const QSize &pixelSize,
+@@ -4268,9 +4273,13 @@ static inline MTLCompareFunction toMetalTextureCompareFunction(QRhiSampler::Comp
+     if (d->rateMap)
+         destroy();
+ 
+-    d->rateMap = (id<MTLRasterizationRateMap>) (quintptr(src.object));
+-    if (!d->rateMap)
++    if (@available(macOS 10.15.4, iOS 13.0, *)) {
++        d->rateMap = (id) (quintptr(src.object));
++        if (!d->rateMap)
++            return false;
++    } else {
+         return false;
++    }
+ 
+     [d->rateMap retain];
+ 
+@@ -6433,6 +6442,31 @@ static inline bool matches(const QShaderDescription::InOutVariable &a, const QSh
+     return static_cast<CAMetalLayer *>(layer);
+ }
+ 
++static inline bool usesWindowSizeForSurfacePixelSize(QWindow *window)
++{
++#ifdef Q_OS_MACOS
++    return window && window->inherits("QWidgetWindow");
++#else
++    Q_UNUSED(window);
++    return false;
++#endif
++}
++
++static inline QSize surfacePixelSizeForLayer(CAMetalLayer *layer, QWindow *window)
++{
++    if (usesWindowSizeForSurfacePixelSize(window)) {
++        const auto windowSize = window->size() * window->devicePixelRatio();
++        if (!windowSize.isEmpty())
++            return windowSize;
++    }
++
++    int height = (int)layer.bounds.size.height;
++    int width = (int)layer.bounds.size.width;
++    width *= layer.contentsScale;
++    height *= layer.contentsScale;
++    return QSize(width, height);
++}
++
+ // If someone calls this, it is hopefully from the main thread, and they will
+ // then set the returned data on the QRhiSwapChain, so it won't need to query
+ // the layer on its own later on.
+@@ -6451,11 +6485,7 @@ static inline bool matches(const QShaderDescription::InOutVariable &a, const QSh
+         layer = qrhi_objectFromProxyData<CAMetalLayer>(&m_proxyData, m_window, QRhi::Metal, 0);
+ 
+     Q_ASSERT(layer);
+-    int height = (int)layer.bounds.size.height;
+-    int width = (int)layer.bounds.size.width;
+-    width *= layer.contentsScale;
+-    height *= layer.contentsScale;
+-    return QSize(width, height);
++    return surfacePixelSizeForLayer(layer, m_window);
+ }
+ 
+ bool QMetalSwapChain::isFormatSupported(Format f)
+@@ -6568,12 +6598,12 @@ static inline bool matches(const QShaderDescription::InOutVariable &a, const QSh
+             d->layer.wantsExtendedDynamicRangeContent = YES;
+         }
+     } else if (m_format == HDR10) {
+-        if (@available(iOS 16.0, *)) {
++        if (@available(macOS 11.0, iOS 16.0, *)) {
+             d->layer.colorspace = CGColorSpaceCreateWithName(kCGColorSpaceITUR_2100_PQ);
+             d->layer.wantsExtendedDynamicRangeContent = YES;
+         }
+     } else if (m_format == HDRExtendedDisplayP3Linear) {
+-        if (@available(iOS 16.0, *)) {
++        if (@available(macOS 10.14.3, iOS 16.0, *)) {
+             d->layer.colorspace = CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearDisplayP3);
+             d->layer.wantsExtendedDynamicRangeContent = YES;
+         }
+@@ -6602,15 +6632,14 @@ static inline bool matches(const QShaderDescription::InOutVariable &a, const QSh
+     // Now set the layer's drawableSize which will stay set to the same value
+     // until the next createOrResize(), thus ensuring atomicity with regards to
+     // the drawable size in frames.
+-    int width = (int)d->layer.bounds.size.width;
+-    int height = (int)d->layer.bounds.size.height;
+-    CGSize layerSize = CGSizeMake(width, height);
+-    const float scaleFactor = d->layer.contentsScale;
+-    layerSize.width *= scaleFactor;
+-    layerSize.height *= scaleFactor;
++    const auto scaleFactor = usesWindowSizeForSurfacePixelSize(window)
++        ? window->devicePixelRatio()
++        : d->layer.contentsScale;
++    const auto surfaceSize = surfacePixelSizeForLayer(d->layer, window);
++    const auto layerSize = CGSizeMake(surfaceSize.width(), surfaceSize.height());
+     d->layer.drawableSize = layerSize;
+ 
+-    m_currentPixelSize = QSizeF::fromCGSize(layerSize).toSize();
++    m_currentPixelSize = surfaceSize;
+     pixelSize = m_currentPixelSize;
+ 
+     [d->layer setDevice: rhiD->d->dev];
+diff --git a/src/plugins/platforms/cocoa/qcocoabackingstore.mm b/src/plugins/platforms/cocoa/qcocoabackingstore.mm
+index 61fe966668f..f783ee59f83 100644
+--- a/src/plugins/platforms/cocoa/qcocoabackingstore.mm
++++ b/src/plugins/platforms/cocoa/qcocoabackingstore.mm
+@@ -12,6 +12,9 @@
+ #include <QtCore/qmath.h>
+ #include <QtCore/private/qcore_mac_p.h>
+ #include <QtGui/qpainter.h>
++#if QT_CONFIG(metal)
++#include <QtGui/private/qmetallayer_p.h>
++#endif
+ #include <rhi/qrhi.h>
+ #if QT_CONFIG(metal)
+ #include <rhi/qrhi_platform.h>
+@@ -473,9 +476,34 @@
+     }
+ 
+     finalizeBackBuffer();
++    auto *cocoaWindow = static_cast<QCocoaWindow *>(window->handle());
++
++#if QT_CONFIG(metal)
++    auto *metalLayer = qt_objc_cast<QMetalLayer*>(cocoaWindow->contentLayer());
++    const auto drawableSize = metalLayer
++        ? QSizeF::fromCGSize(metalLayer.drawableSize).toSize()
++        : QSize();
++    const bool needsSynchronizedPresent = metalLayer
++        && drawableSize != m_buffers.back()->size();
++    const bool presentsWithTransaction = needsSynchronizedPresent
++        ? metalLayer.presentsWithTransaction
++        : false;
++    if (needsSynchronizedPresent) {
++        NSView *view = cocoaWindow->view();
++        view.window.viewsNeedDisplay = YES;
++        metalLayer.presentsWithTransaction = YES;
++    }
++#endif
+ 
+-    return QPlatformBackingStore::rhiFlush(window, sourceDevicePixelRatio,
++    const auto result = QPlatformBackingStore::rhiFlush(window, sourceDevicePixelRatio,
+         region, offset, textures, translucentBackground, sourceTransformFactor);
++
++#if QT_CONFIG(metal)
++    if (needsSynchronizedPresent)
++        metalLayer.presentsWithTransaction = presentsWithTransaction;
++#endif
++
++    return result;
+ }
+ 
+ QImage QCALayerBackingStore::toImage() const
+diff --git a/src/plugins/platforms/cocoa/qcocoawindow.h b/src/plugins/platforms/cocoa/qcocoawindow.h
+index 63f0bf2d0f3..e75551910ab 100644
+--- a/src/plugins/platforms/cocoa/qcocoawindow.h
++++ b/src/plugins/platforms/cocoa/qcocoawindow.h
+@@ -229,6 +229,7 @@ public: // for QNSView
+     static void removePopupMonitor();
+     void markTemporarilyActivatedByRightClick();
+ 
++    void syncContentLayerGeometry() const;
+     CALayer *contentLayer() const override;
+ 
+     void manageVisualEffectArea(quintptr identifier, const QRect &rect,
+diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms/cocoa/qcocoawindow.mm
+index 6e54de9d4bb..82b99cd8cd3 100644
+--- a/src/plugins/platforms/cocoa/qcocoawindow.mm
++++ b/src/plugins/platforms/cocoa/qcocoawindow.mm
+@@ -2292,8 +2292,28 @@ Posted whenever an NSView object that has attached surfaces (that is,
+     m_frameStrutEventsEnabled = enabled;
+ }
+ 
++void QCocoaWindow::syncContentLayerGeometry() const
++{
++    if (auto *containerLayer = qt_objc_cast<QContainerLayer*>(m_view.layer)) {
++        const auto windowSize = window()->size();
++        const auto fallbackBounds = m_view.bounds;
++        const auto width = windowSize.isEmpty() ? fallbackBounds.size.width : windowSize.width();
++        const auto height = windowSize.isEmpty() ? fallbackBounds.size.height : windowSize.height();
++        const auto frame = CGRectMake(0, 0, width, height);
++        auto *contentLayer = containerLayer.contentLayer;
++        if (!CGRectEqualToRect(contentLayer.frame, frame)) {
++            [CATransaction begin];
++            [CATransaction setDisableActions:YES];
++            contentLayer.frame = frame;
++            [CATransaction commit];
++        }
++    }
++}
++
+ CALayer *QCocoaWindow::contentLayer() const
+ {
++    syncContentLayerGeometry();
++
+     auto *layer = m_view.layer;
+     if (auto *containerLayer = qt_objc_cast<QContainerLayer*>(layer))
+         layer = containerLayer.contentLayer;
+diff --git a/src/plugins/platforms/cocoa/qnsview_drawing.mm b/src/plugins/platforms/cocoa/qnsview_drawing.mm
+index 877169f2ef6..61071e6fdcd 100644
+--- a/src/plugins/platforms/cocoa/qnsview_drawing.mm
++++ b/src/plugins/platforms/cocoa/qnsview_drawing.mm
+@@ -27,7 +27,10 @@ - (void)layoutSublayers
+     // of kCALayerWidthSizable | kCALayerHeightSizable has been seen to
+     // drift out of sync, resulting in a content layer larger than its
+     // container layer.
++    [CATransaction begin];
++    [CATransaction setDisableActions:YES];
+     m_contentLayer.frame = self.bounds;
++    [CATransaction commit];
+ }
+ 
+ - (void)setNeedsDisplay
