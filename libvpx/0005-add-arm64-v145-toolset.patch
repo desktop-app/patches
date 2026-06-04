@@ -1,0 +1,25 @@
+diff --git a/build/make/gen_msvs_vcxproj.sh b/build/make/gen_msvs_vcxproj.sh
+index 1e1db05bb..417137300 100755
+--- a/build/make/gen_msvs_vcxproj.sh
++++ b/build/make/gen_msvs_vcxproj.sh
+@@ -147,6 +147,8 @@ for opt in "$@"; do
+             case "$platform_toolset" in
+                 clangcl) platform_toolset="ClangCl"
+                 ;;
++                v1[0-9][0-9])
++                ;;
+                 "")
+                 ;;
+                 *) die Unrecognized Visual Studio Platform Toolset in $opt
+diff --git a/configure b/configure
+index b212e0709..b5e2b60000 100755
+--- a/configure
++++ b/configure
+@@ -110,6 +110,7 @@ all_platforms="${all_platforms} arm64-win64-vs16"
+ all_platforms="${all_platforms} arm64-win64-vs16-clangcl"
+ all_platforms="${all_platforms} arm64-win64-vs17"
+ all_platforms="${all_platforms} arm64-win64-vs17-clangcl"
++all_platforms="${all_platforms} arm64-win64-vs17-v145"
+ all_platforms="${all_platforms} armv7-android-gcc"   #neon Cortex-A8
+ all_platforms="${all_platforms} armv7-darwin-gcc"    #neon Cortex-A8
+ all_platforms="${all_platforms} armv7-linux-rvct"    #neon Cortex-A8
