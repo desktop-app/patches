@@ -1,0 +1,52 @@
+commit 0000000000000000000000000000000000000000
+Author: 23rd <23rd@vivaldi.net>
+Date:   Fri Jun 5 00:00:00 2026 +0300
+
+    Deepen the macOS RHI frame pipeline to reduce present stalls.
+
+    On macOS the widgets RHI path presents the main window through a Metal
+    swapchain. beginFrame() blocks the main thread on a per-slot semaphore
+    and beginPass() blocks it again on [layer nextDrawable]; both are tied
+    to the display's present cycle. With QMTL_FRAMES_IN_FLIGHT == 2 the
+    semaphore starts at 1, so the main thread may run at most one frame
+    ahead before it blocks. On external displays (higher present latency)
+    this surfaces as scroll stutter regardless of GPU power.
+
+    Raise QMTL_FRAMES_IN_FLIGHT to 3 (semaphore starts at 2, so two frames
+    may be in flight) and pin the CoreAnimation drawable pool to the same
+    depth, capped at the maximum of 3 that CoreAnimation allows. Costs one
+    extra frame of latency and one extra set of in-flight buffers.
+
+diff --git a/src/gui/rhi/qrhimetal_p.h b/src/gui/rhi/qrhimetal_p.h
+index 0000000000..0000000000 100644
+--- a/src/gui/rhi/qrhimetal_p.h
++++ b/src/gui/rhi/qrhimetal_p.h
+@@ -20,7 +20,7 @@
+ 
+ QT_BEGIN_NAMESPACE
+ 
+-static const int QMTL_FRAMES_IN_FLIGHT = 2;
++static const int QMTL_FRAMES_IN_FLIGHT = 3;
+ 
+ // have to hide the ObjC stuff, this header cannot contain MTL* at all
+ struct QMetalBufferData;
+diff --git a/src/gui/rhi/qrhimetal.mm b/src/gui/rhi/qrhimetal.mm
+index 0000000000..0000000000 100644
+--- a/src/gui/rhi/qrhimetal.mm
++++ b/src/gui/rhi/qrhimetal.mm
+@@ -6629,7 +6629,15 @@
+     } else {
+         d->layer.opaque = YES;
+     }
+ 
++#ifdef Q_OS_MACOS
++    // Keep the CoreAnimation drawable pool as deep as the in-flight frame
++    // count so the main thread can run ahead before nextDrawable blocks.
++    if (@available(macOS 10.13.2, *)) {
++        d->layer.maximumDrawableCount = qMin(QMTL_FRAMES_IN_FLIGHT, 3);
++    }
++#endif
++
+     // Now set the layer's drawableSize which will stay set to the same value
+     // until the next createOrResize(), thus ensuring atomicity with regards to
+     // the drawable size in frames.
