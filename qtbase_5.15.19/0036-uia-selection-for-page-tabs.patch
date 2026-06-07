@@ -1,0 +1,54 @@
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+index c38baecacdd..abdd40957ab 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+@@ -333,14 +333,16 @@ HRESULT QWindowsUiaMainProvider::GetPatternProvider(PATTERNID idPattern, IUnknow
+         break;
+     case UIA_SelectionPatternId:
+         // Lists of items.
+-        if (accessible->role() == QAccessible::List) {
++        if ((accessible->role() == QAccessible::List)
++                || (accessible->role() == QAccessible::PageTabList)) {
+             *pRetVal = new QWindowsUiaSelectionProvider(id());
+         }
+         break;
+     case UIA_SelectionItemPatternId:
+         // Items within a list and radio buttons.
+         if ((accessible->role() == QAccessible::RadioButton)
+-                || (accessible->role() == QAccessible::ListItem)) {
++                || (accessible->role() == QAccessible::ListItem)
++                || (accessible->role() == QAccessible::PageTab)) {
+             *pRetVal = new QWindowsUiaSelectionItemProvider(id());
+         }
+         break;
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiaselectionitemprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiaselectionitemprovider.cpp
+index 71e417c90d6..1cc8a4b4d56 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiaselectionitemprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiaselectionitemprovider.cpp
+@@ -162,6 +162,8 @@ HRESULT STDMETHODCALLTYPE QWindowsUiaSelectionItemProvider::get_IsSelected(BOOL
+ 
+     if (accessible->role() == QAccessible::RadioButton)
+         *pRetVal = accessible->state().checked;
++    else if (accessible->role() == QAccessible::PageTab)
++        *pRetVal = accessible->state().focused;
+     else
+         *pRetVal = accessible->state().selected;
+     return S_OK;
+@@ -181,11 +183,12 @@ HRESULT STDMETHODCALLTYPE QWindowsUiaSelectionItemProvider::get_SelectionContain
+         return UIA_E_ELEMENTNOTAVAILABLE;
+ 
+     // Radio buttons do not require a container.
+-    if (accessible->role() == QAccessible::ListItem) {
+-        if (QAccessibleInterface *parent = accessible->parent()) {
+-            if (parent->role() == QAccessible::List) {
+-                *pRetVal = QWindowsUiaMainProvider::providerForAccessible(parent); // Detach
+-            }
++    if (QAccessibleInterface *parent = accessible->parent()) {
++        if ((accessible->role() == QAccessible::ListItem
++                    && parent->role() == QAccessible::List)
++                || (accessible->role() == QAccessible::PageTab
++                    && parent->role() == QAccessible::PageTabList)) {
++            *pRetVal = QWindowsUiaMainProvider::providerForAccessible(parent); // Detach
+         }
+     }
+     return S_OK;
