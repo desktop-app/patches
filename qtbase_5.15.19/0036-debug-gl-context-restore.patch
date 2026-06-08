@@ -1,0 +1,84 @@
+diff --git a/src/plugins/platforms/windows/qwindowseglcontext.cpp b/src/plugins/platforms/windows/qwindowseglcontext.cpp
+index 3cb1c037e11..00dc7871513 100644
+--- a/src/plugins/platforms/windows/qwindowseglcontext.cpp
++++ b/src/plugins/platforms/windows/qwindowseglcontext.cpp
+@@ -85,6 +85,13 @@ static bool shouldRecoverFromEglError(EGLint error)
+         || error == EGL_NOT_INITIALIZED;
+ }
+ 
++static bool shouldRetireAfterCreationFailure(EGLint error)
++{
++    return error == EGL_CONTEXT_LOST
++        || error == EGL_BAD_DISPLAY
++        || error == EGL_NOT_INITIALIZED;
++}
++
+ #if !defined(QT_STATIC) || defined(QT_OPENGL_DYNAMIC)
+ 
+ #ifdef Q_CC_MINGW
+@@ -403,6 +410,14 @@ void QWindowsEGLStaticContext::markLost(EGLint error)
+         terminate();
+ }
+ 
++void QWindowsEGLStaticContext::markCreationFailure(EGLint error)
++{
++    if (!shouldRetireAfterCreationFailure(error))
++        return;
++
++    markLost(error);
++}
++
+ QWindowsOpenGLContext *QWindowsEGLStaticContext::createContext(QOpenGLContext *context)
+ {
+     if (!isValid())
+@@ -540,7 +555,7 @@ QWindowsEGLContext::QWindowsEGLContext(QWindowsEGLStaticContext *staticContext,
+     if (m_eglContext == EGL_NO_CONTEXT) {
+         int err = QWindowsEGLStaticContext::libEGL.eglGetError();
+         qWarning("QWindowsEGLContext: Failed to create context, eglError: %x, this: %p", err, this);
+-        m_staticContext->markLost(err);
++        m_staticContext->markCreationFailure(err);
+         // ANGLE gives bad alloc when it fails to reset a previously lost D3D device.
+         // A common cause for this is disabling the graphics adapter used by the app.
+         if (err == EGL_BAD_ALLOC)
+@@ -558,7 +573,8 @@ QWindowsEGLContext::QWindowsEGLContext(QWindowsEGLStaticContext *staticContext,
+     EGLSurface pbuffer = QWindowsEGLStaticContext::libEGL.eglCreatePbufferSurface(m_eglDisplay, m_eglConfig, pbufferAttributes);
+     if (pbuffer == EGL_NO_SURFACE) {
+         const int err = QWindowsEGLStaticContext::libEGL.eglGetError();
+-        m_staticContext->markLost(err);
++        qCDebug(lcQpaGl, "QWindowsEGLContext: Failed to create pbuffer, eglError: 0x%x, this: %p", err, this);
++        m_staticContext->markCreationFailure(err);
+         return;
+     }
+ 
+@@ -1028,7 +1044,8 @@ EGLConfig QWindowsEGLContext::chooseConfig(const QSurfaceFormat &format)
+         EGLint matching = 0;
+         if (!QWindowsEGLStaticContext::libEGL.eglChooseConfig(display, configureAttributes.constData(), nullptr, 0, &matching)) {
+             const int err = QWindowsEGLStaticContext::libEGL.eglGetError();
+-            m_staticContext->markLost(err);
++            qCDebug(lcQpaGl, "QWindowsEGLContext: Failed to count EGL configs, eglError: 0x%x, this: %p", err, this);
++            m_staticContext->markCreationFailure(err);
+             if (shouldRecoverFromEglError(err))
+                 return nullptr;
+             continue;
+@@ -1050,7 +1067,8 @@ EGLConfig QWindowsEGLContext::chooseConfig(const QSurfaceFormat &format)
+         QVector<EGLConfig> configs(matching);
+         if (!QWindowsEGLStaticContext::libEGL.eglChooseConfig(display, configureAttributes.constData(), configs.data(), configs.size(), &matching)) {
+             const int err = QWindowsEGLStaticContext::libEGL.eglGetError();
+-            m_staticContext->markLost(err);
++            qCDebug(lcQpaGl, "QWindowsEGLContext: Failed to fetch EGL configs, eglError: 0x%x, this: %p", err, this);
++            m_staticContext->markCreationFailure(err);
+             if (shouldRecoverFromEglError(err))
+                 return nullptr;
+             continue;
+diff --git a/src/plugins/platforms/windows/qwindowseglcontext.h b/src/plugins/platforms/windows/qwindowseglcontext.h
+index 2de5c7c337d..fb765c08341 100644
+--- a/src/plugins/platforms/windows/qwindowseglcontext.h
++++ b/src/plugins/platforms/windows/qwindowseglcontext.h
+@@ -120,6 +120,7 @@ public:
+     EGLDisplay display() const { return m_display; }
+     bool isValid() const override { return !m_lost.loadAcquire(); }
+     void markLost(EGLint error);
++    void markCreationFailure(EGLint error);
+     void ref() override;
+     void deref() override;
+     void retire() override;
