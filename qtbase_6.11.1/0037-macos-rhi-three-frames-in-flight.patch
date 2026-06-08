@@ -1,0 +1,45 @@
+diff --git a/src/gui/rhi/qrhimetal.mm b/src/gui/rhi/qrhimetal.mm
+index 69b3ce46b42..411d8c494e1 100644
+--- a/src/gui/rhi/qrhimetal.mm
++++ b/src/gui/rhi/qrhimetal.mm
+@@ -6589,6 +6589,9 @@ static inline QSize surfacePixelSizeForLayer(CAMetalLayer *layer, QWindow *windo
+     d->layer = qrhi_objectFromProxyData<CAMetalLayer>(&m_proxyData, window, QRhi::Metal, 0);
+     Q_ASSERT(d->layer);
+ 
++    if (@available(macOS 10.13.2, iOS 11.2, tvOS 11.2, watchOS 4.2, *))
++        d->layer.maximumDrawableCount = NSUInteger(QMTL_FRAMES_IN_FLIGHT);
++
+     chooseFormats();
+     if (d->colorFormat != d->layer.pixelFormat)
+         d->layer.pixelFormat = d->colorFormat;
+@@ -6651,7 +6654,7 @@ static inline QSize surfacePixelSizeForLayer(CAMetalLayer *layer, QWindow *windo
+     for (int i = 0; i < QMTL_FRAMES_IN_FLIGHT; ++i) {
+         d->lastGpuTime[i] = 0;
+         if (!d->sem[i])
+-            d->sem[i] = dispatch_semaphore_create(QMTL_FRAMES_IN_FLIGHT - 1);
++            d->sem[i] = dispatch_semaphore_create(1);
+     }
+ 
+     currentFrameSlot = 0;
+@@ -6699,7 +6702,7 @@ static inline QSize surfacePixelSizeForLayer(CAMetalLayer *layer, QWindow *windo
+             if (d->msaaTex[i]) {
+                 QRhiMetalData::DeferredReleaseEntry e;
+                 e.type = QRhiMetalData::DeferredReleaseEntry::RenderBuffer;
+-                e.lastActiveFrameSlot = 1; // because currentFrameSlot is reset to 0
++                e.lastActiveFrameSlot = QMTL_FRAMES_IN_FLIGHT - 1; // because currentFrameSlot is reset to 0
+                 e.renderbuffer.texture = d->msaaTex[i];
+                 rhiD->d->releaseQueue.append(e);
+             }
+diff --git a/src/gui/rhi/qrhimetal_p.h b/src/gui/rhi/qrhimetal_p.h
+index c8b707a4865..0ef8f5cef0e 100644
+--- a/src/gui/rhi/qrhimetal_p.h
++++ b/src/gui/rhi/qrhimetal_p.h
+@@ -20,7 +20,7 @@
+ 
+ QT_BEGIN_NAMESPACE
+ 
+-static const int QMTL_FRAMES_IN_FLIGHT = 2;
++static const int QMTL_FRAMES_IN_FLIGHT = 3;
+ 
+ // have to hide the ObjC stuff, this header cannot contain MTL* at all
+ struct QMetalBufferData;
