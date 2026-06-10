@@ -1,39 +1,45 @@
 diff --git a/src/network/access/qhttpnetworkconnection.cpp b/src/network/access/qhttpnetworkconnection.cpp
-index 20b8d446bac..473e0891f6f 100644
+index 20b8d446bac..77596433caa 100644
 --- a/src/network/access/qhttpnetworkconnection.cpp
 +++ b/src/network/access/qhttpnetworkconnection.cpp
-@@ -630,19 +630,17 @@ void QHttpNetworkConnectionPrivate::createAuthorization(QAbstractSocket *socket,
-     }
- 
- #if QT_CONFIG(networkproxy)
--    // Send "Proxy-Authorization" header, but not if it's NTLM and the socket is already authenticated.
-     if (channels[i].proxyAuthMethod != QAuthenticatorPrivate::None) {
-         QAuthenticatorPrivate *priv =
-                 QAuthenticatorPrivate::getPrivate(channels[i].proxyAuthenticator);
+@@ -637,16 +637,22 @@ void QHttpNetworkConnectionPrivate::createAuthorization(QAbstractSocket *socket,
          if (priv && priv->method != QAuthenticatorPrivate::None) {
--            const bool ntlmNego = channels[i].proxyAuthMethod == QAuthenticatorPrivate::Ntlm
--                    || channels[i].proxyAuthMethod == QAuthenticatorPrivate::Negotiate;
+             const bool ntlmNego = channels[i].proxyAuthMethod == QAuthenticatorPrivate::Ntlm
+                     || channels[i].proxyAuthMethod == QAuthenticatorPrivate::Negotiate;
 -            const bool proxyAuthNeeded = channels[i].lastStatus == 407;
 -            const bool ntlmNegoOk = ntlmNego && proxyAuthNeeded
 -                    && (priv->phase != QAuthenticatorPrivate::Done
 -                        || !channels[i].proxyCredentialsSent);
 -            const bool otherOk = !ntlmNego;
 -            if (ntlmNegoOk || otherOk) {
-+            const bool unsafeProxyAuth = priv->method == QAuthenticatorPrivate::Ntlm
-+                    || priv->method == QAuthenticatorPrivate::Negotiate;
-+            if (unsafeProxyAuth) {
+-                QByteArray response = priv->calculateResponse(
+-                        request.methodName(), request.uri(false), networkProxy.hostName());
+-                request.setHeaderField("Proxy-Authorization", response);
+-                channels[i].proxyCredentialsSent = true;
++            if (ntlmNego && !QAuthenticatorPrivate::proxyNtlmAuthAllowed()) {
 +                channels[i].proxyAuthMethod = QAuthenticatorPrivate::None;
 +                channels[i].proxyAuthenticator = QAuthenticator();
 +                channels[i].proxyCredentialsSent = false;
 +            } else {
-                 QByteArray response = priv->calculateResponse(
-                         request.methodName(), request.uri(false), networkProxy.hostName());
-                 request.setHeaderField("Proxy-Authorization", response);
++                const bool proxyAuthNeeded = channels[i].lastStatus == 407;
++                const bool ntlmNegoOk = ntlmNego && proxyAuthNeeded
++                        && (priv->phase != QAuthenticatorPrivate::Done
++                            || !channels[i].proxyCredentialsSent);
++                const bool otherOk = !ntlmNego;
++                if (ntlmNegoOk || otherOk) {
++                    QByteArray response = priv->calculateResponse(
++                            request.methodName(), request.uri(false), networkProxy.hostName());
++                    request.setHeaderField("Proxy-Authorization", response);
++                    channels[i].proxyCredentialsSent = true;
++                }
+             }
+         }
+     }
 diff --git a/src/network/access/qhttpnetworkreply.cpp b/src/network/access/qhttpnetworkreply.cpp
-index 2024c0fefb2..1870ba3c918 100644
+index 2024c0fefb2..ad462f81f70 100644
 --- a/src/network/access/qhttpnetworkreply.cpp
 +++ b/src/network/access/qhttpnetworkreply.cpp
-@@ -416,6 +416,26 @@ void QHttpNetworkReplyPrivate::removeAutoDecompressHeader()
+@@ -416,6 +416,28 @@ void QHttpNetworkReplyPrivate::removeAutoDecompressHeader()
      }
  }
  
@@ -53,6 +59,8 @@ index 2024c0fefb2..1870ba3c918 100644
 +
 +static bool qIsUnsafeProxyAuthenticationScheme(const QByteArray &value)
 +{
++    if (QAuthenticatorPrivate::proxyNtlmAuthAllowed())
++        return false;
 +    return qStartsWithAuthenticationScheme(value, "ntlm")
 +        || qStartsWithAuthenticationScheme(value, "negotiate");
 +}
@@ -60,7 +68,7 @@ index 2024c0fefb2..1870ba3c918 100644
  bool QHttpNetworkReplyPrivate::findChallenge(bool forProxy, QByteArray &challenge) const
  {
      challenge.clear();
-@@ -439,18 +459,20 @@ QAuthenticatorPrivate::Method QHttpNetworkReplyPrivate::authenticationMethod(boo
+@@ -439,18 +461,20 @@ QAuthenticatorPrivate::Method QHttpNetworkReplyPrivate::authenticationMethod(boo
      QByteArray header = isProxy ? "proxy-authenticate" : "www-authenticate";
      QList<QByteArray> challenges = headerFieldValues(header);
      for (int i = 0; i<challenges.size(); i++) {
@@ -87,10 +95,10 @@ index 2024c0fefb2..1870ba3c918 100644
          }
      }
 diff --git a/src/network/kernel/qauthenticator.cpp b/src/network/kernel/qauthenticator.cpp
-index 93b323f0bd9..429087ba93c 100644
+index 93b323f0bd9..0454ce4fd53 100644
 --- a/src/network/kernel/qauthenticator.cpp
 +++ b/src/network/kernel/qauthenticator.cpp
-@@ -440,6 +440,26 @@ static bool verifyDigestMD5(const QByteArray &value)
+@@ -440,6 +440,44 @@ static bool verifyDigestMD5(const QByteArray &value)
      return true; // assume it's ok if algorithm is not specified
  }
  
@@ -110,14 +118,32 @@ index 93b323f0bd9..429087ba93c 100644
 +
 +static bool qIsUnsafeProxyAuthenticationScheme(const QByteArray &value)
 +{
++    if (QAuthenticatorPrivate::proxyNtlmAuthAllowed())
++        return false;
 +    return qStartsWithAuthenticationScheme(value, "ntlm")
 +        || qStartsWithAuthenticationScheme(value, "negotiate");
++}
++
++// When false (the default), NTLM/Negotiate proxy authentication is refused,
++// because a malicious proxy can use it to silently relay the user's Windows
++// domain credentials. Telegram enables it only when the proxy comes from the
++// system configuration, where such a setup is the responsibility of the OS.
++static QBasicAtomicInt qProxyNtlmAuthAllowed = Q_BASIC_ATOMIC_INITIALIZER(0);
++
++bool QAuthenticatorPrivate::proxyNtlmAuthAllowed()
++{
++    return qProxyNtlmAuthAllowed.loadRelaxed() != 0;
++}
++
++void QAuthenticatorPrivate::setProxyNtlmAuthAllowed(bool allowed)
++{
++    qProxyNtlmAuthAllowed.storeRelaxed(allowed ? 1 : 0);
 +}
 +
  void QAuthenticatorPrivate::parseHttpResponse(const QList<QPair<QByteArray, QByteArray> > &values, bool isProxy, const QString &host)
  {
  #if !QT_CONFIG(gssapi)
-@@ -459,26 +479,31 @@ void QAuthenticatorPrivate::parseHttpResponse(const QList<QPair<QByteArray, QByt
+@@ -459,26 +497,31 @@ void QAuthenticatorPrivate::parseHttpResponse(const QList<QPair<QByteArray, QByt
      */
  
      QByteArray headerVal;
@@ -157,7 +183,7 @@ index 93b323f0bd9..429087ba93c 100644
  #if QT_CONFIG(sspi) || QT_CONFIG(gssapi) // if it's not supported then we shouldn't try to use it
  #if QT_CONFIG(gssapi)
              // For GSSAPI there needs to be a KDC set up for the host (afaict).
-@@ -488,7 +513,7 @@ void QAuthenticatorPrivate::parseHttpResponse(const QList<QPair<QByteArray, QByt
+@@ -488,7 +531,7 @@ void QAuthenticatorPrivate::parseHttpResponse(const QList<QPair<QByteArray, QByt
                  continue;
  #endif
              method = Negotiate;
@@ -166,7 +192,7 @@ index 93b323f0bd9..429087ba93c 100644
  #endif
          }
      }
-@@ -532,7 +557,7 @@ void QAuthenticatorPrivate::parseHttpResponse(const QList<QPair<QByteArray, QByt
+@@ -532,7 +575,7 @@ void QAuthenticatorPrivate::parseHttpResponse(const QList<QPair<QByteArray, QByt
      default:
          realm.clear();
          challenge = QByteArray();
@@ -175,7 +201,7 @@ index 93b323f0bd9..429087ba93c 100644
      }
  }
  
-@@ -1328,30 +1353,33 @@ static QByteArray clientChallenge(const QAuthenticatorPrivate *ctx)
+@@ -1328,30 +1371,33 @@ static QByteArray clientChallenge(const QAuthenticatorPrivate *ctx)
      return clientCh;
  }
  
@@ -227,7 +253,7 @@ index 93b323f0bd9..429087ba93c 100644
  }
  
  static QByteArray qEncodeNtlmv2Response(const QAuthenticatorPrivate *ctx,
-@@ -1382,8 +1410,8 @@ static QByteArray qEncodeNtlmv2Response(const QAuthenticatorPrivate *ctx,
+@@ -1382,8 +1428,8 @@ static QByteArray qEncodeNtlmv2Response(const QAuthenticatorPrivate *ctx,
      }
  
      //if server sends time, use it instead of current time
@@ -238,7 +264,7 @@ index 93b323f0bd9..429087ba93c 100644
      } else {
          // number of seconds between 1601 and the epoch (1970)
          // 369 years, 89 leap years
-@@ -1440,6 +1468,12 @@ static QByteArray qEncodeLmv2Response(const QAuthenticatorPrivate *ctx,
+@@ -1440,6 +1486,12 @@ static QByteArray qEncodeLmv2Response(const QAuthenticatorPrivate *ctx,
      return lmChallengeResp;
  }
  
@@ -251,7 +277,7 @@ index 93b323f0bd9..429087ba93c 100644
  static bool qNtlmDecodePhase2(const QByteArray& data, QNtlmPhase2Block& ch)
  {
      Q_ASSERT(QNtlmPhase2BlockBase::Size == sizeof(QNtlmPhase2BlockBase));
-@@ -1466,14 +1500,14 @@ static bool qNtlmDecodePhase2(const QByteArray& data, QNtlmPhase2Block& ch)
+@@ -1466,14 +1518,14 @@ static bool qNtlmDecodePhase2(const QByteArray& data, QNtlmPhase2Block& ch)
      ds >> ch.targetInfo;
  
      if (ch.targetName.len > 0) {
@@ -268,19 +294,95 @@ index 93b323f0bd9..429087ba93c 100644
              return false;
  
          ch.targetInfoBuff = data.mid(ch.targetInfo.offset, ch.targetInfo.len);
+diff --git a/src/network/kernel/qauthenticator_p.h b/src/network/kernel/qauthenticator_p.h
+index b234925a0e7..9ac9ef6b05d 100644
+--- a/src/network/kernel/qauthenticator_p.h
++++ b/src/network/kernel/qauthenticator_p.h
+@@ -116,6 +116,9 @@ public:
+ 
+     void parseHttpResponse(const QList<QPair<QByteArray, QByteArray> >&, bool isProxy, const QString &host);
+     void updateCredentials();
++
++    static bool proxyNtlmAuthAllowed();
++    static void setProxyNtlmAuthAllowed(bool allowed);
+ };
+ 
+ 
+diff --git a/src/network/kernel/qnetworkproxy.cpp b/src/network/kernel/qnetworkproxy.cpp
+index 745e26ac959..3352dc7d362 100644
+--- a/src/network/kernel/qnetworkproxy.cpp
++++ b/src/network/kernel/qnetworkproxy.cpp
+@@ -236,6 +236,7 @@
+ #endif
+ 
+ #include "qauthenticator.h"
++#include "private/qauthenticator_p.h"
+ #include "qdebug.h"
+ #include "qmutex.h"
+ #include "qstringlist.h"
+@@ -789,6 +790,31 @@ QNetworkProxy QNetworkProxy::applicationProxy()
+     return QNetworkProxy();
+ }
+ 
++/*!
++    \internal
++
++    Allows or refuses NTLM/Negotiate proxy authentication for the whole
++    application. It is refused by default, because a malicious proxy can use it
++    to silently relay the user's Windows domain credentials. It should only be
++    allowed when the proxy comes from the system configuration.
++*/
++void QNetworkProxy::setProxyAuthenticationNtlmAllowed(bool allowed)
++{
++    QAuthenticatorPrivate::setProxyNtlmAuthAllowed(allowed);
++}
++
++/*!
++    \internal
++
++    Returns whether NTLM/Negotiate proxy authentication is currently allowed.
++
++    \sa setProxyAuthenticationNtlmAllowed()
++*/
++bool QNetworkProxy::proxyAuthenticationNtlmAllowed()
++{
++    return QAuthenticatorPrivate::proxyNtlmAuthAllowed();
++}
++
+ /*!
+     \since 5.0
+     Returns the value of the known network header \a header if it is
+diff --git a/src/network/kernel/qnetworkproxy.h b/src/network/kernel/qnetworkproxy.h
+index d267e744e37..2c4d424769b 100644
+--- a/src/network/kernel/qnetworkproxy.h
++++ b/src/network/kernel/qnetworkproxy.h
+@@ -198,6 +198,12 @@ public:
+     static void setApplicationProxy(const QNetworkProxy &proxy);
+     static QNetworkProxy applicationProxy();
+ 
++// Marks the availability of the NTLM/Negotiate proxy authentication control
++// API below, which is a desktop-app patch and absent from vanilla Qt.
++#define DESKTOP_APP_QT_HAS_PROXY_NTLM_AUTH_CONTROL
++    static void setProxyAuthenticationNtlmAllowed(bool allowed);
++    static bool proxyAuthenticationNtlmAllowed();
++
+     // "cooked" headers
+     QVariant header(QNetworkRequest::KnownHeaders header) const;
+     void setHeader(QNetworkRequest::KnownHeaders header, const QVariant &value);
 diff --git a/src/network/socket/qhttpsocketengine.cpp b/src/network/socket/qhttpsocketengine.cpp
-index 6629b7eaceb..55aadd6fa99 100644
+index 6629b7eaceb..c4e397bb1bd 100644
 --- a/src/network/socket/qhttpsocketengine.cpp
 +++ b/src/network/socket/qhttpsocketengine.cpp
-@@ -523,9 +523,15 @@ void QHttpSocketEngine::slotSocketConnected()
+@@ -523,9 +523,16 @@ void QHttpSocketEngine::slotSocketConnected()
      QAuthenticatorPrivate *priv = QAuthenticatorPrivate::getPrivate(d->authenticator);
      //qDebug() << "slotSocketConnected: priv=" << priv << (priv ? (int)priv->method : -1);
      if (priv && priv->method != QAuthenticatorPrivate::None) {
 -        d->credentialsSent = true;
 -        data += "Proxy-Authorization: " + priv->calculateResponse(method, path, d->proxy.hostName());
 -        data += "\r\n";
-+        const bool unsafeProxyAuth = priv->method == QAuthenticatorPrivate::Ntlm
-+                || priv->method == QAuthenticatorPrivate::Negotiate;
++        const bool unsafeProxyAuth = (priv->method == QAuthenticatorPrivate::Ntlm
++                || priv->method == QAuthenticatorPrivate::Negotiate)
++                && !QAuthenticatorPrivate::proxyNtlmAuthAllowed();
 +        if (unsafeProxyAuth) {
 +            d->authenticator = QAuthenticator();
 +        } else {
@@ -291,28 +393,25 @@ index 6629b7eaceb..55aadd6fa99 100644
      }
      data += "\r\n";
  //     qDebug() << ">>>>>>>> sending request" << this;
-@@ -612,6 +618,26 @@ void QHttpSocketEngine::slotSocketReadNotification()
+@@ -612,6 +619,23 @@ void QHttpSocketEngine::slotSocketReadNotification()
  
          priv->parseHttpResponse(d->reply->header(), true, d->proxy.hostName());
  
-+        if (priv->method == QAuthenticatorPrivate::Ntlm
-+                || priv->method == QAuthenticatorPrivate::Negotiate) {
-+            d->authenticator = QAuthenticator();
-+            setError(QAbstractSocket::ProxyAuthenticationRequiredError,
-+                     tr("Proxy authentication method is not supported"));
-+            d->socket->disconnectFromHost();
-+            emitConnectionNotification();
-+            return;
-+        }
-+
-+        if (priv->method == QAuthenticatorPrivate::None
-+                && priv->phase == QAuthenticatorPrivate::Done) {
-+            d->authenticator = QAuthenticator();
-+            setError(QAbstractSocket::ProxyAuthenticationRequiredError,
-+                     tr("Proxy authentication method is not supported"));
-+            d->socket->disconnectFromHost();
-+            emitConnectionNotification();
-+            return;
++        if (!QAuthenticatorPrivate::proxyNtlmAuthAllowed()) {
++            // Refuse a proxy that requests NTLM/Negotiate, or one whose only
++            // offered schemes were the unsafe ones (skipped while parsing, so
++            // method stays None but the phase is marked Done).
++            if (priv->method == QAuthenticatorPrivate::Ntlm
++                    || priv->method == QAuthenticatorPrivate::Negotiate
++                    || (priv->method == QAuthenticatorPrivate::None
++                        && priv->phase == QAuthenticatorPrivate::Done)) {
++                d->authenticator = QAuthenticator();
++                setError(QAbstractSocket::ProxyAuthenticationRequiredError,
++                         tr("Proxy authentication method is not supported"));
++                d->socket->disconnectFromHost();
++                emitConnectionNotification();
++                return;
++            }
 +        }
 +
          if (priv->phase == QAuthenticatorPrivate::Invalid) {
