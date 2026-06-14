@@ -1,0 +1,37 @@
+diff --git a/src/gui/painting/qbackingstoredefaultcompositor.cpp b/src/gui/painting/qbackingstoredefaultcompositor.cpp
+index 3130a8aea98..5d1d97f506a 100644
+--- a/src/gui/painting/qbackingstoredefaultcompositor.cpp
++++ b/src/gui/painting/qbackingstoredefaultcompositor.cpp
+@@ -110,13 +110,25 @@ QRhiTexture *QBackingStoreDefaultCompositor::toTexture(const QImage &sourceImage
+         m_texture->create();
+         resourceUpdates->uploadTexture(m_texture.get(), image);
+     } else {
+-        QRect imageRect = image.rect();
+-        QRect rect = dirtyRegion.boundingRect() & imageRect;
+-        QRhiTextureSubresourceUploadDescription subresDesc(image);
+-        subresDesc.setSourceTopLeft(rect.topLeft());
+-        subresDesc.setSourceSize(rect.size());
+-        subresDesc.setDestinationTopLeft(rect.topLeft());
+-        QRhiTextureUploadDescription uploadDesc(QRhiTextureUploadEntry(0, 0, subresDesc));
++        const QRect imageRect = image.rect();
++        // Uploading dirtyRegion.boundingRect() re-uploads the whole window when
++        // the dirty region consists of a few far-apart rects (e.g. a hovered
++        // item plus an unrelated update elsewhere). Upload each rect on its own
++        // instead: this never uploads more than the bounding rect would have and
++        // avoids a full-window glTexSubImage2D for sparse damage.
++        QVarLengthArray<QRhiTextureUploadEntry, 8> entries;
++        for (const QRect &dirtyRect : dirtyRegion) {
++            const QRect rect = dirtyRect & imageRect;
++            if (rect.isEmpty())
++                continue;
++            QRhiTextureSubresourceUploadDescription subresDesc(image);
++            subresDesc.setSourceTopLeft(rect.topLeft());
++            subresDesc.setSourceSize(rect.size());
++            subresDesc.setDestinationTopLeft(rect.topLeft());
++            entries.append(QRhiTextureUploadEntry(0, 0, subresDesc));
++        }
++        QRhiTextureUploadDescription uploadDesc;
++        uploadDesc.setEntries(entries.cbegin(), entries.cend());
+         resourceUpdates->uploadTexture(m_texture.get(), uploadDesc);
+     }
+ 
