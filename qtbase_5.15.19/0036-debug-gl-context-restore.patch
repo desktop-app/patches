@@ -1,8 +1,88 @@
+diff --git a/src/gui/kernel/qopenglcontext.cpp b/src/gui/kernel/qopenglcontext.cpp
+index 2c6ccbf4ca4..5db3145f7fa 100644
+--- a/src/gui/kernel/qopenglcontext.cpp
++++ b/src/gui/kernel/qopenglcontext.cpp
+@@ -990,11 +990,7 @@ bool QOpenGLContext::makeCurrent(QSurface *surface)
+     }
+ 
+     if (!d->platformGLContext->makeCurrent(surface->surfaceHandle())) {
+-        // In this place the context could switch from isValid to !isValid.
+-        // It may still be current (from the previous successful calls),
+-        // so we need to make everything look as if it was not set current.
+         if (QOpenGLContext::currentContext() == this) {
+-            // resources?..
+             QOpenGLContextPrivate::setCurrentContext(nullptr);
+             d->surface = nullptr;
+         }
+@@ -1066,7 +1062,6 @@ void QOpenGLContext::doneCurrent()
+     Q_D(QOpenGLContext);
+     if (!isValid()) {
+         if (QOpenGLContext::currentContext() == this) {
+-            // resources?..
+             QOpenGLContextPrivate::setCurrentContext(nullptr);
+             d->surface = nullptr;
+         }
+@@ -1133,14 +1128,17 @@ void QOpenGLContext::swapBuffers(QSurface *surface)
+ #endif
+     if (surface->format().swapBehavior() == QSurfaceFormat::SingleBuffer)
+         functions()->glFlush();
++    if (!isValid()) {
++        if (QOpenGLContext::currentContext() == this) {
++            QOpenGLContextPrivate::setCurrentContext(nullptr);
++            d->surface = nullptr;
++        }
++        return;
++    }
+     d->platformGLContext->swapBuffers(surfaceHandle);
+ 
+     if (!isValid()) {
+-        // The swapBuffers call could switch the context from isValid to !isValid.
+-        // It may still be current (from the previous successful calls),
+-        // so we need to make everything look as if it was not set current.
+         if (QOpenGLContext::currentContext() == this) {
+-            // resources?..
+             QOpenGLContextPrivate::setCurrentContext(nullptr);
+             d->surface = nullptr;
+         }
+@@ -1532,6 +1530,13 @@ void QOpenGLContextGroupPrivate::cleanup()
+ 
+     m_sharedResources.clear();
+ 
++    QList<QOpenGLSharedResource *>::iterator pendingIt = m_pendingDeletion.begin();
++    QList<QOpenGLSharedResource *>::iterator pendingEnd = m_pendingDeletion.end();
++    while (pendingIt != pendingEnd) {
++        (*pendingIt)->invalidateResource();
++        ++pendingIt;
++    }
++
+     qDeleteAll(m_pendingDeletion.begin(), m_pendingDeletion.end());
+     m_pendingDeletion.clear();
+ }
+@@ -1539,6 +1544,7 @@ void QOpenGLContextGroupPrivate::cleanup()
+ void QOpenGLContextGroupPrivate::deletePendingResources(QOpenGLContext *ctx)
+ {
+     const auto locker = qt_scoped_lock(m_mutex);
++    const auto canFree = ctx && ctx->isValid();
+ 
+     const QList<QOpenGLSharedResource *> pending = m_pendingDeletion;
+     m_pendingDeletion.clear();
+@@ -1546,7 +1552,10 @@ void QOpenGLContextGroupPrivate::deletePendingResources(QOpenGLContext *ctx)
+     QList<QOpenGLSharedResource *>::const_iterator it = pending.begin();
+     QList<QOpenGLSharedResource *>::const_iterator end = pending.end();
+     while (it != end) {
+-        (*it)->freeResource(ctx);
++        if (canFree)
++            (*it)->freeResource(ctx);
++        else
++            (*it)->invalidateResource();
+         delete *it;
+         ++it;
+     }
 diff --git a/src/plugins/platforms/windows/qwindowseglcontext.cpp b/src/plugins/platforms/windows/qwindowseglcontext.cpp
-index 3cb1c037e11..a18c16d0bc4 100644
+index 3cb1c037e11..90ec6d06620 100644
 --- a/src/plugins/platforms/windows/qwindowseglcontext.cpp
 +++ b/src/plugins/platforms/windows/qwindowseglcontext.cpp
-@@ -41,6 +41,7 @@
+@@ -41,9 +41,12 @@
  #include "qwindowscontext.h"
  #include "qwindowswindow.h"
  
@@ -10,7 +90,12 @@ index 3cb1c037e11..a18c16d0bc4 100644
  #include <QtCore/qdebug.h>
  #include <QtGui/qopenglcontext.h>
  
-@@ -56,6 +57,10 @@
++#include <cstring>
++
+ #if defined(QT_OPENGL_ES_2_ANGLE) || defined(QT_OPENGL_DYNAMIC) || defined(DESKTOP_APP_QT_STATIC_ANGLE)
+ #  include <EGL/eglext.h>
+ #endif
+@@ -56,6 +59,22 @@
  #define EGL_PLATFORM_ANGLE_DEVICE_TYPE_REFERENCE_ANGLE EGL_PLATFORM_ANGLE_DEVICE_TYPE_D3D_REFERENCE_ANGLE
  #endif // EGL_PLATFORM_ANGLE_DEVICE_TYPE_REFERENCE_ANGLE
  
@@ -18,15 +103,28 @@ index 3cb1c037e11..a18c16d0bc4 100644
 +#define EGL_PLATFORM_ANGLE_DISPLAY_KEY_ANGLE 0x34DC
 +#endif // EGL_PLATFORM_ANGLE_DISPLAY_KEY_ANGLE
 +
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++#ifndef ANGLE_PLATFORM_EXPORT
++#define ANGLE_PLATFORM_EXPORT
++#define QWINDOWSEGLCONTEXT_DEFINED_ANGLE_PLATFORM_EXPORT
++#endif // ANGLE_PLATFORM_EXPORT
++#include <platform/PlatformMethods.h>
++#ifdef QWINDOWSEGLCONTEXT_DEFINED_ANGLE_PLATFORM_EXPORT
++#undef ANGLE_PLATFORM_EXPORT
++#undef QWINDOWSEGLCONTEXT_DEFINED_ANGLE_PLATFORM_EXPORT
++#endif // QWINDOWSEGLCONTEXT_DEFINED_ANGLE_PLATFORM_EXPORT
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
++
  QT_BEGIN_NAMESPACE
  
  /*!
-@@ -78,6 +83,33 @@ QT_BEGIN_NAMESPACE
+@@ -76,6 +95,107 @@ QT_BEGIN_NAMESPACE
  QWindowsLibEGL QWindowsEGLStaticContext::libEGL;
  QWindowsLibGLESv2 QWindowsEGLStaticContext::libGLESv2;
  
 +#ifdef DESKTOP_APP_QT_STATIC_ANGLE
 +static QAtomicInt angleDisplayKey = 1;
++static QAtomicInt angleDeviceLost = 0;
 +static QAtomicInteger<qint64> angleDisplayKeyAdvancedAt = -1;
 +
 +constexpr auto kAngleDisplayKeyAdvanceInterval = qint64(1000);
@@ -36,11 +134,11 @@ index 3cb1c037e11..a18c16d0bc4 100644
 +    return angleDisplayKey.loadAcquire();
 +}
 +
-+static void advanceAngleDisplayKey()
++static void advanceAngleDisplayKey(bool force = false)
 +{
 +    const auto now = QDateTime::currentMSecsSinceEpoch();
 +    const auto last = angleDisplayKeyAdvancedAt.loadAcquire();
-+    if (last >= 0 && now - last < kAngleDisplayKeyAdvanceInterval)
++    if (!force && last >= 0 && now - last < kAngleDisplayKeyAdvanceInterval)
 +        return;
 +
 +    if (angleDisplayKeyAdvancedAt.testAndSetRelaxed(last, now)) {
@@ -50,12 +148,85 @@ index 3cb1c037e11..a18c16d0bc4 100644
 +        angleDisplayKey.ref();
 +    }
 +}
++
++static bool angleMessageReportsDeviceLoss(const char *message)
++{
++    return message
++        && (std::strstr(message, "device was removed")
++            || std::strstr(message, "Device was removed")
++            || std::strstr(message, "device lost")
++            || std::strstr(message, "Device lost"));
++}
++
++static void markAngleDeviceLostFromLog(const char *message)
++{
++    if (!angleMessageReportsDeviceLoss(message))
++        return;
++
++    if (angleDeviceLost.testAndSetRelaxed(0, 1)) {
++        qCWarning(lcQpaGl) << "ANGLE device loss detected, invalidating ANGLE display key"
++            << currentAngleDisplayKey() << "message" << message;
++        advanceAngleDisplayKey(true);
++    }
++}
++
++static bool angleDeviceLossPending()
++{
++    return angleDeviceLost.loadAcquire();
++}
++
++static void resetAngleDeviceLoss()
++{
++    angleDeviceLost.storeRelease(0);
++}
++
++static void angleLogError(angle::PlatformMethods *platform, const char *message)
++{
++    Q_UNUSED(platform);
++    markAngleDeviceLostFromLog(message);
++    qCWarning(lcQpaGl) << "ANGLE Error:" << message;
++}
++
++static void angleLogWarning(angle::PlatformMethods *platform, const char *message)
++{
++    Q_UNUSED(platform);
++    markAngleDeviceLostFromLog(message);
++    qCWarning(lcQpaGl) << "ANGLE Warning:" << message;
++}
++
++static void angleLogInfo(angle::PlatformMethods *platform, const char *message)
++{
++    Q_UNUSED(platform);
++    qCDebug(lcQpaGl) << "ANGLE Info:" << message;
++}
++
++static void installAnglePlatformLogging(EGLDisplay display)
++{
++    resetAngleDeviceLoss();
++    angle::PlatformMethods *platform = nullptr;
++    if (!ANGLEGetDisplayPlatform(
++            display,
++            angle::g_PlatformMethodNames,
++            angle::g_NumPlatformMethods,
++            nullptr,
++            &platform)
++        || !platform) {
++        qCWarning(lcQpaGl) << "Failed to install ANGLE platform logging for display" << display
++            << "ANGLE display key" << currentAngleDisplayKey();
++        return;
++    }
++    platform->logError = angleLogError;
++    platform->logWarning = angleLogWarning;
++    platform->logInfo = angleLogInfo;
++    qCDebug(lcQpaGl) << "Installed ANGLE platform logging for display" << display
++        << "ANGLE display key" << currentAngleDisplayKey();
++}
 +#endif // DESKTOP_APP_QT_STATIC_ANGLE
 +
  static bool shouldRecoverFromEglError(EGLint error)
  {
      return error == EGL_CONTEXT_LOST
-@@ -85,6 +120,13 @@ static bool shouldRecoverFromEglError(EGLint error)
+@@ -85,6 +205,13 @@ static bool shouldRecoverFromEglError(EGLint error)
          || error == EGL_NOT_INITIALIZED;
  }
  
@@ -69,7 +240,22 @@ index 3cb1c037e11..a18c16d0bc4 100644
  #if !defined(QT_STATIC) || defined(QT_OPENGL_DYNAMIC)
  
  #ifdef Q_CC_MINGW
-@@ -222,42 +264,59 @@ bool QWindowsEGLStaticContext::initializeAngle(QWindowsOpenGLTester::Renderers p
+@@ -215,8 +342,14 @@ bool QWindowsLibGLESv2::init()
+ 
+ QWindowsEGLStaticContext::QWindowsEGLStaticContext(EGLDisplay display)
+     : m_display(display)
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++    , m_angleDisplayKey(currentAngleDisplayKey())
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
+     , m_refs(1)
+     , m_lost(0)
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++    , m_skipDisplayTeardown(0)
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
+     , m_terminated(0)
+     , m_retired(0)
+ {
+@@ -226,13 +359,19 @@ bool QWindowsEGLStaticContext::initializeAngle(QWindowsOpenGLTester::Renderers p
                                                 EGLDisplay *display, EGLint *major, EGLint *minor)
  {
  #ifdef DESKTOP_APP_QT_STATIC_ANGLE
@@ -84,36 +270,18 @@ index 3cb1c037e11..a18c16d0bc4 100644
 +            EGL_PLATFORM_ANGLE_DISPLAY_KEY_ANGLE, displayKey, EGL_NONE },
 +        { EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE,
 +            EGL_PLATFORM_ANGLE_DISPLAY_KEY_ANGLE, displayKey, EGL_NONE },
-+        { EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,
+         { EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,
+-            EGL_PLATFORM_ANGLE_D3D11ON12_ANGLE, EGL_TRUE, EGL_NONE },
 +            EGL_PLATFORM_ANGLE_DISPLAY_KEY_ANGLE, displayKey, EGL_NONE },
 +        { EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_D3D9_ANGLE,
 +            EGL_PLATFORM_ANGLE_DISPLAY_KEY_ANGLE, displayKey, EGL_NONE },
-         { EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,
--            EGL_PLATFORM_ANGLE_D3D11ON12_ANGLE, EGL_TRUE, EGL_NONE },
++        { EGL_PLATFORM_ANGLE_TYPE_ANGLE, EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,
 +            EGL_PLATFORM_ANGLE_D3D11ON12_ANGLE, EGL_TRUE,
 +            EGL_PLATFORM_ANGLE_DISPLAY_KEY_ANGLE, displayKey, EGL_NONE },
      };
      const EGLint *attributes = nullptr;
      const char platformVar[] = "DESKTOP_APP_QT_ANGLE_PLATFORM";
-     const auto envSet = qEnvironmentVariableIsSet(platformVar);
-     const QByteArray anglePlatform = envSet ? qgetenv(platformVar) : QByteArray();
-     const auto allowD3D11 = (preferredType & QWindowsOpenGLTester::AngleRendererD3d11) != 0;
-     const auto allowD3D9 = (preferredType & QWindowsOpenGLTester::AngleRendererD3d9) != 0;
-     if (!allowD3D9 && !allowD3D11) {
-         qCWarning(lcQpaGl) << "Both Direct3D 9 and Direct3D 11 are disabled.";
-         return false;
-     }
-     if (!envSet && allowD3D11)
-         attributes = anglePlatformAttributes[0];
-     if (anglePlatform == "gl")
-         attributes = anglePlatformAttributes[1];
-     else if (anglePlatform == "d3d9" || !allowD3D11)
-         attributes = anglePlatformAttributes[3];
-     else if (anglePlatform == "d3d11")
-         attributes = anglePlatformAttributes[2];
-     else if (anglePlatform == "d3d11on12")
-         attributes = anglePlatformAttributes[4];
-     else if (envSet)
+@@ -258,7 +397,18 @@ bool QWindowsEGLStaticContext::initializeAngle(QWindowsOpenGLTester::Renderers p
          qCWarning(lcQpaGl) << "Invalid value set for " << platformVar << ": " << anglePlatform;
      if (attributes) {
          *display = libEGL.eglGetPlatformDisplayEXT(EGL_PLATFORM_ANGLE_ANGLE, dc, attributes);
@@ -132,11 +300,15 @@ index 3cb1c037e11..a18c16d0bc4 100644
              libEGL.eglTerminate(*display);
              *display = EGL_NO_DISPLAY;
              *major = *minor = 0;
-             return false;
-         }
+@@ -351,7 +501,15 @@ QWindowsEGLStaticContext *QWindowsEGLStaticContext::create(QWindowsOpenGLTester:
+         return nullptr;
      }
-@@ -354,4 +399,8 @@ QWindowsEGLStaticContext *QWindowsEGLStaticContext::create(QWindowsOpenGLTester:
+ 
 -    qCDebug(lcQpaGl) << __FUNCTION__ << "Created EGL display" << display << 'v' <<major << '.' << minor;
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++    installAnglePlatformLogging(display);
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
++
 +    qCDebug(lcQpaGl) << __FUNCTION__ << "Created EGL display" << display << 'v' <<major << '.' << minor
 +#ifdef DESKTOP_APP_QT_STATIC_ANGLE
 +        << "ANGLE display key" << currentAngleDisplayKey()
@@ -145,13 +317,103 @@ index 3cb1c037e11..a18c16d0bc4 100644
      return new QWindowsEGLStaticContext(display);
  }
  
-@@ -403,8 +451,20 @@ void QWindowsEGLStaticContext::markLost(EGLint error)
+@@ -360,14 +518,72 @@ QWindowsEGLStaticContext::~QWindowsEGLStaticContext()
+     terminate();
+ }
+ 
++bool QWindowsEGLStaticContext::isValid() const
++{
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++    return !m_lost.loadAcquire()
++        && !angleDeviceLossPending()
++        && m_angleDisplayKey == currentAngleDisplayKey();
++#else // DESKTOP_APP_QT_STATIC_ANGLE
++    return !m_lost.loadAcquire();
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
++}
++
++void QWindowsEGLStaticContext::destroyWindowSurfaces()
++{
++    QVector<EGLSurface> surfaces;
++    {
++        QMutexLocker locker(&m_windowSurfacesMutex);
++        surfaces.swap(m_windowSurfaces);
++    }
++
++    qCDebug(lcQpaGl) << __FUNCTION__ << "Destroying tracked EGL window surfaces"
++        << surfaces.size() << "display" << m_display
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++        << "ANGLE display key" << m_angleDisplayKey
++        << "current ANGLE display key" << currentAngleDisplayKey()
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
++        ;
++
++    for (auto surface : qAsConst(surfaces)) {
++        if (!libEGL.eglDestroySurface(m_display, surface)) {
++            const auto error = libEGL.eglGetError();
++            qCWarning(lcQpaGl) << __FUNCTION__ << "Failed to destroy tracked EGL window surface"
++                << surface << "display" << m_display << "eglError" << Qt::hex << error << Qt::dec;
++        }
++    }
++}
++
+ void QWindowsEGLStaticContext::terminate()
+ {
+     if (!m_terminated.testAndSetRelaxed(0, 1))
+         return;
+ 
+-    qCDebug(lcQpaGl) << __FUNCTION__ << "Releasing EGL display " << m_display;
+-    if (libEGL.eglMakeCurrent)
+-        libEGL.eglMakeCurrent(m_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
++    qCDebug(lcQpaGl) << __FUNCTION__ << "Releasing EGL display " << m_display
++        << "trackedSurfaces" << windowSurfaceCount()
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++        << "ANGLE display key" << m_angleDisplayKey
++        << "current ANGLE display key" << currentAngleDisplayKey()
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
++        ;
++    if (libEGL.eglMakeCurrent
++        && !libEGL.eglMakeCurrent(m_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)) {
++        const auto error = libEGL.eglGetError();
++        qCDebug(lcQpaGl) << __FUNCTION__ << "Failed to clear current EGL context"
++            << "display" << m_display << "eglError" << Qt::hex << error << Qt::dec;
++    }
++    destroyWindowSurfaces();
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++    const auto skipDisplayTeardown = m_skipDisplayTeardown.loadAcquire()
++        || angleDeviceLossPending();
++    if (skipDisplayTeardown) {
++        qCWarning(lcQpaGl) << __FUNCTION__ << "Skipping EGL display teardown after ANGLE device/display loss"
++            << "display" << m_display
++            << "ANGLE display key" << m_angleDisplayKey
++            << "current ANGLE display key" << currentAngleDisplayKey();
++        return;
++    }
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
+     if (libEGL.eglReleaseThread)
+         libEGL.eglReleaseThread();
+     if (libEGL.eglTerminate)
+@@ -399,8 +615,34 @@ void QWindowsEGLStaticContext::markLost(EGLint error)
      if (!shouldRecoverFromEglError(error))
          return;
  
 -    if (m_lost.testAndSetRelaxed(0, 1))
 +    if (m_lost.testAndSetRelaxed(0, 1)) {
++        qCWarning(lcQpaGl) << __FUNCTION__ << "Marking EGL static context lost"
++            << "display" << m_display << "eglError" << Qt::hex << error << Qt::dec
++            << "trackedSurfaces" << windowSurfaceCount()
 +#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++            << "ANGLE display key" << m_angleDisplayKey
++            << "current ANGLE display key" << currentAngleDisplayKey()
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
++            ;
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++        if (angleDeviceLossPending()
++            || error == EGL_CONTEXT_LOST
++            || error == EGL_BAD_DISPLAY
++            || error == EGL_NOT_INITIALIZED) {
++            m_skipDisplayTeardown.storeRelease(1);
++        }
 +        advanceAngleDisplayKey();
 +#endif // DESKTOP_APP_QT_STATIC_ANGLE
          terminate();
@@ -167,7 +429,85 @@ index 3cb1c037e11..a18c16d0bc4 100644
  }
  
  QWindowsOpenGLContext *QWindowsEGLStaticContext::createContext(QOpenGLContext *context)
-@@ -540,7 +600,7 @@ QWindowsEGLContext::QWindowsEGLContext(QWindowsEGLStaticContext *staticContext,
+@@ -418,8 +660,27 @@ void *QWindowsEGLStaticContext::createWindowSurface(void *nativeWindow, void *na
+                                                        static_cast<EGLNativeWindowType>(nativeWindow), nullptr);
+     if (surface == EGL_NO_SURFACE) {
+         *err = libEGL.eglGetError();
+-        qWarning("%s: Could not create the EGL window surface: 0x%x", __FUNCTION__, *err);
++        qCWarning(lcQpaGl) << __FUNCTION__ << "Could not create EGL window surface"
++            << "display" << m_display << "nativeWindow" << nativeWindow
++            << "nativeConfig" << nativeConfig << "trackedSurfaces" << windowSurfaceCount()
++            << "eglError" << Qt::hex << *err << Qt::dec
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++            << "ANGLE display key" << m_angleDisplayKey
++            << "current ANGLE display key" << currentAngleDisplayKey()
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
++            ;
+         markLost(*err);
++    } else {
++        QMutexLocker locker(&m_windowSurfacesMutex);
++        m_windowSurfaces.push_back(surface);
++        qCDebug(lcQpaGl) << __FUNCTION__ << "Created EGL window surface"
++            << surface << "display" << m_display << "nativeWindow" << nativeWindow
++            << "trackedSurfaces" << m_windowSurfaces.size()
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++            << "ANGLE display key" << m_angleDisplayKey
++            << "current ANGLE display key" << currentAngleDisplayKey()
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
++            ;
+     }
+ 
+     return surface;
+@@ -427,10 +688,46 @@ void *QWindowsEGLStaticContext::createWindowSurface(void *nativeWindow, void *na
+ 
+ void QWindowsEGLStaticContext::destroyWindowSurface(void *nativeSurface)
+ {
+-    if (m_terminated.loadAcquire())
++    const auto surface = static_cast<EGLSurface>(nativeSurface);
++    if (surface == EGL_NO_SURFACE)
+         return;
+ 
+-    libEGL.eglDestroySurface(m_display, nativeSurface);
++    auto found = false;
++    {
++        QMutexLocker locker(&m_windowSurfacesMutex);
++        const auto index = m_windowSurfaces.indexOf(surface);
++        if (index >= 0) {
++            m_windowSurfaces.remove(index);
++            found = true;
++        }
++    }
++    if (!found)
++        return;
++
++    if (!libEGL.eglDestroySurface(m_display, surface)) {
++        const auto error = libEGL.eglGetError();
++        qCWarning(lcQpaGl) << __FUNCTION__ << "Failed to destroy EGL window surface"
++            << surface << "display" << m_display << "eglError" << Qt::hex << error << Qt::dec
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++            << "ANGLE display key" << m_angleDisplayKey
++            << "current ANGLE display key" << currentAngleDisplayKey()
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
++            ;
++    } else {
++        qCDebug(lcQpaGl) << __FUNCTION__ << "Destroyed EGL window surface"
++            << surface << "display" << m_display << "trackedSurfaces" << windowSurfaceCount()
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++            << "ANGLE display key" << m_angleDisplayKey
++            << "current ANGLE display key" << currentAngleDisplayKey()
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
++            ;
++    }
++}
++
++int QWindowsEGLStaticContext::windowSurfaceCount() const
++{
++    QMutexLocker locker(&m_windowSurfacesMutex);
++    return m_windowSurfaces.size();
+ }
+ 
+ QSurfaceFormat QWindowsEGLStaticContext::formatFromConfig(EGLDisplay display, EGLConfig config,
+@@ -540,7 +837,7 @@ QWindowsEGLContext::QWindowsEGLContext(QWindowsEGLStaticContext *staticContext,
      if (m_eglContext == EGL_NO_CONTEXT) {
          int err = QWindowsEGLStaticContext::libEGL.eglGetError();
          qWarning("QWindowsEGLContext: Failed to create context, eglError: %x, this: %p", err, this);
@@ -176,7 +516,7 @@ index 3cb1c037e11..a18c16d0bc4 100644
          // ANGLE gives bad alloc when it fails to reset a previously lost D3D device.
          // A common cause for this is disabling the graphics adapter used by the app.
          if (err == EGL_BAD_ALLOC)
-@@ -558,7 +618,8 @@ QWindowsEGLContext::QWindowsEGLContext(QWindowsEGLStaticContext *staticContext,
+@@ -558,7 +855,8 @@ QWindowsEGLContext::QWindowsEGLContext(QWindowsEGLStaticContext *staticContext,
      EGLSurface pbuffer = QWindowsEGLStaticContext::libEGL.eglCreatePbufferSurface(m_eglDisplay, m_eglConfig, pbufferAttributes);
      if (pbuffer == EGL_NO_SURFACE) {
          const int err = QWindowsEGLStaticContext::libEGL.eglGetError();
@@ -186,7 +526,50 @@ index 3cb1c037e11..a18c16d0bc4 100644
          return;
      }
  
-@@ -1028,7 +1089,8 @@ EGLConfig QWindowsEGLContext::chooseConfig(const QSurfaceFormat &format)
+@@ -629,6 +927,11 @@ bool QWindowsEGLContext::makeCurrent(QPlatformSurface *surface)
+         m_staticContext->markLost(err);
+         return false;
+     }
++    if (!m_staticContext->isValid()) {
++        m_eglContext = EGL_NO_CONTEXT;
++        m_staticContext->markLost(EGL_CONTEXT_LOST);
++        return false;
++    }
+ 
+     // shortcut: on some GPUs, eglMakeCurrent is not a cheap operation
+     if (QWindowsEGLStaticContext::libEGL.eglGetCurrentContext() == m_eglContext &&
+@@ -640,6 +943,11 @@ bool QWindowsEGLContext::makeCurrent(QPlatformSurface *surface)
+ 
+     const bool ok = QWindowsEGLStaticContext::libEGL.eglMakeCurrent(m_eglDisplay, eglSurface, eglSurface, m_eglContext);
+     if (ok) {
++        if (!m_staticContext->isValid()) {
++            m_eglContext = EGL_NO_CONTEXT;
++            m_staticContext->markLost(EGL_CONTEXT_LOST);
++            return false;
++        }
+         const int requestedSwapInterval = surface->format().swapInterval();
+         if (requestedSwapInterval >= 0 && m_swapInterval != requestedSwapInterval) {
+             m_swapInterval = requestedSwapInterval;
+@@ -694,8 +1002,18 @@ void QWindowsEGLContext::swapBuffers(QPlatformSurface *surface)
+         m_staticContext->markLost(err);
+         return;
+     }
++    if (!m_staticContext->isValid()) {
++        m_eglContext = EGL_NO_CONTEXT;
++        m_staticContext->markLost(EGL_CONTEXT_LOST);
++        return;
++    }
+ 
+     bool ok = QWindowsEGLStaticContext::libEGL.eglSwapBuffers(m_eglDisplay, eglSurface);
++    if (ok && !m_staticContext->isValid()) {
++        m_eglContext = EGL_NO_CONTEXT;
++        m_staticContext->markLost(EGL_CONTEXT_LOST);
++        return;
++    }
+     if (!ok) {
+         err =  QWindowsEGLStaticContext::libEGL.eglGetError();
+         if (err == EGL_CONTEXT_LOST) {
+@@ -1028,7 +1346,8 @@ EGLConfig QWindowsEGLContext::chooseConfig(const QSurfaceFormat &format)
          EGLint matching = 0;
          if (!QWindowsEGLStaticContext::libEGL.eglChooseConfig(display, configureAttributes.constData(), nullptr, 0, &matching)) {
              const int err = QWindowsEGLStaticContext::libEGL.eglGetError();
@@ -196,7 +579,7 @@ index 3cb1c037e11..a18c16d0bc4 100644
              if (shouldRecoverFromEglError(err))
                  return nullptr;
              continue;
-@@ -1050,7 +1112,8 @@ EGLConfig QWindowsEGLContext::chooseConfig(const QSurfaceFormat &format)
+@@ -1050,7 +1369,8 @@ EGLConfig QWindowsEGLContext::chooseConfig(const QSurfaceFormat &format)
          QVector<EGLConfig> configs(matching);
          if (!QWindowsEGLStaticContext::libEGL.eglChooseConfig(display, configureAttributes.constData(), configs.data(), configs.size(), &matching)) {
              const int err = QWindowsEGLStaticContext::libEGL.eglGetError();
@@ -207,14 +590,55 @@ index 3cb1c037e11..a18c16d0bc4 100644
                  return nullptr;
              continue;
 diff --git a/src/plugins/platforms/windows/qwindowseglcontext.h b/src/plugins/platforms/windows/qwindowseglcontext.h
-index 2de5c7c337d..fb765c08341 100644
+index 2de5c7c337d..5090db14d66 100644
 --- a/src/plugins/platforms/windows/qwindowseglcontext.h
 +++ b/src/plugins/platforms/windows/qwindowseglcontext.h
-@@ -120,6 +120,7 @@ public:
+@@ -44,6 +44,8 @@
+ #include "qwindowsopengltester.h"
+ #include <EGL/egl.h>
+ #include <QtCore/qatomic.h>
++#include <QtCore/qmutex.h>
++#include <QtCore/qvector.h>
+ 
+ QT_BEGIN_NAMESPACE
+ 
+@@ -118,8 +120,9 @@ public:
+     ~QWindowsEGLStaticContext() override;
+ 
      EGLDisplay display() const { return m_display; }
-     bool isValid() const override { return !m_lost.loadAcquire(); }
+-    bool isValid() const override { return !m_lost.loadAcquire(); }
++    bool isValid() const override;
      void markLost(EGLint error);
 +    void markCreationFailure(EGLint error);
      void ref() override;
      void deref() override;
      void retire() override;
+@@ -130,6 +133,7 @@ public:
+ 
+     void *createWindowSurface(void *nativeWindow, void *nativeConfig, int *err) override;
+     void destroyWindowSurface(void *nativeSurface) override;
++    int windowSurfaceCount() const;
+ 
+     QSurfaceFormat formatFromConfig(EGLDisplay display, EGLConfig config, const QSurfaceFormat &referenceFormat);
+ 
+@@ -140,11 +144,20 @@ private:
+     explicit QWindowsEGLStaticContext(EGLDisplay display);
+     static bool initializeAngle(QWindowsOpenGLTester::Renderers preferredType, HDC dc,
+                                 EGLDisplay *display, EGLint *major, EGLint *minor);
++    void destroyWindowSurfaces();
+     void terminate();
+ 
+     const EGLDisplay m_display;
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++    const int m_angleDisplayKey;
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
++    mutable QMutex m_windowSurfacesMutex;
++    QVector<EGLSurface> m_windowSurfaces;
+     QAtomicInt m_refs;
+     QAtomicInt m_lost;
++#ifdef DESKTOP_APP_QT_STATIC_ANGLE
++    QAtomicInt m_skipDisplayTeardown;
++#endif // DESKTOP_APP_QT_STATIC_ANGLE
+     QAtomicInt m_terminated;
+     QAtomicInt m_retired;
+ };
