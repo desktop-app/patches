@@ -1,0 +1,14 @@
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+index 403c45cefc0..91e9589de42 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+@@ -518,6 +518,9 @@ QString QWindowsUiaMainProvider::automationIdForAccessible(const QAccessibleInterface *accessible)
+ {
+     QString result;
+     if (accessible) {
++        const QString userText = accessible->text(QAccessible::UserText);
++        if (!userText.isEmpty())
++            return userText;
+         QObject *obj = accessible->object();
+         while (obj) {
+             QString name = obj->objectName();
