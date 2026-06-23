@@ -1,0 +1,278 @@
+diff --git a/src/gui/accessible/qaccessible.h b/src/gui/accessible/qaccessible.h
+index f7564a3076b..1cdbaaa8af2 100644
+--- a/src/gui/accessible/qaccessible.h
++++ b/src/gui/accessible/qaccessible.h
+@@ -380,7 +380,8 @@ public:
+         ActionInterface,
+         ImageInterface,
+         TableInterface,
+-        TableCellInterface
++        TableCellInterface,
++        SelectionInterface
+     };
+ 
+     enum TextBoundaryType {
+@@ -453,6 +454,7 @@ class QAccessibleActionInterface;
+ class QAccessibleImageInterface;
+ class QAccessibleTableInterface;
+ class QAccessibleTableCellInterface;
++class QAccessibleSelectionInterface;
+ class QAccessibleTableModelChangeEvent;
+ 
+ class Q_GUI_EXPORT QAccessibleInterface
+@@ -509,6 +511,9 @@ public:
+     inline QAccessibleTableCellInterface *tableCellInterface()
+     { return reinterpret_cast<QAccessibleTableCellInterface *>(interface_cast(QAccessible::TableCellInterface)); }
+ 
++    inline QAccessibleSelectionInterface *selectionInterface()
++    { return reinterpret_cast<QAccessibleSelectionInterface *>(interface_cast(QAccessible::SelectionInterface)); }
++
+     virtual void virtual_hook(int id, void *data);
+ 
+     virtual void *interface_cast(QAccessible::InterfaceType)
+@@ -660,6 +665,21 @@ public:
+     virtual QPoint imagePosition() const = 0;
+ };
+ 
++class Q_GUI_EXPORT QAccessibleSelectionInterface
++{
++public:
++    virtual ~QAccessibleSelectionInterface();
++
++    virtual int selectedItemCount() const = 0;
++    virtual QList<QAccessibleInterface*> selectedItems() const = 0;
++    virtual QAccessibleInterface *selectedItem(int selectionIndex) const;
++    virtual bool isSelected(QAccessibleInterface *childItem) const;
++    virtual bool select(QAccessibleInterface *childItem) = 0;
++    virtual bool unselect(QAccessibleInterface *childItem) = 0;
++    virtual bool selectAll() = 0;
++    virtual bool clear() = 0;
++};
++
+ 
+ class Q_GUI_EXPORT QAccessibleEvent
+ {
+diff --git a/src/gui/accessible/qaccessible.cpp b/src/gui/accessible/qaccessible.cpp
+index 32d0e6ca91c..92af94e350f 100644
+--- a/src/gui/accessible/qaccessible.cpp
++++ b/src/gui/accessible/qaccessible.cpp
+@@ -2493,6 +2493,45 @@ QAccessibleImageInterface::~QAccessibleImageInterface()
+     // must be empty until ### Qt 6
+ }
+ 
++/*!
++    \class QAccessibleSelectionInterface
++    \inmodule QtGui
++    \ingroup accessibility
++    \internal
++
++    \brief The QAccessibleSelectionInterface class implements support for
++    reporting the selection of an accessible object (backported from Qt 6 so
++    UI Automation can resolve the selected item independently of focus).
++*/
++
++/*!
++    Destroys the QAccessibleSelectionInterface.
++*/
++QAccessibleSelectionInterface::~QAccessibleSelectionInterface()
++{
++}
++
++/*!
++    Returns the selected item at \a selectionIndex, or \nullptr if it is out of
++    range. The default implementation indexes into selectedItems().
++*/
++QAccessibleInterface *QAccessibleSelectionInterface::selectedItem(int selectionIndex) const
++{
++    const QList<QAccessibleInterface*> items = selectedItems();
++    if (selectionIndex < 0 || selectionIndex >= items.size())
++        return nullptr;
++    return items.at(selectionIndex);
++}
++
++/*!
++    Returns whether \a childItem is part of the current selection. The default
++    implementation checks whether it is contained in selectedItems().
++*/
++bool QAccessibleSelectionInterface::isSelected(QAccessibleInterface *childItem) const
++{
++    return selectedItems().contains(childItem);
++}
++
+ /*!
+     \class QAccessibleTableCellInterface
+     \inmodule QtGui
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+index 403c45cefc0..8eb9820dc8f 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+@@ -332,14 +332,16 @@ HRESULT QWindowsUiaMainProvider::GetPatternProvider(PATTERNID idPattern, IUnknow
+             *pRetVal = new QWindowsUiaToggleProvider(id());
+         break;
+     case UIA_SelectionPatternId:
+-        // Lists of items.
+-        if (accessible->role() == QAccessible::List) {
++        // Lists of items (and any element exposing a selection interface).
++        if (accessible->selectionInterface()
++                || (accessible->role() == QAccessible::List)) {
+             *pRetVal = new QWindowsUiaSelectionProvider(id());
+         }
+         break;
+     case UIA_SelectionItemPatternId:
+-        // Items within a list and radio buttons.
+-        if ((accessible->role() == QAccessible::RadioButton)
++        // Items within a list, radio buttons, and children of a selection container.
++        if ((accessible->parent() && accessible->parent()->selectionInterface())
++                || (accessible->role() == QAccessible::RadioButton)
+                 || (accessible->role() == QAccessible::ListItem)) {
+             *pRetVal = new QWindowsUiaSelectionItemProvider(id());
+         }
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiaselectionitemprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiaselectionitemprovider.cpp
+index 71e417c..ffead41 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiaselectionitemprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiaselectionitemprovider.cpp
+@@ -72,6 +72,16 @@ HRESULT STDMETHODCALLTYPE QWindowsUiaSelectionItemProvider::Select()
+     if (!accessible)
+         return UIA_E_ELEMENTNOTAVAILABLE;
+ 
++    // Prefer the container's selection interface when present (backport of
++    // Qt 6 behaviour); fall back to role-based actions otherwise.
++    if (QAccessibleInterface *parent = accessible->parent()) {
++        if (QAccessibleSelectionInterface *selectionInterface = parent->selectionInterface()) {
++            selectionInterface->clear();
++            const bool ok = selectionInterface->select(accessible);
++            return ok ? S_OK : S_FALSE;
++        }
++    }
++
+     QAccessibleActionInterface *actionInterface = accessible->actionInterface();
+     if (!actionInterface)
+         return UIA_E_ELEMENTNOTAVAILABLE;
+@@ -109,6 +119,13 @@ HRESULT STDMETHODCALLTYPE QWindowsUiaSelectionItemProvider::AddToSelection()
+     if (!accessible)
+         return UIA_E_ELEMENTNOTAVAILABLE;
+ 
++    if (QAccessibleInterface *parent = accessible->parent()) {
++        if (QAccessibleSelectionInterface *selectionInterface = parent->selectionInterface()) {
++            const bool ok = selectionInterface->select(accessible);
++            return ok ? S_OK : S_FALSE;
++        }
++    }
++
+     QAccessibleActionInterface *actionInterface = accessible->actionInterface();
+     if (!actionInterface)
+         return UIA_E_ELEMENTNOTAVAILABLE;
+@@ -134,6 +151,13 @@ HRESULT STDMETHODCALLTYPE QWindowsUiaSelectionItemProvider::RemoveFromSelection(
+     if (!accessible)
+         return UIA_E_ELEMENTNOTAVAILABLE;
+ 
++    if (QAccessibleInterface *parent = accessible->parent()) {
++        if (QAccessibleSelectionInterface *selectionInterface = parent->selectionInterface()) {
++            const bool ok = selectionInterface->unselect(accessible);
++            return ok ? S_OK : S_FALSE;
++        }
++    }
++
+     QAccessibleActionInterface *actionInterface = accessible->actionInterface();
+     if (!actionInterface)
+         return UIA_E_ELEMENTNOTAVAILABLE;
+@@ -160,6 +184,16 @@ HRESULT STDMETHODCALLTYPE QWindowsUiaSelectionItemProvider::get_IsSelected(BOOL
+     if (!accessible)
+         return UIA_E_ELEMENTNOTAVAILABLE;
+ 
++    // If the container exposes a selection interface, it is the source of
++    // truth for selection (backport of Qt 6 behaviour) - this is what lets a
++    // tab report selected from state().selected independently of focus.
++    if (QAccessibleInterface *parent = accessible->parent()) {
++        if (QAccessibleSelectionInterface *selectionInterface = parent->selectionInterface()) {
++            *pRetVal = selectionInterface->isSelected(accessible);
++            return S_OK;
++        }
++    }
++
+     if (accessible->role() == QAccessible::RadioButton)
+         *pRetVal = accessible->state().checked;
+     else
+@@ -181,11 +215,11 @@ HRESULT STDMETHODCALLTYPE QWindowsUiaSelectionItemProvider::get_SelectionContain
+         return UIA_E_ELEMENTNOTAVAILABLE;
+ 
+     // Radio buttons do not require a container.
+-    if (accessible->role() == QAccessible::ListItem) {
+-        if (QAccessibleInterface *parent = accessible->parent()) {
+-            if (parent->role() == QAccessible::List) {
+-                *pRetVal = QWindowsUiaMainProvider::providerForAccessible(parent); // Detach
+-            }
++    if (QAccessibleInterface *parent = accessible->parent()) {
++        if (parent->selectionInterface()
++                || (accessible->role() == QAccessible::ListItem
++                    && parent->role() == QAccessible::List)) {
++            *pRetVal = QWindowsUiaMainProvider::providerForAccessible(parent); // Detach
+         }
+     }
+     return S_OK;
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiaselectionprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiaselectionprovider.cpp
+index fb41012cf49..f39095bdf68 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiaselectionprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiaselectionprovider.cpp
+@@ -80,10 +80,20 @@ HRESULT STDMETHODCALLTYPE QWindowsUiaSelectionProvider::GetSelection(SAFEARRAY *
+ 
+     // First put selected items in a list, then build a safe array with the right size.
+     QVector<QAccessibleInterface *> selectedList;
+-    for (int i = 0; i < accessible->childCount(); ++i) {
+-        if (QAccessibleInterface *child = accessible->child(i)) {
+-            if (child->state().selected) {
+-                selectedList.append(child);
++    if (QAccessibleSelectionInterface *selectionInterface = accessible->selectionInterface()) {
++        // The container reports its own selection (backport of Qt 6 behaviour).
++        const QList<QAccessibleInterface *> items = selectionInterface->selectedItems();
++        for (QAccessibleInterface *item : items) {
++            if (item) {
++                selectedList.append(item);
++            }
++        }
++    } else {
++        for (int i = 0; i < accessible->childCount(); ++i) {
++            if (QAccessibleInterface *child = accessible->child(i)) {
++                if (child->state().selected) {
++                    selectedList.append(child);
++                }
+             }
+         }
+     }
+@@ -127,18 +137,27 @@ HRESULT STDMETHODCALLTYPE QWindowsUiaSelectionProvider::get_IsSelectionRequired(
+     if (!accessible)
+         return UIA_E_ELEMENTNOTAVAILABLE;
+ 
+-    // Initially returns false if none are selected. After the first selection, it may be required.
+-    bool anySelected = false;
+-    for (int i = 0; i < accessible->childCount(); ++i) {
+-        if (QAccessibleInterface *child = accessible->child(i)) {
+-            if (child->state().selected) {
+-                anySelected = true;
+-                break;
++    if (accessible->role() == QAccessible::PageTabList) {
++        *pRetVal = TRUE;
++    } else {
++
++        // Initially returns false if none are selected. After the first selection, it may be required.
++        bool anySelected = false;
++        if (QAccessibleSelectionInterface *selectionInterface = accessible->selectionInterface()) {
++            anySelected = selectionInterface->selectedItem(0) != nullptr;
++        } else {
++            for (int i = 0; i < accessible->childCount(); ++i) {
++                if (QAccessibleInterface *child = accessible->child(i)) {
++                    if (child->state().selected) {
++                        anySelected = true;
++                        break;
++                    }
++                }
+             }
+         }
+-    }
+ 
+-    *pRetVal = anySelected && !accessible->state().multiSelectable && !accessible->state().extSelectable;
++        *pRetVal = anySelected && !accessible->state().multiSelectable && !accessible->state().extSelectable;
++    }
+     return S_OK;
+ }
+ 
