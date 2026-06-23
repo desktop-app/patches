@@ -1,0 +1,101 @@
+diff --git a/src/gui/accessible/qaccessible.h b/src/gui/accessible/qaccessible.h
+index 1cdbaaa8af..121e519a33 100644
+--- a/src/gui/accessible/qaccessible.h
++++ b/src/gui/accessible/qaccessible.h
+@@ -381,9 +381,18 @@ public:
+         ImageInterface,
+         TableInterface,
+         TableCellInterface,
+-        SelectionInterface
++        SelectionInterface,
++        AttributesInterface
+     };
+ 
++    enum class Attribute {
++        Custom,
++        Level,
++        Locale,
++        Orientation,
++    };
++    Q_ENUM(Attribute)
++
+     enum TextBoundaryType {
+         CharBoundary,
+         WordBoundary,
+@@ -455,6 +464,7 @@ class QAccessibleImageInterface;
+ class QAccessibleTableInterface;
+ class QAccessibleTableCellInterface;
+ class QAccessibleSelectionInterface;
++class QAccessibleAttributesInterface;
+ class QAccessibleTableModelChangeEvent;
+ 
+ class Q_GUI_EXPORT QAccessibleInterface
+@@ -513,6 +523,8 @@ public:
+ 
+     inline QAccessibleSelectionInterface *selectionInterface()
+     { return reinterpret_cast<QAccessibleSelectionInterface *>(interface_cast(QAccessible::SelectionInterface)); }
++    inline QAccessibleAttributesInterface *attributesInterface()
++    { return reinterpret_cast<QAccessibleAttributesInterface *>(interface_cast(QAccessible::AttributesInterface)); }
+ 
+     virtual void virtual_hook(int id, void *data);
+ 
+@@ -681,6 +693,16 @@ public:
+ };
+ 
+ 
++class Q_GUI_EXPORT QAccessibleAttributesInterface
++{
++public:
++    virtual ~QAccessibleAttributesInterface();
++
++    virtual QList<QAccessible::Attribute> attributeKeys() const = 0;
++    virtual QVariant attributeValue(QAccessible::Attribute key) const = 0;
++};
++
++
+ class Q_GUI_EXPORT QAccessibleEvent
+ {
+     Q_DISABLE_COPY(QAccessibleEvent)
+diff --git a/src/gui/accessible/qaccessible.cpp b/src/gui/accessible/qaccessible.cpp
+index 92af94e350..aad625ad89 100644
+--- a/src/gui/accessible/qaccessible.cpp
++++ b/src/gui/accessible/qaccessible.cpp
+@@ -2532,6 +2532,13 @@ bool QAccessibleSelectionInterface::isSelected(QAccessibleInterface *childItem)
+     return selectedItems().contains(childItem);
+ }
+ 
++/*!
++    Destroys the QAccessibleAttributesInterface.
++*/
++QAccessibleAttributesInterface::~QAccessibleAttributesInterface()
++{
++}
++
+ /*!
+     \class QAccessibleTableCellInterface
+     \inmodule QtGui
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+index 403c45cefc0..23a14923d35 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+@@ -500,6 +502,20 @@ HRESULT QWindowsUiaMainProvider::GetPropertyValue(PROPERTYID idProp, VARIANT *pR
+     case UIA_FullDescriptionPropertyId:
+         setVariantString(accessible->text(QAccessible::Description), pRetVal);
+         break;
++    case UIA_OrientationPropertyId: {
++        long orientationType = OrientationType_None;
++        if (QAccessibleAttributesInterface *attributesInterface = accessible->attributesInterface()) {
++            const QVariant orientation =
++                    attributesInterface->attributeValue(QAccessible::Attribute::Orientation);
++            if (orientation.isValid()) {
++                orientationType = (orientation.toInt() == Qt::Horizontal)
++                        ? OrientationType_Horizontal
++                        : OrientationType_Vertical;
++            }
++        }
++        setVariantI4(orientationType, pRetVal);
++        break;
++    }
+     case UIA_NamePropertyId: {
+         QString name = accessible->text(QAccessible::Name);
+         if (name.isEmpty() && topLevelWindow)
