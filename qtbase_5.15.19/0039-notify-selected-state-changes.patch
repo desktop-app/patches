@@ -1,0 +1,27 @@
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+index dcd548bab28..fce78c5aa70 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+@@ -139,6 +139,22 @@ void QWindowsUiaMainProvider::notifyStateChange(QAccessibleStateChangeEvent *eve
+                 }
+             }
+         }
++        if (event->changedStates().selected) {
++            // Notifies selection changes on selectable items, so that
++            // screen readers can announce "selected"/"not selected" for
++            // the focused item in multi-selection lists (the same events
++            // the File Explorer items view raises).
++            if (accessible->state().selectable) {
++                if (QWindowsUiaMainProvider *provider = providerForAccessible(accessible)) {
++                    if (accessible->state().selected) {
++                        QWindowsUiaWrapper::instance()->raiseAutomationEvent(provider, UIA_SelectionItem_ElementAddedToSelectionEventId);
++                    } else {
++                        QWindowsUiaWrapper::instance()->raiseAutomationEvent(provider, UIA_SelectionItem_ElementRemovedFromSelectionEventId);
++                    }
++                    provider->Release();
++                }
++            }
++        }
+         if (event->changedStates().active) {
+             if (accessible->role() == QAccessible::Window) {
+                 // Notifies window opened/closed.
