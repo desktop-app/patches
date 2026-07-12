@@ -1,0 +1,77 @@
+diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms/cocoa/qcocoawindow.mm
+--- a/src/plugins/platforms/cocoa/qcocoawindow.mm
++++ b/src/plugins/platforms/cocoa/qcocoawindow.mm
+@@ -2078,13 +2078,14 @@
+     // updates for tracking areas are deferred in some cases, such as
+     // when the mouse is down, whereas we want a synchronous update.
+     // To ensure an updated cursor we synthesize a cursor update event
+-    // now if the window is otherwise allowed to change the cursor.
++    // now if the mouse is over the view. AppKit only delivers cursor
++    // updates to key windows (and to utility windows), so for any other
++    // window this synthesized update is the only thing that applies the
++    // cursor at all, and QNSView re-applies it on mouse enter and move.
+     auto locationInWindow = m_view.window.mouseLocationOutsideOfEventStream;
+     auto locationInSuperview = [m_view.superview convertPoint:locationInWindow fromView:nil];
+     bool mouseIsOverView = [m_view hitTest:locationInSuperview] == m_view;
+-    auto utilityMask = NSWindowStyleMaskUtilityWindow | NSWindowStyleMaskTitled;
+-    bool isUtilityWindow = (m_view.window.styleMask & utilityMask) == utilityMask;
+-    if (mouseIsOverView && (m_view.window.keyWindow || isUtilityWindow)) {
++    if (mouseIsOverView) {
+         qCDebug(lcQpaMouse) << "Synthesizing cursor update";
+         [m_view cursorUpdate:[NSEvent enterExitEventWithType:NSEventTypeCursorUpdate
+             location:locationInWindow modifierFlags:0 timestamp:0
+diff --git a/src/plugins/platforms/cocoa/qnsview.mm b/src/plugins/platforms/cocoa/qnsview.mm
+--- a/src/plugins/platforms/cocoa/qnsview.mm
++++ b/src/plugins/platforms/cocoa/qnsview.mm
+@@ -60,6 +60,7 @@
+ - (void)mouseMovedImpl:(NSEvent *)theEvent;
+ - (void)mouseEnteredImpl:(NSEvent *)theEvent;
+ - (void)mouseExitedImpl:(NSEvent *)theEvent;
++- (void)applyCursorIfNotKeyWindow;
+ @end
+ 
+ @interface QNSView (Touch)
+diff --git a/src/plugins/platforms/cocoa/qnsview_mouse.mm b/src/plugins/platforms/cocoa/qnsview_mouse.mm
+--- a/src/plugins/platforms/cocoa/qnsview_mouse.mm
++++ b/src/plugins/platforms/cocoa/qnsview_mouse.mm
+@@ -507,6 +507,22 @@
+ 
+     if (NSCursor.currentCursor != previousCursor)
+         qCInfo(lcQpaMouse) << "Cursor update for" << self << "resulted in new cursor" << NSCursor.currentCursor;
++}
++
++- (void)applyCursorIfNotKeyWindow
++{
++    // AppKit only delivers cursorUpdate: to key windows (and to utility windows),
++    // so a window that is not key would keep whatever cursor happened to be current
++    // when the mouse entered it. We apply the cursor ourselves in that case, from
++    // mouse enter and mouse move, which is where AppKit would have serviced the
++    // cursor rects of our tracking area for a key window.
++    if (!NSApp.active || self.window.keyWindow || !self.cursor)
++        return;
++
++    if (NSCursor.currentCursor != self.cursor) {
++        qCInfo(lcQpaMouse) << "Applying" << self.cursor << "for non-key" << self;
++        [self.cursor set];
++    }
+ }
+ 
+ - (void)mouseMovedImpl:(NSEvent *)theEvent
+@@ -553,6 +569,8 @@
+         return;
+ 
+     [self handleMouseEvent: theEvent];
++
++    [self applyCursorIfNotKeyWindow];
+ }
+ 
+ - (BOOL)shouldPropagateMouseEnterExit
+@@ -620,6 +638,8 @@
+     qCInfo(lcQpaMouse) << "Mouse entered" << self << "at" << windowPoint << "with" << currentlyPressedMouseButtons()
+                        << "; sending" << QEvent::Enter << "to" << QCocoaWindow::s_windowUnderMouse->window();
+     QWindowSystemInterface::handleEnterEvent(QCocoaWindow::s_windowUnderMouse->window(), windowPoint, screenPoint);
++
++    [self applyCursorIfNotKeyWindow];
+ }
+ 
+ - (void)mouseExitedImpl:(NSEvent *)theEvent
