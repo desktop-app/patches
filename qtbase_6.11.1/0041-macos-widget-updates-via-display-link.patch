@@ -1,0 +1,48 @@
+diff --git a/src/widgets/kernel/qwidgetrepaintmanager.cpp b/src/widgets/kernel/qwidgetrepaintmanager.cpp
+index 90df68d4f9b..5c58722866e 100644
+--- a/src/widgets/kernel/qwidgetrepaintmanager.cpp
++++ b/src/widgets/kernel/qwidgetrepaintmanager.cpp
+@@ -360,6 +360,21 @@ void QWidgetRepaintManager::sendUpdateRequest(QWidget *widget, UpdateTime update
+         // normal backingstore sync machinery.
+         if (!widget->d_func()->shouldPaintOnScreen())
+             updateRequestSent = true;
++#ifdef Q_OS_MACOS
++        // Pace backingstore updates by the platform update request
++        // mechanism (CVDisplayLink), so that frame production is
++        // phase-locked to the display. A posted event ticks on the
++        // event loop's own schedule instead, beating against the
++        // display clock, and the Metal drawable acquisition then
++        // blocks the main thread whenever the pool has not been
++        // replenished yet.
++        if (widget == tlw && !widget->d_func()->shouldPaintOnScreen()) {
++            if (QWindow *window = widget->windowHandle(); window && window->handle()) {
++                window->requestUpdate();
++                break;
++            }
++        }
++#endif
+         QCoreApplication::postEvent(widget, new QEvent(QEvent::UpdateRequest), Qt::LowEventPriority);
+         break;
+     case UpdateNow: {
+diff --git a/src/widgets/kernel/qwidgetwindow.cpp b/src/widgets/kernel/qwidgetwindow.cpp
+index 1923f113fc9..ef793eff153 100644
+--- a/src/widgets/kernel/qwidgetwindow.cpp
++++ b/src/widgets/kernel/qwidgetwindow.cpp
+@@ -376,9 +376,17 @@ bool QWidgetWindow::event(QEvent *event)
+         break;
+ 
+     case QEvent::UpdateRequest:
++#ifdef Q_OS_MACOS
++        // Update requests routed through the platform window (display
++        // link paced) arrive here instead of at the QWidget. Sync the
++        // dirty state the repaint manager has tracked already, do not
++        // force a full repaint.
++        m_widget->d_func()->syncBackingStore();
++#else
+         // This is not the same as an UpdateRequest for a QWidget. That just
+         // syncs the backing store while here we also must mark as dirty.
+         m_widget->repaint();
++#endif
+         return true;
+ 
+     case QEvent::DevicePixelRatioChange:
