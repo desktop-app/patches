@@ -268,7 +268,7 @@ index 93d724e2d1d..59ad797f40b 100644
      void flushSubWindow(QWindow *window);
      std::unordered_map<QWindow*, std::unique_ptr<QCALayerBackingStore>> m_subWindowBackingstores;
 diff --git a/src/plugins/platforms/cocoa/qcocoabackingstore.mm b/src/plugins/platforms/cocoa/qcocoabackingstore.mm
-index 703cbff3d52..61fe966668f 100644
+index 703cbff3d52..f448891854f 100644
 --- a/src/plugins/platforms/cocoa/qcocoabackingstore.mm
 +++ b/src/plugins/platforms/cocoa/qcocoabackingstore.mm
 @@ -12,6 +12,11 @@
@@ -283,7 +283,31 @@ index 703cbff3d52..61fe966668f 100644
  
  #include <QuartzCore/CATransaction.h>
  
-@@ -514,6 +519,49 @@
+@@ -467,6 +472,23 @@
+         return FlushFailed;
+     }
+ 
++    // If this flush was not preceded by a repaint (e.g. the display-cycle
++    // flush right after a resize-driven flush), the back buffer is the
++    // previous front buffer after the composited swap, and may be sized
++    // for an older window geometry. Compositing it would clip the source
++    // and fill the margin with the clear color. Prefer the front buffer
++    // when it matches the current backingstore size and the back one
++    // does not.
++    if (window->handle() && m_buffers.back() != m_buffers.front() && m_buffers.front()) {
++        const qreal devicePixelRatio =
++            static_cast<QCocoaWindow *>(window->handle())->devicePixelRatio();
++        const QSize requestedBufferSize = m_requestedSize * devicePixelRatio;
++        if (m_buffers.back()->size() != requestedBufferSize
++            && m_buffers.front()->size() == requestedBufferSize) {
++            std::swap(m_buffers.back(), m_buffers.front());
++        }
++    }
++
+     finalizeBackBuffer();
+ 
+     return QPlatformBackingStore::rhiFlush(window, sourceDevicePixelRatio,
+@@ -514,6 +536,49 @@
      return m_buffers.back().get();
  }
  
@@ -333,7 +357,7 @@ index 703cbff3d52..61fe966668f 100644
  void QCALayerBackingStore::updateDirtyStates(const QRegion &paintedRegion)
  {
      // Update dirty state of buffers based on what was painted. The back buffer will be
-@@ -620,6 +668,11 @@ QRect destinationRect((rect.topLeft() + destinationOffset) * destinationDevicePi
+@@ -620,6 +685,11 @@ QRect destinationRect((rect.topLeft() + destinationOffset) * destinationDevicePi
      setColorSpace(colorSpace);
  }
  
@@ -345,7 +369,7 @@ index 703cbff3d52..61fe966668f 100644
  QRegion QCALayerBackingStore::GraphicsBuffer::validRegion() const
  {
  
-@@ -627,6 +680,107 @@ QRect destinationRect((rect.topLeft() + destinationOffset) * destinationDevicePi
+@@ -627,6 +697,107 @@ QRect destinationRect((rect.topLeft() + destinationOffset) * destinationDevicePi
      return fullRegion - dirtyRegion;
  }
  
