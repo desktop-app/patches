@@ -46,3 +46,45 @@ index 1923f113fc9..ef793eff153 100644
          return true;
  
      case QEvent::DevicePixelRatioChange:
+diff --git a/src/plugins/platforms/cocoa/qnsview_drawing.mm b/src/plugins/platforms/cocoa/qnsview_drawing.mm
+index 877169f2ef6..b17fee103e5 100644
+--- a/src/plugins/platforms/cocoa/qnsview_drawing.mm
++++ b/src/plugins/platforms/cocoa/qnsview_drawing.mm
+@@ -279,12 +279,29 @@ - (void)displayLayer:(CALayer *)layer
+         return;
+     }
+ 
++    // This display pass has consumed the layer's needsDisplay flag, taken
++    // for writing in -[QMetalLayer setNeedsDisplayInRect:]. When a deferring
++    // branch below aborts the display, the normal display path that queues
++    // the unlock does not run, and the re-arm takes ANOTHER recursion level
++    // of the lock on the next runloop pass. The lock then stays write-held
++    // forever, QCocoaWindow::deliverUpdateRequest defers on its read-lock
++    // attempt on every display link tick, and the window never receives
++    // another update request. Balance the lock before deferring.
++    const auto unlockAbortedMetalDisplay = [&] {
++        if (auto *qtMetalLayer = qt_objc_cast<QMetalLayer*>(layer)) {
++            qCDebug(lcMetalLayer) << "Unlocking" << qtMetalLayer
++                << "after aborted display";
++            qtMetalLayer.displayLock.unlock();
++        }
++    };
++
+     if (m_platformWindow->m_deliveringUpdateRequest) {
+         // In rare cases delivering an update request might trigger a synchronous display,
+         // for example when calling -[NSOpenGLContext update] as part of rendering a frame,
+         // if using the software GL backend on macOS 26. Our rendering stack does not deal
+         // well with this reentrancy, and it also causes crashes the macOS GL driver.
+         qCWarning(lcQpaDrawing) << "Asked to display during update-request delivery. Deferring.";
++        unlockAbortedMetalDisplay();
+         dispatch_async(dispatch_get_main_queue(), ^{ self.needsDisplay = YES; });
+         return;
+     }
+@@ -293,6 +310,7 @@ - (void)displayLayer:(CALayer *)layer
+     if (!currentScreen || !currentScreen->isOnline()) {
+         qCWarning(lcQpaDrawing) << "Display requested for non-online display" << currentScreen
+                                 << "Deferring to next runloop pass";
++        unlockAbortedMetalDisplay();
+         dispatch_async(dispatch_get_main_queue(), ^{ self.needsDisplay = YES; });
+         return;
+     }
