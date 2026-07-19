@@ -88,3 +88,115 @@ index 877169f2ef6..b17fee103e5 100644
          dispatch_async(dispatch_get_main_queue(), ^{ self.needsDisplay = YES; });
          return;
      }
+diff --git a/src/plugins/platforms/cocoa/qcocoascreen.h b/src/plugins/platforms/cocoa/qcocoascreen.h
+index 3cefde3812d..3e0618396b1 100644
+--- a/src/plugins/platforms/cocoa/qcocoascreen.h
++++ b/src/plugins/platforms/cocoa/qcocoascreen.h
+@@ -97,7 +97,7 @@ private:
+     qreal m_rotation = 0;
+ 
+     CVDisplayLinkRef m_displayLink = nullptr;
+-    dispatch_source_t m_displayLinkSource = nullptr;
++    CFRunLoopSourceRef m_updateRunLoopSource = nullptr;
+     QAtomicInt m_pendingUpdateRequests;
+     QAtomicInt m_pendingDisplayLinkUpdates;
+ 
+diff --git a/src/plugins/platforms/cocoa/qcocoascreen.mm b/src/plugins/platforms/cocoa/qcocoascreen.mm
+index d612964e24b..c74c669a09e 100644
+--- a/src/plugins/platforms/cocoa/qcocoascreen.mm
++++ b/src/plugins/platforms/cocoa/qcocoascreen.mm
+@@ -198,8 +198,10 @@
+     delete m_cursor;
+ 
+     CVDisplayLinkRelease(m_displayLink);
+-    if (m_displayLinkSource)
+-         dispatch_release(m_displayLinkSource);
++    if (m_updateRunLoopSource) {
++        CFRunLoopSourceInvalidate(m_updateRunLoopSource);
++        CFRelease(m_updateRunLoopSource);
++    }
+ }
+ 
+ void QCocoaScreen::update(CGDirectDisplayID displayId)
+@@ -422,17 +424,27 @@ void flushOutput() {
+             return;
+         }
+ 
+-        qDeferredDebug(screenUpdates) << "; signaling dispatch source";
+-
+-        if (!m_displayLinkSource) {
+-            m_displayLinkSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_DATA_ADD, 0, 0, dispatch_get_main_queue());
+-            dispatch_source_set_event_handler(m_displayLinkSource, ^{
+-                deliverUpdateRequests();
+-            });
+-            dispatch_resume(m_displayLinkSource);
++        // Marshal via a version-0 CFRunLoopSource instead of the main
++        // dispatch queue. The dispatch queue is only drained when the
++        // main runloop goes to sleep, so a busy event loop (continuous
++        // timers and posted events) starves it for many frames; runloop
++        // sources are serviced on every iteration.
++        qDeferredDebug(screenUpdates) << "; signaling runloop source";
++
++        if (!m_updateRunLoopSource) {
++            CFRunLoopSourceContext context = {};
++            context.info = this;
++            context.perform = [](void *info) {
++                static_cast<QCocoaScreen *>(info)->deliverUpdateRequests();
++            };
++            m_updateRunLoopSource = CFRunLoopSourceCreate(
++                kCFAllocatorDefault, 0, &context);
++            CFRunLoopAddSource(CFRunLoopGetMain(),
++                m_updateRunLoopSource, kCFRunLoopCommonModes);
+         }
+ 
+-        dispatch_source_merge_data(m_displayLinkSource, 1);
++        CFRunLoopSourceSignal(m_updateRunLoopSource);
++        CFRunLoopWakeUp(CFRunLoopGetMain());
+ 
+     } else {
+         DeferredDebugHelper screenUpdates(lcQpaScreenUpdates());
+@@ -444,8 +456,6 @@ void flushOutput() {
+ 
+         screenUpdates.flushOutput();
+ 
+-        int pendingUpdateRequests = 0;
+-
+         auto windows = QGuiApplication::allWindows();
+         for (int i = 0; i < windows.size(); ++i) {
+             QWindow *window = windows.at(i);
+@@ -464,16 +474,29 @@ void flushOutput() {
+                 continue;
+ 
+             platformWindow->deliverUpdateRequest();
++        }
+ 
+-            // platform window can be destroyed in deliverUpdateRequest()
++        // Recount pending update requests in a separate pass after all
++        // deliveries. Counting each window right after its delivery lost
++        // requests made by an already-counted window during a later
++        // window's delivery: the store below clobbered their increments,
++        // leaving the window's updateRequestPending flag set (so its own
++        // requestUpdate() no-ops) while the display link sees zero pending
++        // requests and never signals delivery again — a permanent paint
++        // freeze until some other window requests an update. This pass is
++        // straight-line reads, so no request can interleave between the
++        // count and the store.
++        int pendingUpdateRequests = 0;
++        for (QWindow *window : QGuiApplication::allWindows()) {
++            if (window->screen() != screen())
++                continue;
++            auto *platformWindow = static_cast<QCocoaWindow*>(window->handle());
+             if (!platformWindow)
+                 continue;
+-
+-            // The update request delivery could result in another request
+-            // from the window, or the platform window could decide to not
+-            // deliver the request at this time.
+-            if (platformWindow->hasPendingUpdateRequest())
++            if (platformWindow->hasPendingUpdateRequest()
++                    && platformWindow->updatesWithDisplayLink()) {
+                 ++pendingUpdateRequests;
++            }
+         }
+ 
+         m_pendingUpdateRequests = pendingUpdateRequests;
