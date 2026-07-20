@@ -155,7 +155,7 @@ index 07e8bd0bd1f..2329efe7aa8 100644
  }
  
 diff --git a/src/plugins/platforms/xcb/qxcbintegration.cpp b/src/plugins/platforms/xcb/qxcbintegration.cpp
-index 79bc195eb6c..b729006dad3 100644
+index 79bc195eb6c..2fc4ccaf81e 100644
 --- a/src/plugins/platforms/xcb/qxcbintegration.cpp
 +++ b/src/plugins/platforms/xcb/qxcbintegration.cpp
 @@ -31,6 +31,7 @@
@@ -173,7 +173,7 @@ index 79bc195eb6c..b729006dad3 100644
 +        switch (window->surfaceType()) {
 +        case QSurface::OpenGLSurface:
 +        case QSurface::VulkanSurface:
-+            backingStore = new QRhiBackingStore(window);
++            return new QRhiBackingStore(window);
 +        default:
 +            break;
 +        }
