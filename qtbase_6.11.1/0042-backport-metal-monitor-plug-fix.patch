@@ -1,0 +1,73 @@
+commit ba6380cc446afecfa9f949369cfcd078e8c592a0
+Author: Yauheni Pervenenka <yauheni.pervenenka@viber.com>
+Date:   Mon Jul 6 13:44:23 2026 +0300
+
+    macOS: Release displayLock on early return from displayLayer
+    
+    When setNeedsDisplayInRect: acquires the QMetalLayer displayLock for
+    write and CoreAnimation subsequently calls displayLayer: which returns
+    early (e.g. for a non-online screen during sleep/wake), the write lock
+    was never released. This permanently blocks deliverUpdateRequest() from
+    acquiring a read lock, deadlocking the render thread.
+    
+    Use qScopeGuard to ensure the lock is released on any early-return path.
+    The guard is dismissed on the normal display path where the existing
+    deferred QueuedConnection unlock handles it.
+    
+    Fixes: QTBUG-147933
+    Pick-to: 6.12 6.11
+    Change-Id: I2545a984ba6f8c0fc4c4a985061e7b0277b965d9
+    Reviewed-by: Tor Arne Vestbø <tor.arne.vestbo@qt.io>
+
+diff --git a/src/plugins/platforms/cocoa/qnsview_drawing.mm b/src/plugins/platforms/cocoa/qnsview_drawing.mm
+index 877169f2ef6..1ac53fb7cb0 100644
+--- a/src/plugins/platforms/cocoa/qnsview_drawing.mm
++++ b/src/plugins/platforms/cocoa/qnsview_drawing.mm
+@@ -267,6 +267,21 @@ - (void)displayLayer:(CALayer *)layer
+     if (!m_platformWindow)
+         return;
+ 
++    auto *qtMetalLayer = qt_objc_cast<QMetalLayer *>(layer);
++
++    if (qtMetalLayer) {
++        // Once we're done with display, even if we exit early below, we need to
++        // unlock the display lock. But we must wait to unlock the display lock
++        // until the display cycle finishes, as otherwise the render thread may
++        // step in and present before the transaction commits. The display lock
++        // is recursive, so setNeedsDisplay can be safely called in the meantime
++        // without any issue.
++        QMetaObject::invokeMethod(m_platformWindow, [qtMetalLayer]{
++            qCDebug(lcMetalLayer) << "Unlocking" << qtMetalLayer << "after finishing display-cycle";
++            qtMetalLayer.displayLock.unlock();
++        }, Qt::QueuedConnection);
++    }
++
+     if (!NSThread.isMainThread) {
+         // Qt is calling AppKit APIs such as -[NSOpenGLContext setView:] on secondary threads,
+         // which we shouldn't do. This may result in AppKit (wrongly) triggering a display on
+@@ -300,7 +315,7 @@ - (void)displayLayer:(CALayer *)layer
+         m_platformWindow->handleExposeEvent(bounds);
+     };
+ 
+-    if (auto *qtMetalLayer = qt_objc_cast<QMetalLayer*>(layer)) {
++    if (qtMetalLayer) {
+         const bool presentedWithTransaction = qtMetalLayer.presentsWithTransaction;
+         qtMetalLayer.presentsWithTransaction = YES;
+ 
+@@ -325,16 +340,6 @@ - (void)displayLayer:(CALayer *)layer
+         }
+ 
+         qtMetalLayer.presentsWithTransaction = presentedWithTransaction;
+-
+-        // We're done presenting, but we must wait to unlock the display lock
+-        // until the display cycle finishes, as otherwise the render thread may
+-        // step in and present before the transaction commits. The display lock
+-        // is recursive, so setNeedsDisplay can be safely called in the meantime
+-        // without any issue.
+-        QMetaObject::invokeMethod(m_platformWindow, [qtMetalLayer]{
+-            qCDebug(lcMetalLayer) << "Unlocking" << qtMetalLayer << "after finishing display-cycle";
+-            qtMetalLayer.displayLock.unlock();
+-        }, Qt::QueuedConnection);
+     } else {
+         handleExposeEvent();
+     }
