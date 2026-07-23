@@ -114,7 +114,7 @@ index d612964e24b..88e5ae7439b 100644
  
          m_pendingUpdateRequests = pendingUpdateRequests;
 diff --git a/src/widgets/kernel/qwidgetrepaintmanager.cpp b/src/widgets/kernel/qwidgetrepaintmanager.cpp
-index 90df68d4f9b..5c58722866e 100644
+index 90df68d4f9b..095ce2f99f4 100644
 --- a/src/widgets/kernel/qwidgetrepaintmanager.cpp
 +++ b/src/widgets/kernel/qwidgetrepaintmanager.cpp
 @@ -360,6 +360,21 @@ void QWidgetRepaintManager::sendUpdateRequest(QWidget *widget, UpdateTime update
@@ -139,6 +139,28 @@ index 90df68d4f9b..5c58722866e 100644
          QCoreApplication::postEvent(widget, new QEvent(QEvent::UpdateRequest), Qt::LowEventPriority);
          break;
      case UpdateNow: {
+@@ -623,9 +638,18 @@ void QWidgetRepaintManager::sync(QWidget *exposedWidget, const QRegion &exposedR
+ 
+     // Nothing to repaint.
+     if (!isDirty() && store->size().isValid()) {
+-        QPlatformTextureList *widgetTextures = widgetTexturesFor(tlw, exposedWidget);
+-        flush(exposedWidget, widgetTextures ? QRegion() : exposedRegion, widgetTextures);
+-        return;
++#ifdef Q_OS_MACOS
++        // A render-to-texture child can drop its textures on a QRhi change
++        // without marking dirty; the cached list then dangles. Rebuild it via
++        // paintAndFlush() instead of compositing freed textures.
++        QTLWExtra *tlwExtra = tlw->d_func()->maybeTopData();
++        if (!tlwExtra || tlwExtra->widgetTextures.empty())
++#endif
++        {
++            QPlatformTextureList *widgetTextures = widgetTexturesFor(tlw, exposedWidget);
++            flush(exposedWidget, widgetTextures ? QRegion() : exposedRegion, widgetTextures);
++            return;
++        }
+     }
+ 
+     // As requests to sync a specific widget typically comes from an expose event
 diff --git a/src/widgets/kernel/qwidgetwindow.cpp b/src/widgets/kernel/qwidgetwindow.cpp
 index 1923f113fc9..ef793eff153 100644
 --- a/src/widgets/kernel/qwidgetwindow.cpp
