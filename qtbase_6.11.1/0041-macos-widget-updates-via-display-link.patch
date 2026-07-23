@@ -12,10 +12,10 @@ index 3cefde3812d..3e0618396b1 100644
      QAtomicInt m_pendingDisplayLinkUpdates;
  
 diff --git a/src/plugins/platforms/cocoa/qcocoascreen.mm b/src/plugins/platforms/cocoa/qcocoascreen.mm
-index d612964e24b..88e5ae7439b 100644
+index d612964e24b..e5f17ce7fb7 100644
 --- a/src/plugins/platforms/cocoa/qcocoascreen.mm
 +++ b/src/plugins/platforms/cocoa/qcocoascreen.mm
-@@ -198,8 +198,10 @@ QCocoaScreen::~QCocoaScreen()
+@@ -198,8 +198,10 @@
      delete m_cursor;
  
      CVDisplayLinkRelease(m_displayLink);
@@ -28,7 +28,7 @@ index d612964e24b..88e5ae7439b 100644
  }
  
  void QCocoaScreen::update(CGDirectDisplayID displayId)
-@@ -419,21 +421,29 @@ void QCocoaScreen::deliverUpdateRequests()
+@@ -419,21 +421,29 @@
              return;
          }
  
@@ -57,11 +57,11 @@ index d612964e24b..88e5ae7439b 100644
 +            CFRunLoopAddSource(CFRunLoopGetMain(),
 +                m_updateRunLoopSource, kCFRunLoopCommonModes);
          }
--
--        dispatch_source_merge_data(m_displayLinkSource, 1);
 +        CFRunLoopSourceSignal(m_updateRunLoopSource);
 +        CFRunLoopWakeUp(CFRunLoopGetMain());
  
+-        dispatch_source_merge_data(m_displayLinkSource, 1);
+-
      } else {
          DeferredDebugHelper screenUpdates(lcQpaScreenUpdates());
 -        qDeferredDebug(screenUpdates) << "gcd event handler on main thread";
@@ -69,16 +69,31 @@ index d612964e24b..88e5ae7439b 100644
  
          const int pendingUpdates = m_pendingDisplayLinkUpdates;
          if (pendingUpdates > 1)
-@@ -441,8 +451,6 @@ void QCocoaScreen::deliverUpdateRequests()
+@@ -441,11 +451,19 @@
  
          screenUpdates.flushOutput();
  
 -        int pendingUpdateRequests = 0;
 -
-         auto windows = QGuiApplication::allWindows();
+-        auto windows = QGuiApplication::allWindows();
++        // Patched: deliverUpdateRequest() below runs application code that
++        // may destroy any other window in this snapshot, leaving its raw
++        // pointer dangling. Track the snapshot through QPointer and
++        // re-validate each window before dereferencing it.
++        const auto allWindows = QGuiApplication::allWindows();
++        QList<QPointer<QWindow>> windows;
++        windows.reserve(allWindows.size());
++        for (QWindow *window : allWindows)
++            windows.append(window);
          for (int i = 0; i < windows.size(); ++i) {
-             QWindow *window = windows.at(i);
-@@ -461,16 +469,28 @@ void QCocoaScreen::deliverUpdateRequests()
+-            QWindow *window = windows.at(i);
++            QWindow *window = windows.at(i).data();
++            if (!window)
++                continue;
+             if (window->screen() != screen())
+                 continue;
+ 
+@@ -461,16 +479,28 @@
                  continue;
  
              platformWindow->deliverUpdateRequest();
@@ -114,10 +129,10 @@ index d612964e24b..88e5ae7439b 100644
  
          m_pendingUpdateRequests = pendingUpdateRequests;
 diff --git a/src/widgets/kernel/qwidgetrepaintmanager.cpp b/src/widgets/kernel/qwidgetrepaintmanager.cpp
-index 90df68d4f9b..095ce2f99f4 100644
+index 90df68d4f9b..112057fb69b 100644
 --- a/src/widgets/kernel/qwidgetrepaintmanager.cpp
 +++ b/src/widgets/kernel/qwidgetrepaintmanager.cpp
-@@ -360,6 +360,21 @@ void QWidgetRepaintManager::sendUpdateRequest(QWidget *widget, UpdateTime update
+@@ -360,6 +360,21 @@
          // normal backingstore sync machinery.
          if (!widget->d_func()->shouldPaintOnScreen())
              updateRequestSent = true;
@@ -139,21 +154,19 @@ index 90df68d4f9b..095ce2f99f4 100644
          QCoreApplication::postEvent(widget, new QEvent(QEvent::UpdateRequest), Qt::LowEventPriority);
          break;
      case UpdateNow: {
-@@ -623,9 +638,18 @@ void QWidgetRepaintManager::sync(QWidget *exposedWidget, const QRegion &exposedR
+@@ -623,9 +638,16 @@
  
      // Nothing to repaint.
      if (!isDirty() && store->size().isValid()) {
 -        QPlatformTextureList *widgetTextures = widgetTexturesFor(tlw, exposedWidget);
 -        flush(exposedWidget, widgetTextures ? QRegion() : exposedRegion, widgetTextures);
 -        return;
-+#ifdef Q_OS_MACOS
-+        // A render-to-texture child can drop its textures on a QRhi change
-+        // without marking dirty; the cached list then dangles. Rebuild it via
-+        // paintAndFlush() instead of compositing freed textures.
++        // Patched: a render-to-texture child can drop its textures on a QRhi
++        // change without marking anything dirty; the cached texture list then
++        // holds dangling texture pointers. Composite through paintAndFlush()
++        // below, which rebuilds the list, instead of flushing the cached one.
 +        QTLWExtra *tlwExtra = tlw->d_func()->maybeTopData();
-+        if (!tlwExtra || tlwExtra->widgetTextures.empty())
-+#endif
-+        {
++        if (!tlwExtra || tlwExtra->widgetTextures.empty()) {
 +            QPlatformTextureList *widgetTextures = widgetTexturesFor(tlw, exposedWidget);
 +            flush(exposedWidget, widgetTextures ? QRegion() : exposedRegion, widgetTextures);
 +            return;
