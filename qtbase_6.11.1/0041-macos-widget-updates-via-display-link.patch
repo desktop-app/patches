@@ -12,7 +12,7 @@ index 3cefde3812d..3e0618396b1 100644
      QAtomicInt m_pendingDisplayLinkUpdates;
  
 diff --git a/src/plugins/platforms/cocoa/qcocoascreen.mm b/src/plugins/platforms/cocoa/qcocoascreen.mm
-index d612964e24b..e5f17ce7fb7 100644
+index d612964e24b..27c5ced1fef 100644
 --- a/src/plugins/platforms/cocoa/qcocoascreen.mm
 +++ b/src/plugins/platforms/cocoa/qcocoascreen.mm
 @@ -198,8 +198,10 @@
@@ -28,7 +28,7 @@ index d612964e24b..e5f17ce7fb7 100644
  }
  
  void QCocoaScreen::update(CGDirectDisplayID displayId)
-@@ -419,21 +421,29 @@
+@@ -419,21 +421,29 @@ void flushOutput() {
              return;
          }
  
@@ -57,11 +57,11 @@ index d612964e24b..e5f17ce7fb7 100644
 +            CFRunLoopAddSource(CFRunLoopGetMain(),
 +                m_updateRunLoopSource, kCFRunLoopCommonModes);
          }
+-
+-        dispatch_source_merge_data(m_displayLinkSource, 1);
 +        CFRunLoopSourceSignal(m_updateRunLoopSource);
 +        CFRunLoopWakeUp(CFRunLoopGetMain());
  
--        dispatch_source_merge_data(m_displayLinkSource, 1);
--
      } else {
          DeferredDebugHelper screenUpdates(lcQpaScreenUpdates());
 -        qDeferredDebug(screenUpdates) << "gcd event handler on main thread";
@@ -69,7 +69,7 @@ index d612964e24b..e5f17ce7fb7 100644
  
          const int pendingUpdates = m_pendingDisplayLinkUpdates;
          if (pendingUpdates > 1)
-@@ -441,11 +451,19 @@
+@@ -441,11 +451,19 @@ void flushOutput() {
  
          screenUpdates.flushOutput();
  
@@ -93,7 +93,7 @@ index d612964e24b..e5f17ce7fb7 100644
              if (window->screen() != screen())
                  continue;
  
-@@ -461,16 +479,28 @@
+@@ -461,16 +479,28 @@ void flushOutput() {
                  continue;
  
              platformWindow->deliverUpdateRequest();
@@ -129,10 +129,10 @@ index d612964e24b..e5f17ce7fb7 100644
  
          m_pendingUpdateRequests = pendingUpdateRequests;
 diff --git a/src/widgets/kernel/qwidgetrepaintmanager.cpp b/src/widgets/kernel/qwidgetrepaintmanager.cpp
-index 90df68d4f9b..112057fb69b 100644
+index 90df68d4f9b..5c58722866e 100644
 --- a/src/widgets/kernel/qwidgetrepaintmanager.cpp
 +++ b/src/widgets/kernel/qwidgetrepaintmanager.cpp
-@@ -360,6 +360,21 @@
+@@ -360,6 +360,21 @@ void QWidgetRepaintManager::sendUpdateRequest(QWidget *widget, UpdateTime update
          // normal backingstore sync machinery.
          if (!widget->d_func()->shouldPaintOnScreen())
              updateRequestSent = true;
@@ -154,26 +154,6 @@ index 90df68d4f9b..112057fb69b 100644
          QCoreApplication::postEvent(widget, new QEvent(QEvent::UpdateRequest), Qt::LowEventPriority);
          break;
      case UpdateNow: {
-@@ -623,9 +638,16 @@
- 
-     // Nothing to repaint.
-     if (!isDirty() && store->size().isValid()) {
--        QPlatformTextureList *widgetTextures = widgetTexturesFor(tlw, exposedWidget);
--        flush(exposedWidget, widgetTextures ? QRegion() : exposedRegion, widgetTextures);
--        return;
-+        // Patched: a render-to-texture child can drop its textures on a QRhi
-+        // change without marking anything dirty; the cached texture list then
-+        // holds dangling texture pointers. Composite through paintAndFlush()
-+        // below, which rebuilds the list, instead of flushing the cached one.
-+        QTLWExtra *tlwExtra = tlw->d_func()->maybeTopData();
-+        if (!tlwExtra || tlwExtra->widgetTextures.empty()) {
-+            QPlatformTextureList *widgetTextures = widgetTexturesFor(tlw, exposedWidget);
-+            flush(exposedWidget, widgetTextures ? QRegion() : exposedRegion, widgetTextures);
-+            return;
-+        }
-     }
- 
-     // As requests to sync a specific widget typically comes from an expose event
 diff --git a/src/widgets/kernel/qwidgetwindow.cpp b/src/widgets/kernel/qwidgetwindow.cpp
 index 1923f113fc9..ef793eff153 100644
 --- a/src/widgets/kernel/qwidgetwindow.cpp
