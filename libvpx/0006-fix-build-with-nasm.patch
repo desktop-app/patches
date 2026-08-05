@@ -1,0 +1,28 @@
+commit f015b264a681bed107536915345c4c51bb886ad4
+Author: James Zern <jzern@google.com>
+Date:   Wed Jul 29 19:13:39 2026 -0700
+
+    x86_abi_support.asm: use .rdata for win32/win64
+    
+    Instead of `.rodata`. This fixes a non-zero exit code from nasm 3.0
+    which cause Visual Studio builds to fail. This also matches x86inc.asm.
+    
+    Bug: 540261859
+    Fixed: 540261859
+    Change-Id: Ic869fb72622f122aa959922539b8956a23ea0069
+
+diff --git a/vpx_ports/x86_abi_support.asm b/vpx_ports/x86_abi_support.asm
+index 6b2d6b968..aece83283 100644
+--- a/vpx_ports/x86_abi_support.asm
++++ b/vpx_ports/x86_abi_support.asm
+@@ -395,6 +395,10 @@ section .text
+ %endmacro
+ %elifidn __OUTPUT_FORMAT__,aout
+ %define SECTION_RODATA section .data
++%elifidn __OUTPUT_FORMAT__,win32
++%define SECTION_RODATA section .rdata
++%elif LIBVPX_YASM_WIN64
++%define SECTION_RODATA section .rdata
+ %else
+ %define SECTION_RODATA section .rodata
+ %endif
