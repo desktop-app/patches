@@ -12,7 +12,7 @@ index 3cefde3812d..3e0618396b1 100644
      QAtomicInt m_pendingDisplayLinkUpdates;
  
 diff --git a/src/plugins/platforms/cocoa/qcocoascreen.mm b/src/plugins/platforms/cocoa/qcocoascreen.mm
-index d612964e24b..27c5ced1fef 100644
+index d612964e24b..93ca88704ed 100644
 --- a/src/plugins/platforms/cocoa/qcocoascreen.mm
 +++ b/src/plugins/platforms/cocoa/qcocoascreen.mm
 @@ -198,8 +198,10 @@
@@ -69,7 +69,7 @@ index d612964e24b..27c5ced1fef 100644
  
          const int pendingUpdates = m_pendingDisplayLinkUpdates;
          if (pendingUpdates > 1)
-@@ -441,11 +451,19 @@ void flushOutput() {
+@@ -441,12 +451,29 @@ void flushOutput() {
  
          screenUpdates.flushOutput();
  
@@ -80,6 +80,15 @@ index d612964e24b..27c5ced1fef 100644
 +        // may destroy any other window in this snapshot, leaving its raw
 +        // pointer dangling. Track the snapshot through QPointer and
 +        // re-validate each window before dereferencing it.
++        // The same application code may also destroy this screen: Core
++        // Graphics delivers pending display reconfigurations from inside
++        // window server round trips made while painting, and removing a
++        // display makes handleScreenRemoved() delete the QScreen and then
++        // this QCocoaScreen. Everything after a delivery -- the screen
++        // comparisons, the recount pass, the member stores below -- would
++        // then run on freed memory. The QScreen is deleted first, so a
++        // stack QPointer to it detects the teardown without touching this.
++        const QPointer<QScreen> alive = screen();
 +        const auto allWindows = QGuiApplication::allWindows();
 +        QList<QPointer<QWindow>> windows;
 +        windows.reserve(allWindows.size());
@@ -87,19 +96,23 @@ index d612964e24b..27c5ced1fef 100644
 +            windows.append(window);
          for (int i = 0; i < windows.size(); ++i) {
 -            QWindow *window = windows.at(i);
+-            if (window->screen() != screen())
 +            QWindow *window = windows.at(i).data();
 +            if (!window)
 +                continue;
-             if (window->screen() != screen())
++            if (window->screen() != alive.data())
                  continue;
  
-@@ -461,16 +479,28 @@ void flushOutput() {
-                 continue;
+             QPointer<QCocoaWindow> platformWindow = static_cast<QCocoaWindow*>(window->handle());
+@@ -462,15 +489,30 @@ void flushOutput() {
  
              platformWindow->deliverUpdateRequest();
-+        }
  
 -            // platform window can be destroyed in deliverUpdateRequest()
++            if (!alive)
++                return;
++        }
++
 +        // Patched: recount pending update requests in a separate pass after
 +        // all deliveries. Counting each window right after its delivery lost
 +        // requests made by an already-counted window during a later window's
@@ -111,7 +124,7 @@ index d612964e24b..27c5ced1fef 100644
 +        // request can interleave between the count and the store.
 +        int pendingUpdateRequests = 0;
 +        for (QWindow *window : QGuiApplication::allWindows()) {
-+            if (window->screen() != screen())
++            if (window->screen() != alive.data())
 +                continue;
 +            auto *platformWindow = static_cast<QCocoaWindow*>(window->handle());
              if (!platformWindow)
