@@ -119,6 +119,7 @@ chmod a+x $FullExecPath/../gas-preprocessor/cpp
 --enable-encoder=aac \
 --enable-encoder=libopus \
 --enable-encoder=libopenh264 \
+--enable-encoder=libvpx_vp9 \
 --enable-encoder=pcm_s16le \
 --enable-parser=aac \
 --enable-parser=aac_latm \
@@ -144,7 +145,8 @@ chmod a+x $FullExecPath/../gas-preprocessor/cpp
 --enable-muxer=mp4 \
 --enable-muxer=ogg \
 --enable-muxer=opus \
---enable-muxer=wav
+--enable-muxer=wav \
+--enable-muxer=webm
 
 make -j$NUMBER_OF_PROCESSORS
 rm -f libavcodec/aarch64/*.d
