@@ -19,8 +19,12 @@ Qt 6 restructured this code and no longer forwards to a receiver that
 went away. Guard the receiver and this window with QPointer and skip the
 forward the same way; nothing else changes.
 
+The guards are taken only when the forward is actually going to
+happen. Constructing them for every mouse move and press would put
+weak reference bookkeeping on the hottest input path for nothing.
+
 diff --git a/src/widgets/kernel/qwidgetwindow.cpp b/src/widgets/kernel/qwidgetwindow.cpp
-index f6799af0f4a..eb254333b3b 100644
+index f6799af0f4a..6e0220d8fa1 100644
 --- a/src/widgets/kernel/qwidgetwindow.cpp
 +++ b/src/widgets/kernel/qwidgetwindow.cpp
 @@ -52,6 +52,7 @@
@@ -31,7 +35,7 @@ index f6799af0f4a..eb254333b3b 100644
  
  QT_BEGIN_NAMESPACE
  
-@@ -673,6 +674,15 @@ void QWidgetWindow::handleMouseEvent(QMouseEvent *event)
+@@ -673,6 +674,27 @@ void QWidgetWindow::handleMouseEvent(QMouseEvent *event)
      if (!receiver)
          return;
  
@@ -41,19 +45,30 @@ index f6799af0f4a..eb254333b3b 100644
 +    // context menu forward then reads m_widget and hands a freed receiver to
 +    // forwardEvent(). Guard both and skip the forward instead, which is what
 +    // Qt 6 ends up doing.
-+    QPointer<QWidgetWindow> self(this);
-+    QPointer<QWidget> receiverGuard(receiver);
++    //
++    // Only when that forward is actually going to happen: taking QPointers
++    // for every mouse move, press and release would put weak reference
++    // bookkeeping on the hottest input path for nothing.
++#ifndef QT_NO_CONTEXTMENU
++    const bool forwardContextMenu = (event->type() == contextMenuTrigger)
++        && (event->button() == Qt::RightButton);
++    QPointer<QWidgetWindow> self;
++    QPointer<QWidget> receiverGuard;
++    if (forwardContextMenu) {
++        self = this;
++        receiverGuard = receiver;
++    }
++#endif
 +
      if ((event->type() != QEvent::MouseButtonPress)
          || !(event->flags().testFlag(Qt::MouseEventCreatedDoubleClick))) {
  
-@@ -686,7 +696,8 @@ void QWidgetWindow::handleMouseEvent(QMouseEvent *event)
+@@ -686,7 +708,7 @@ void QWidgetWindow::handleMouseEvent(QMouseEvent *event)
          event->setAccepted(translated.isAccepted());
      }
  #ifndef QT_NO_CONTEXTMENU
 -    if (event->type() == contextMenuTrigger && event->button() == Qt::RightButton
-+    if (!self.isNull() && !receiverGuard.isNull()
-+        && event->type() == contextMenuTrigger && event->button() == Qt::RightButton
++    if (forwardContextMenu && !self.isNull() && !receiverGuard.isNull()
          && m_widget->rect().contains(event->pos())) {
          QContextMenuEvent e(QContextMenuEvent::Mouse, mapped, event->globalPos(), event->modifiers());
          QGuiApplication::forwardEvent(receiver, &e, event);
