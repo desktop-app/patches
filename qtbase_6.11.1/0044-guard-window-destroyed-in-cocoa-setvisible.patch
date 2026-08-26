@@ -1,0 +1,94 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Wed, 26 Aug 2026 18:00:00
+Subject: [PATCH] guarded a window destroyed inside QCocoaWindow::setVisible
+
+QCocoaWindow::setVisible() re-enters application code several times over
+- recreateWindowIfNeeded(), handleGeometryChange(), setGeometry(),
+flushWindowSystemEvents(), applyWindowState() - and that code can destroy
+the window it was called for. Everything after such a call then runs on
+freed memory; the reported crash is windowGeometry() reading
+window()->geometry() right after handleGeometryChange() returned.
+
+The QWindow is destroyed before the QCocoaWindow, so a stack QPointer to
+it detects the teardown without touching this.
+
+m_inSetVisible cannot stay a QScopedValueRollback: its destructor writes
+through the captured reference unconditionally, and commit() only changes
+the value written, not whether the write happens. Restore the flag from a
+guard that checks the QPointer first.
+
+diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms/cocoa/qcocoawindow.mm
+index dd0d070499f..67a9e11bf4c 100644
+--- a/src/plugins/platforms/cocoa/qcocoawindow.mm
++++ b/src/plugins/platforms/cocoa/qcocoawindow.mm
+@@ -18,6 +18,7 @@
+ #include "qnsview.h"
+ #include "qnswindow.h"
+ #include <QtCore/qfileinfo.h>
++#include <QtCore/qscopeguard.h>
+ #include <QtCore/private/qcore_mac_p.h>
+ #include <qwindow.h>
+ #include <private/qwindow_p.h>
+@@ -411,7 +412,22 @@ a normal (not maximized or full screen) top-level window.
+         return;
+     }
+ 
+-    QScopedValueRollback<bool> rollback(m_inSetVisible, true);
++    // Patched: the calls below re-enter application code - geometry and
++    // expose delivery, modal sessions, AppKit ordering - which is free to
++    // destroy this window, and with it this QCocoaWindow. Everything after
++    // such a call would run on freed memory, starting with windowGeometry()
++    // reading window()->geometry(). The QWindow is destroyed first, so a
++    // stack QPointer to it detects the teardown without touching this.
++    // QScopedValueRollback cannot be used for m_inSetVisible any more: its
++    // destructor writes through the reference unconditionally, commit() or
++    // not, so restore it through a guard that checks first.
++    QPointer<QWindow> guard(window());
++    m_inSetVisible = true;
++    const auto inSetVisibleRollback = qScopeGuard([&] {
++        if (guard) {
++            m_inSetVisible = false;
++        }
++    });
+ 
+     QMacAutoReleasePool pool;
+     QCocoaWindow *parentCocoaWindow = nullptr;
+@@ -425,17 +441,23 @@ a normal (not maximized or full screen) top-level window.
+     if (visible) {
+         // We need to recreate if the modality has changed as the style mask will need updating
+         recreateWindowIfNeeded();
++        if (!guard)
++            return;
+ 
+         // We didn't send geometry changes during creation, as that would have confused
+         // Qt, which expects a show-event to be sent before any resize events. But now
+         // that the window is made visible, we know that the show-event has been sent
+         // so we can send the geometry change. FIXME: Get rid of this workaround.
+         handleGeometryChange();
++        if (!guard)
++            return;
+ 
+         if (parentCocoaWindow) {
+             // The parent window might have moved while this window was hidden,
+             // update the window geometry if there is a parent.
+             setGeometry(windowGeometry());
++            if (!guard)
++                return;
+ 
+             if (window()->type() == Qt::Popup) {
+                 // QTBUG-30266: a window should not be resizable while a transient popup is open
+@@ -454,10 +476,14 @@ a normal (not maximized or full screen) top-level window.
+ 
+         if (isContentView()) {
+             QWindowSystemInterface::flushWindowSystemEvents(QEventLoop::ExcludeUserInputEvents);
++            if (!guard)
++                return;
+ 
+             // setWindowState might have been called while the window was hidden and
+             // will not change the NSWindow state in that case. Sync up here:
+             applyWindowState(window()->windowStates());
++            if (!guard)
++                return;
+ 
+             if (window()->windowState() != Qt::WindowMinimized) {
+                 if (parentCocoaWindow && (window()->modality() == Qt::WindowModal || window()->type() == Qt::Sheet)) {

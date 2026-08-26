@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Wed, 26 Aug 2026 18:00:00
+Subject: [PATCH] guarded the context menu forward against a dead receiver
+
+QWidgetWindow::handleMouseEvent() picks a receiver, delivers the mouse
+event to it, and then - for a right button release - synthesizes a
+QContextMenuEvent and forwards it to that same receiver. The delivery in
+between runs application code, which is free to close whatever was
+clicked: the receiver can be destroyed, and with it the widget this
+QWidgetWindow belongs to, and therefore this QWidgetWindow. The forward
+then reads m_widget and hands a freed pointer to forwardEvent().
+
+Three crashes in one release land on qwidgetwindow.cpp:692 through this
+path: a freed receiver reached through QApplication::notify (a vtable
+call on the dead widget), the same thing landing in
+QGestureManager::filterEvent, and the bare notifyInternal2 frame.
+
+Qt 6 restructured this code and no longer forwards to a receiver that
+went away. Guard the receiver and this window with QPointer and skip the
+forward the same way; nothing else changes.
+
+diff --git a/src/widgets/kernel/qwidgetwindow.cpp b/src/widgets/kernel/qwidgetwindow.cpp
+index f6799af0f4a..eb254333b3b 100644
+--- a/src/widgets/kernel/qwidgetwindow.cpp
++++ b/src/widgets/kernel/qwidgetwindow.cpp
+@@ -52,6 +52,7 @@
+ #include <qpa/qplatformwindow.h>
+ #include <private/qgesturemanager_p.h>
+ #include <private/qhighdpiscaling_p.h>
++#include <QtCore/qpointer.h>
+ 
+ QT_BEGIN_NAMESPACE
+ 
+@@ -673,6 +674,15 @@ void QWidgetWindow::handleMouseEvent(QMouseEvent *event)
+     if (!receiver)
+         return;
+ 
++    // Patched: sendMouseEvent() below delivers into application code, which is
++    // free to close whatever was clicked. That can destroy the receiver, and
++    // with it this window's widget and therefore this QWidgetWindow. The
++    // context menu forward then reads m_widget and hands a freed receiver to
++    // forwardEvent(). Guard both and skip the forward instead, which is what
++    // Qt 6 ends up doing.
++    QPointer<QWidgetWindow> self(this);
++    QPointer<QWidget> receiverGuard(receiver);
++
+     if ((event->type() != QEvent::MouseButtonPress)
+         || !(event->flags().testFlag(Qt::MouseEventCreatedDoubleClick))) {
+ 
+@@ -686,7 +696,8 @@ void QWidgetWindow::handleMouseEvent(QMouseEvent *event)
+         event->setAccepted(translated.isAccepted());
+     }
+ #ifndef QT_NO_CONTEXTMENU
+-    if (event->type() == contextMenuTrigger && event->button() == Qt::RightButton
++    if (!self.isNull() && !receiverGuard.isNull()
++        && event->type() == contextMenuTrigger && event->button() == Qt::RightButton
+         && m_widget->rect().contains(event->pos())) {
+         QContextMenuEvent e(QContextMenuEvent::Mouse, mapped, event->globalPos(), event->modifiers());
+         QGuiApplication::forwardEvent(receiver, &e, event);
