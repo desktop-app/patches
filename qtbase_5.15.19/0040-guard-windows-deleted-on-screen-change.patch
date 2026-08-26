@@ -1,0 +1,114 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Wed, 26 Aug 2026 12:00:00
+Subject: [PATCH] guarded windows deleted while a screen goes away
+
+QWindowPrivate::emitScreenChangedRecursion() emits screenChanged() and
+then walks q->children() to recurse into the child windows. Both steps run
+application code synchronously, and that code is free to delete windows: a
+screenChanged() handler that closes a panel deletes the very window the
+signal was emitted for, and a handler that unwinds an object lifetime can
+delete a QObject child of the window being iterated. The loop binds a
+reference to the live QObjectPrivate::children list, so a child removed
+during the recursion invalidates the enclosing loop's iterators, and a
+window removed during the emit leaves "q" itself dangling.
+
+The same pattern sits on the screen removal path, where leftover windows
+are moved to the new primary screen. QGuiApplication::allWindows() is
+snapshotted as raw pointers, and setScreen()/setVisible() then run exactly
+the handlers described above between iterations, so entries later in the
+snapshot can already be freed by the time they are dereferenced.
+
+This was seen live on Windows: replacing the Intel display driver under a
+running process removes and re-adds every monitor, and the crash lands in
+emitScreenChangedRecursion() reading a non-canonical pointer out of a
+reused block right after the screenChanged() emission.
+
+Hold the window under a QPointer across the emit, recurse over a snapshot
+of guarded child pointers, and guard the leftover window snapshot the same
+way. Nothing changes when no window is destroyed.
+
+Here the leftover window loop lives in QScreen::~QScreen().
+
+diff --git a/src/gui/kernel/qscreen.cpp b/src/gui/kernel/qscreen.cpp
+index 990272b0c25..3f2c37be497 100644
+--- a/src/gui/kernel/qscreen.cpp
++++ b/src/gui/kernel/qscreen.cpp
+@@ -45,6 +45,7 @@
+ #include <qpa/qplatformscreen_p.h>
+ 
+ #include <QtCore/QDebug>
++#include <QtCore/QPointer>
+ #include <QtCore/private/qobject_p.h>
+ #include "qhighdpiscaling_p.h"
+ 
+@@ -156,13 +157,27 @@ QScreen::~QScreen()
+         && newPrimaryScreen->handle()->virtualSiblings().contains(handle());
+ 
+     // Move any leftover windows to the primary screen
++    // Patched: setScreen() emits screenChanged() and setVisible() delivers
++    // show and geometry events, both of which run application code that can
++    // close and delete other windows still waiting in this snapshot.
++    // allWindows() hands out raw pointers, so hold them through QPointer and
++    // re-check every one before it is dereferenced.
+     const auto allWindows = QGuiApplication::allWindows();
+-    for (QWindow *window : allWindows) {
++    QList<QPointer<QWindow>> windows;
++    windows.reserve(allWindows.size());
++    for (QWindow *window : allWindows)
++        windows.append(window);
++    for (const QPointer<QWindow> &guard : windows) {
++        QWindow *window = guard.data();
++        if (!window)
++            continue;
+         if (!window->isTopLevel() || window->screen() != this)
+             continue;
+ 
+         const bool wasVisible = window->isVisible();
+         window->setScreen(newPrimaryScreen);
++        if (!guard)
++            continue;
+ 
+         // Re-show window if moved from a virtual sibling screen. Otherwise
+         // leave it up to the application developer to show the window.
+diff --git a/src/gui/kernel/qwindow.cpp b/src/gui/kernel/qwindow.cpp
+index a70555cae7c..e8328bd98f2 100644
+--- a/src/gui/kernel/qwindow.cpp
++++ b/src/gui/kernel/qwindow.cpp
+@@ -63,6 +63,7 @@
+ 
+ #include <QtCore/QTimer>
+ #include <QtCore/QDebug>
++#include <QtCore/QPointer>
+ 
+ #include <QStyleHints>
+ #include <qpa/qplatformcursor.h>
+@@ -488,10 +489,28 @@ void QWindowPrivate::connectToScreen(QScreen *screen)
+ void QWindowPrivate::emitScreenChangedRecursion(QScreen *newScreen)
+ {
+     Q_Q(QWindow);
++    // Patched: screenChanged() runs application code synchronously, and that
++    // code is free to delete windows - a handler that closes a panel deletes
++    // this very window, and an unwinding object lifetime can delete a QObject
++    // child of it. The loop below binds a reference to the live
++    // QObjectPrivate::children list and walks it across those calls, so both
++    // "q" and the list being iterated can die underneath it. Guard "q" with a
++    // QPointer and recurse over a snapshot of guarded child pointers.
++    QPointer<QWindow> guard(q);
+     emit q->screenChanged(newScreen);
++    if (!guard)
++        return;
++    QList<QPointer<QWindow>> childWindows;
+     for (QObject *child : q->children()) {
+         if (child->isWindowType())
+-            static_cast<QWindow *>(child)->d_func()->emitScreenChangedRecursion(newScreen);
++            childWindows.append(static_cast<QWindow *>(child));
++    }
++    for (const QPointer<QWindow> &child : childWindows) {
++        if (!child)
++            continue;
++        child->d_func()->emitScreenChangedRecursion(newScreen);
++        if (!guard)
++            return;
+     }
+ }
+ 
