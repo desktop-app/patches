@@ -1,0 +1,28 @@
+diff --git a/src/corelib/text/qstring.h b/src/corelib/text/qstring.h
+index 5bec5dffbe6..b40de24431a 100644
+--- a/src/corelib/text/qstring.h
++++ b/src/corelib/text/qstring.h
+@@ -1066,11 +1066,20 @@ inline QString::QString(QLatin1String aLatin1) : d(fromLatin1_helper(aLatin1.lat
+ inline int QString::length() const
+ { return d->size; }
+ inline const QChar QString::at(int i) const
+-{ Q_ASSERT(uint(i) < uint(size())); return QChar(d->data()[i]); }
++{
++    if (uint(i) >= uint(size())) return QChar();
++    return QChar(d->data()[i]);
++}
+ inline const QChar QString::operator[](int i) const
+-{ Q_ASSERT(uint(i) < uint(size())); return QChar(d->data()[i]); }
++{
++    if (uint(i) >= uint(size())) return QChar();
++    return QChar(d->data()[i]);
++}
+ inline const QChar QString::operator[](uint i) const
+-{ Q_ASSERT(i < uint(size())); return QChar(d->data()[i]); }
++{
++    if (i >= uint(size())) return QChar();
++    return QChar(d->data()[i]);
++}
+ inline bool QString::isEmpty() const
+ { return d->size == 0; }
+ inline const QChar *QString::unicode() const
