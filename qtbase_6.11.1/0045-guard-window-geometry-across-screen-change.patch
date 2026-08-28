@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Fri, 28 Aug 2026 12:00:00
+Subject: [PATCH] guarded window geometry changes across a screen change
+
+QWindow::setGeometry() resolves the screen the new geometry lands on and,
+for a top-level window, calls QWindowPrivate::setTopLevelScreen() before
+handing the geometry to the platform window. That emits screenChanged()
+synchronously, and the application code it runs is free to destroy() the
+window or to delete it outright; either way platformWindow is null when
+setGeometry() then calls through it without re-checking.
+
+The Windows screen removal path is what reaches this:
+QWindowsScreenManager::removeScreen() moves every visible WS_EX_TOOLWINDOW
+top-level window (tool panels, tooltips, popups) that lived on the
+disconnected screen to the primary screen through setGeometry(), and
+delivers a synchronous screen change for the rest. Both run the handlers
+described above between iterations over a raw pointer snapshot of
+QGuiApplication::topLevelWindows(), so later entries in the snapshot can
+already be freed as well.
+
+This was seen live on Windows: a tool window being moved off a
+disconnected monitor crashed reading through the null platform window
+right after the screenChanged() emission.
+
+Guard the window under a QPointer across setTopLevelScreen() and re-check
+the platform window before calling through it, and hold the removeScreen()
+snapshot through QPointer the same way the leftover window loop on the
+screen removal path already does. Nothing changes when no window is
+destroyed: the guard only exists on an actual screen change.
+
+diff --git a/src/gui/kernel/qwindow.cpp b/src/gui/kernel/qwindow.cpp
+index 1af8508..7e53cfb 100644
+--- a/src/gui/kernel/qwindow.cpp
++++ b/src/gui/kernel/qwindow.cpp
+@@ -1891,8 +1891,19 @@ void QWindow::setGeometry(const QRect &rect)
+         // the new screen without actually changing the screen, so that
+         // the geometry change is the trigger for the screen change.
+         QScreen *newScreen = d->screenForGeometry(rect);
+-        if (newScreen && isTopLevel())
++        // Patched: setTopLevelScreen() emits screenChanged() synchronously, and
++        // the application code it runs is free to destroy() this window or to
++        // delete it outright, both leaving platformWindow null. It is a no-op
++        // unless the screen actually changes, so only then guard "this" across
++        // the call, and re-check the platform window before calling through it.
++        if (newScreen && isTopLevel() && newScreen != screen()) {
++            QPointer<QWindow> guard(this);
+             d->setTopLevelScreen(newScreen, true);
++            if (!guard)
++                return;
++        }
++    }
++    if (d->platformWindow) {
+         d->platformWindow->setGeometry(QHighDpi::toNativeWindowGeometry(rect, this));
+     } else {
+         d->geometry = rect;
+diff --git a/src/plugins/platforms/windows/qwindowsscreen.cpp b/src/plugins/platforms/windows/qwindowsscreen.cpp
+index acbc93a..9ed69cf 100644
+--- a/src/plugins/platforms/windows/qwindowsscreen.cpp
++++ b/src/plugins/platforms/windows/qwindowsscreen.cpp
+@@ -13,6 +13,7 @@
+ #include <QtCore/qt_windows.h>
+ 
+ #include <QtCore/qsettings.h>
++#include <QtCore/qpointer.h>
+ #include <QtGui/qpixmap.h>
+ #include <QtGui/qguiapplication.h>
+ #include <qpa/qwindowsysteminterface.h>
+@@ -810,8 +811,21 @@ void QWindowsScreenManager::removeScreen(int index)
+     // move those manually.
+     if (screen != primaryScreen) {
+         unsigned movedWindowCount = 0;
++        // Patched: both branches below run application code synchronously
++        // (screenChanged() handlers, the synchronous screen change delivery),
++        // and that code can delete windows still waiting in this snapshot.
++        // Hold them through QPointer and re-check each one before it is
++        // dereferenced, the way the leftover window loop on the screen
++        // removal path already does.
+         const QWindowList tlws = QGuiApplication::topLevelWindows();
+-        for (QWindow *w : tlws) {
++        QList<QPointer<QWindow>> windows;
++        windows.reserve(tlws.size());
++        for (QWindow *w : tlws)
++            windows.append(w);
++        for (const QPointer<QWindow> &guard : windows) {
++            QWindow *w = guard.data();
++            if (!w)
++                continue;
+             if (w->screen() == screen && w->handle()) {
+                 if (w->isVisible() && w->windowState() != Qt::WindowMinimized
+                     && (QWindowsWindow::baseWindowOf(w)->exStyle() & WS_EX_TOOLWINDOW)) {
