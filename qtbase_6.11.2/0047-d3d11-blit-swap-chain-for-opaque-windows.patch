@@ -1,0 +1,115 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Wed, 2 Sep 2026 12:00:00
+Subject: [PATCH] used blit swap chain for opaque windows to keep present non-blocking
+
+DWM promotes opaque flip-model swap chain to independent flip, where
+Present(0, 0) blocks on vblank. Blit (DISCARD) model is never promoted and
+does not tear under composition, so opaque windows use it, translucent ones
+keep DirectComposition flip. ALLOW_TEARING is dropped, flip falls back to vsync.
+
+diff --git a/src/gui/rhi/qrhid3d11.cpp b/src/gui/rhi/qrhid3d11.cpp
+index bf185600..7b507b9a 100644
+--- a/src/gui/rhi/qrhid3d11.cpp
++++ b/src/gui/rhi/qrhid3d11.cpp
+@@ -224,18 +224,6 @@ bool QRhiD3D11::create(QRhi::Flags flags)
+     if (!dxgiFactory)
+         return false;
+ 
+-    // For a FLIP_* swapchain Present(0, 0) is not necessarily
+-    // sufficient to get non-blocking behavior, try using ALLOW_TEARING
+-    // when available.
+-    supportsAllowTearing = false;
+-    IDXGIFactory5 *factory5 = nullptr;
+-    if (SUCCEEDED(dxgiFactory->QueryInterface(__uuidof(IDXGIFactory5), reinterpret_cast<void **>(&factory5)))) {
+-        BOOL allowTearing = false;
+-        if (SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearing, sizeof(allowTearing))))
+-            supportsAllowTearing = allowTearing;
+-        factory5->Release();
+-    }
+-
+     if (qEnvironmentVariableIntValue("QT_D3D_FLIP_DISCARD"))
+         qWarning("The default swap effect is FLIP_DISCARD, QT_D3D_FLIP_DISCARD is now ignored");
+ 
+@@ -251,8 +239,7 @@ bool QRhiD3D11::create(QRhi::Flags flags)
+         maxFrameLatency = 0;
+     }
+ 
+-    qCDebug(QRHI_LOG_INFO, "FLIP_* swapchain supported = true, ALLOW_TEARING supported = %s, use legacy (non-FLIP) model = %s, max frame latency = %u",
+-            supportsAllowTearing ? "true" : "false",
++    qCDebug(QRHI_LOG_INFO, "FLIP_* swapchain supported = true, use legacy (non-FLIP) model = %s, max frame latency = %u",
+             useLegacySwapchainModel ? "true" : "false",
+             maxFrameLatency);
+     if (maxFrameLatency == 0)
+@@ -1550,8 +1537,6 @@ QRhi::FrameOpResult QRhiD3D11::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
+ 
+     if (!flags.testFlag(QRhi::SkipPresent)) {
+         UINT presentFlags = 0;
+-        if (swapChainD->swapInterval == 0 && (swapChainD->swapChainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING))
+-            presentFlags |= DXGI_PRESENT_ALLOW_TEARING;
+         if (!swapChainD->swapChain) {
+             qWarning("Failed to present: IDXGISwapChain is unavailable");
+             return QRhi::FrameOpError;
+@@ -5531,8 +5516,15 @@ bool QD3D11SwapChain::createOrResize()
+ 
+     QRHI_RES_RHI(QRhiD3D11);
+ 
+-    if (m_flags.testFlag(SurfaceHasPreMulAlpha) || m_flags.testFlag(SurfaceHasNonPreMulAlpha)) {
+-        if (!rhiD->useLegacySwapchainModel && rhiD->ensureDirectCompositionDevice()) {
++    const bool needsAlpha = m_flags.testFlag(SurfaceHasPreMulAlpha)
++                            || m_flags.testFlag(SurfaceHasNonPreMulAlpha);
++    // Flip model gets promoted by DWM to independent flip where Present blocks
++    // on vblank, blit (DISCARD) model never does but lacks alpha, stereo and HDR.
++    const bool useLegacyModel = rhiD->useLegacySwapchainModel
++                                || (!needsAlpha && !stereo && m_format == SDR);
++
++    if (needsAlpha) {
++        if (!useLegacyModel && rhiD->ensureDirectCompositionDevice()) {
+             if (!dcompTarget) {
+                 hr = rhiD->dcompDevice->CreateTargetForHwnd(hwnd, false, &dcompTarget);
+                 if (FAILED(hr)) {
+@@ -5555,19 +5547,14 @@ bool QD3D11SwapChain::createOrResize()
+     }
+ 
+     swapInterval = m_flags.testFlag(QRhiSwapChain::NoVSync) ? 0 : 1;
++    // No ALLOW_TEARING: blit chain cannot tear, flip chain falls back to vsync.
+     swapChainFlags = 0;
+ 
+-    // A non-flip swapchain can do Present(0) as expected without
+-    // ALLOW_TEARING, and ALLOW_TEARING is not compatible with it at all so the
+-    // flag must not be set then. Whereas for flip we should use it, if
+-    // supported, to get better results for 'unthrottled' presentation.
+-    if (swapInterval == 0 && rhiD->supportsAllowTearing)
+-        swapChainFlags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+-
+     // maxFrameLatency 0 means no waitable object usage.
+-    // Ignore it also when NoVSync is on, and when using WARP.
++    // Ignore it also when NoVSync is on, when using WARP, and for blit model.
+     const bool useFrameLatencyWaitableObject = rhiD->maxFrameLatency != 0
+                                                && swapInterval != 0
++                                               && !useLegacyModel
+                                                && rhiD->driverInfoStruct.deviceType != QRhiDriverInfo::CpuDevice;
+ 
+     if (useFrameLatencyWaitableObject) {
+@@ -5621,8 +5608,8 @@ bool QD3D11SwapChain::createOrResize()
+         desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+         desc.BufferCount = BUFFER_COUNT;
+         desc.Flags = swapChainFlags;
+-        desc.Scaling = rhiD->useLegacySwapchainModel ? DXGI_SCALING_STRETCH : DXGI_SCALING_NONE;
+-        desc.SwapEffect = rhiD->useLegacySwapchainModel ? DXGI_SWAP_EFFECT_DISCARD : DXGI_SWAP_EFFECT_FLIP_DISCARD;
++        desc.Scaling = useLegacyModel ? DXGI_SCALING_STRETCH : DXGI_SCALING_NONE;
++        desc.SwapEffect = useLegacyModel ? DXGI_SWAP_EFFECT_DISCARD : DXGI_SWAP_EFFECT_FLIP_DISCARD;
+         desc.Stereo = stereo;
+ 
+         if (dcompVisual) {
+diff --git a/src/gui/rhi/qrhid3d11_p.h b/src/gui/rhi/qrhid3d11_p.h
+index f6a2b764..9d83afcd 100644
+--- a/src/gui/rhi/qrhid3d11_p.h
++++ b/src/gui/rhi/qrhid3d11_p.h
+@@ -833,7 +833,6 @@ public:
+     IDXGIAdapter1 *activeAdapter = nullptr;
+     IDXGIFactory1 *dxgiFactory = nullptr;
+     IDCompositionDevice *dcompDevice = nullptr;
+-    bool supportsAllowTearing = false;
+     bool useLegacySwapchainModel = false;
+     bool deviceLost = false;
+     QRhiD3D11NativeHandles nativeHandlesStruct;
