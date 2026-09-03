@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Thu, 3 Sep 2026 12:00:00
+Subject: [PATCH] created translucent direct3d windows without redirection surface
+
+Translucent Direct3D top-level presents through DirectComposition and never
+draws its redirection surface, so classic caption and resize fills painted
+there by GDI show through alpha. WS_EX_NOREDIRECTIONBITMAP at creation removes
+that surface, frameless windows keep it because Qt makes them layered.
+
+diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
+index cc1aee77..ce033304 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.cpp
++++ b/src/plugins/platforms/windows/qwindowswindow.cpp
+@@ -948,7 +948,17 @@ QWindowsWindowData
+     if (mirrorParentWidth != 0 && pos.x() != CW_USEDEFAULT && context->frameWidth != CW_USEDEFAULT)
+         pos.setX(mirrorParentWidth - context->frameWidth - pos.x());
+ 
+-    result.hwnd = CreateWindowEx(exStyle, classNameUtf16, titleUtf16,
++    // Translucent Direct3D top-level presents through DirectComposition and
++    // never draws redirection surface, GDI paints there show through alpha.
++    DWORD createExStyle = exStyle;
++    if (topLevel && !(flags & Qt::FramelessWindowHint)
++        && w->surfaceType() == QSurface::Direct3DSurface && w->format().hasAlpha()
++        && !qEnvironmentVariableIntValue("QT_D3D_NO_FLIP")
++        && QOperatingSystemVersion::current() >= QOperatingSystemVersion::Windows8) {
++        createExStyle |= WS_EX_NOREDIRECTIONBITMAP;
++    }
++
++    result.hwnd = CreateWindowEx(createExStyle, classNameUtf16, titleUtf16,
+                                  style,
+                                  pos.x(), pos.y(),
+                                  context->frameWidth, context->frameHeight,
+@@ -1000,7 +1010,8 @@ void WindowCreationData::applyWindowFlags(HWND hwnd) const
+     const LONG_PTR newStyle = style | (oldStyle & (WS_DISABLED|WS_VISIBLE));
+     if (oldStyle != newStyle)
+         SetWindowLongPtr(hwnd, GWL_STYLE, newStyle);
+-    const LONG_PTR newExStyle = exStyle;
++    // SetWindowLongPtr() rejects changing WS_EX_NOREDIRECTIONBITMAP, keep it.
++    const LONG_PTR newExStyle = exStyle | (oldExStyle & WS_EX_NOREDIRECTIONBITMAP);
+     if (newExStyle != oldExStyle)
+         SetWindowLongPtr(hwnd, GWL_EXSTYLE, newExStyle);
+     qCDebug(lcQpaWindow).nospace() << __FUNCTION__ << hwnd << *this
