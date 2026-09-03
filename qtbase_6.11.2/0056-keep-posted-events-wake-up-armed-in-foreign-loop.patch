@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Thu, 3 Sep 2026 12:00:00
+Subject: [PATCH] kept posted events wake-up armed while foreign loop drains queue
+
+Foreign message loop (window move, native menu) retrieves posted messages
+before input, and startPostedEventsTimer() cleared wakeUps there, so thread
+posting events every millisecond re-posted WM_QT_SENDPOSTEDEVENTS forever and
+window drag froze. Keep wakeUps armed, pending timer delivers events instead.
+
+diff --git a/src/corelib/kernel/qeventdispatcher_win.cpp b/src/corelib/kernel/qeventdispatcher_win.cpp
+index 57aaf721..0585f881 100644
+--- a/src/corelib/kernel/qeventdispatcher_win.cpp
++++ b/src/corelib/kernel/qeventdispatcher_win.cpp
+@@ -207,21 +207,26 @@ LRESULT QT_WIN_CALLBACK qt_internal_proc(HWND hwnd, UINT message, WPARAM wp, LPA
+         if (HIWORD(GetQueueStatus(mask)) == 0)
+             q->sendPostedEvents();
+         else
+-            d->startPostedEventsTimer();
++            d->startPostedEventsTimer(false);
+         return 0;
+     } // switch (message)
+ 
+     return DefWindowProc(hwnd, message, wp, lp);
+ }
+ 
+-void QEventDispatcherWin32Private::startPostedEventsTimer()
++void QEventDispatcherWin32Private::startPostedEventsTimer(bool allowRepost)
+ {
+-    // we received WM_QT_SENDPOSTEDEVENTS, so allow posting it again
+-    wakeUps.storeRelaxed(0);
++    // we received WM_QT_SENDPOSTEDEVENTS, so allow posting it again, unless
++    // foreign loop takes posted messages before input and re-posts starve it.
++    if (allowRepost)
++        wakeUps.storeRelaxed(0);
+     if (sendPostedEventsTimerId == 0) {
+         // Start a timer to deliver posted events when the message queue is emptied.
+         sendPostedEventsTimerId = SetTimer(internalHwnd, SendPostedEventsTimerId,
+                                            USER_TIMER_MINIMUM, NULL);
++        // Without the timer nothing else wakes the thread, allow re-posts then.
++        if (sendPostedEventsTimerId == 0)
++            wakeUps.storeRelaxed(0);
+     }
+ }
+ 
+@@ -529,15 +534,18 @@ bool QEventDispatcherWin32::processEvents(QEventLoop::ProcessEventsFlags flags)
+             }
+ 
+             if (d->internalHwnd == msg.hwnd && msg.message == WM_QT_SENDPOSTEDEVENTS) {
+-                d->startPostedEventsTimer();
++                d->startPostedEventsTimer(true);
+                 // Set result to 'true' because the message was sent by wakeUp().
+                 retVal = true;
+                 continue;
+             }
+             if (msg.message == WM_TIMER) {
+                 // Skip timer event intended for use inside foreign loop.
+-                if (d->internalHwnd == msg.hwnd && msg.wParam == d->sendPostedEventsTimerId)
++                if (d->internalHwnd == msg.hwnd && msg.wParam == d->sendPostedEventsTimerId) {
++                    // Foreign loop keeps wakeUps armed, own loop wants re-posts again.
++                    d->wakeUps.storeRelaxed(0);
+                     continue;
++                }
+ 
+                 // avoid live-lock by keeping track of the timers we've already sent
+                 bool found = false;
+diff --git a/src/corelib/kernel/qeventdispatcher_win_p.h b/src/corelib/kernel/qeventdispatcher_win_p.h
+index 91f0e960..a4b35fb3 100644
+--- a/src/corelib/kernel/qeventdispatcher_win_p.h
++++ b/src/corelib/kernel/qeventdispatcher_win_p.h
+@@ -123,7 +123,7 @@ public:
+     // for controlling when to send posted events
+     UINT_PTR sendPostedEventsTimerId;
+     QAtomicInt wakeUps;
+-    void startPostedEventsTimer();
++    void startPostedEventsTimer(bool allowRepost);
+ 
+     // timers
+     WinTimerDict timerDict;
