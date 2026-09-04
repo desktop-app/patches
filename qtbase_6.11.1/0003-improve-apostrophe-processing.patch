@@ -1,5 +1,5 @@
 diff --git a/src/gui/text/qtextcursor.cpp b/src/gui/text/qtextcursor.cpp
-index 884a16ca78..f27376c237 100644
+index 406da0e91a1..f7f650c0700 100644
 --- a/src/gui/text/qtextcursor.cpp
 +++ b/src/gui/text/qtextcursor.cpp
 @@ -474,6 +474,9 @@ bool QTextCursorPrivate::movePosition(QTextCursor::MoveOperation op, QTextCursor
@@ -23,10 +23,10 @@ index 884a16ca78..f27376c237 100644
          break;
      }
 diff --git a/src/gui/text/qtextengine.cpp b/src/gui/text/qtextengine.cpp
-index c6da4b8f4a..2753238059 100644
+index 41d2d417133..54bb2868b15 100644
 --- a/src/gui/text/qtextengine.cpp
 +++ b/src/gui/text/qtextengine.cpp
-@@ -2803,7 +2803,8 @@ bool QTextEngine::atWordSeparator(int position) const
+@@ -3021,7 +3021,8 @@ bool QTextEngine::atWordSeparator(int position) const
      case '&':
      case '^':
      case '*':
@@ -36,7 +36,7 @@ index c6da4b8f4a..2753238059 100644
      case '"':
      case '`':
      case '~':
-@@ -2816,6 +2817,74 @@ bool QTextEngine::atWordSeparator(int position) const
+@@ -3034,6 +3035,74 @@ bool QTextEngine::atWordSeparator(int position) const
      return false;
  }
  
@@ -112,10 +112,10 @@ index c6da4b8f4a..2753238059 100644
  {
      if (preeditText.isEmpty()) {
 diff --git a/src/gui/text/qtextengine_p.h b/src/gui/text/qtextengine_p.h
-index c653bfc92f..a7cc0ef51f 100644
+index f27463f7728..6f75ec80561 100644
 --- a/src/gui/text/qtextengine_p.h
 +++ b/src/gui/text/qtextengine_p.h
-@@ -585,6 +585,8 @@ private:
+@@ -589,6 +589,8 @@ private:
  
  public:
      bool atWordSeparator(int position) const;
@@ -125,31 +125,28 @@ index c653bfc92f..a7cc0ef51f 100644
      QString elidedText(Qt::TextElideMode mode, QFixed width, int flags = 0, int from = 0, int count = -1) const;
  
 diff --git a/src/gui/text/qtextlayout.cpp b/src/gui/text/qtextlayout.cpp
-index 365131f508..4dd6009845 100644
+index 8b2ebd535e3..08aadbc37c7 100644
 --- a/src/gui/text/qtextlayout.cpp
 +++ b/src/gui/text/qtextlayout.cpp
-@@ -637,6 +637,12 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
-         while (oldPos < len && !attributes[oldPos].graphemeBoundary)
+@@ -665,6 +665,9 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
+         // Patch: Skip to the end of the current word, not to the start of the next one.
+         while (oldPos < len && attributes[oldPos].whiteSpace)
              oldPos++;
-     } else {
-+        // Patch: Skip to the end of the current word, not to the start of the next one.
-+        while (oldPos < len && attributes[oldPos].whiteSpace)
-+            oldPos++;
 +        // Patch: Improved apostrophe processing.
 +        oldPos = d->toEdge(oldPos, len, true);
 +#if 0
          if (oldPos < len && d->atWordSeparator(oldPos)) {
              oldPos++;
              while (oldPos < len && d->atWordSeparator(oldPos))
-@@ -647,6 +653,7 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
+@@ -673,6 +676,7 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
+             while (oldPos < len && !attributes[oldPos].whiteSpace && !d->atWordSeparator(oldPos))
+                 oldPos++;
          }
-         while (oldPos < len && attributes[oldPos].whiteSpace)
-             oldPos++;
 +#endif
      }
  
      return oldPos;
-@@ -676,6 +683,9 @@ int QTextLayout::previousCursorPosition(int oldPos, CursorMode mode) const
+@@ -702,6 +706,9 @@ int QTextLayout::previousCursorPosition(int oldPos, CursorMode mode) const
          while (oldPos > 0 && attributes[oldPos - 1].whiteSpace)
              oldPos--;
  
@@ -159,7 +156,7 @@ index 365131f508..4dd6009845 100644
          if (oldPos && d->atWordSeparator(oldPos-1)) {
              oldPos--;
              while (oldPos && d->atWordSeparator(oldPos-1))
-@@ -684,6 +694,7 @@ int QTextLayout::previousCursorPosition(int oldPos, CursorMode mode) const
+@@ -710,6 +717,7 @@ int QTextLayout::previousCursorPosition(int oldPos, CursorMode mode) const
              while (oldPos > 0 && !attributes[oldPos - 1].whiteSpace && !d->atWordSeparator(oldPos-1))
                  oldPos--;
          }
