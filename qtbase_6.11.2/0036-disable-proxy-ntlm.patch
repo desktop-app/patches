@@ -84,11 +84,11 @@ index 1b8bfd5d72b..a41e3859494 100644
      }
  #endif // QT_CONFIG(networkproxy)
 diff --git a/src/network/kernel/qauthenticator.cpp b/src/network/kernel/qauthenticator.cpp
-index 7be1d7fe3aa..d7bc68e348c 100644
+index 8d3baad53cf..93428b1f642 100644
 --- a/src/network/kernel/qauthenticator.cpp
 +++ b/src/network/kernel/qauthenticator.cpp
-@@ -459,8 +459,28 @@ static bool verifyDigestMD5(QByteArrayView value)
-     return true; // assume it's ok if algorithm is not specified
+@@ -521,9 +521,29 @@ static const char *methodName(QAuthenticatorPrivate::Method method)
+     Q_UNREACHABLE_RETURN("Unknown");
  }
  
 +static bool qStartsWithAuthenticationScheme(QByteArrayView value, QByteArrayView scheme)
@@ -110,6 +110,7 @@ index 7be1d7fe3aa..d7bc68e348c 100644
 +        || qStartsWithAuthenticationScheme(value, "negotiate");
 +}
 +
+ 
  void QAuthenticatorPrivate::parseHttpResponse(const QHttpHeaders &headers,
 -                                              bool isProxy, QStringView host)
 +                                              bool isProxy, QStringView host,
@@ -117,64 +118,46 @@ index 7be1d7fe3aa..d7bc68e348c 100644
  {
  #if !QT_CONFIG(gssapi)
      Q_UNUSED(host);
-@@ -479,23 +499,28 @@ void QAuthenticatorPrivate::parseHttpResponse(const QHttpHeaders &headers,
-       authentication parameters.
+@@ -545,27 +565,31 @@ void QAuthenticatorPrivate::parseHttpResponse(const QHttpHeaders &headers,
      */
  
--    QByteArrayView headerVal;
-+    QByteArray headerVal;
+     QByteArrayView headerVal;
 +    bool skippedUnsafeProxyAuthenticationScheme = false;
-     for (const auto &current : headers.values(search)) {
+     const QByteArrayList values = headers.values(search); // pinned for headerVal
+     for (const auto &current : values) {
 -        const QLatin1StringView str(current);
--        if (method < Basic && str.startsWith("basic"_L1, Qt::CaseInsensitive)) {
-+        const QByteArrayView value = QByteArrayView(current).trimmed();
-+        if (isProxy && !allowUnsafeProxyMethods && qIsUnsafeProxyAuthenticationScheme(value)) {
++        if (isProxy && !allowUnsafeProxyMethods && qIsUnsafeProxyAuthenticationScheme(current)) {
 +            skippedUnsafeProxyAuthenticationScheme = true;
 +            continue;
 +        }
-+        if (method < Basic && qStartsWithAuthenticationScheme(value, "basic")) {
+         if (methodStrength(method) < methodStrength(Basic)
+-                && str.startsWith("basic"_L1, Qt::CaseInsensitive)) {
++                && qStartsWithAuthenticationScheme(current, "basic")) {
              method = Basic;
--            headerVal = QByteArrayView(current).mid(6);
--        } else if (method < Ntlm && str.startsWith("ntlm"_L1, Qt::CaseInsensitive)) {
-+            headerVal = value.sliced(6).toByteArray();
-+        } else if (method < Ntlm && qStartsWithAuthenticationScheme(value, "ntlm")) {
+             headerVal = QByteArrayView(current).mid(6);
+         } else if (methodStrength(method) < methodStrength(Ntlm)
+-                && str.startsWith("ntlm"_L1, Qt::CaseInsensitive)) {
++                && qStartsWithAuthenticationScheme(current, "ntlm")) {
              method = Ntlm;
--            headerVal = QByteArrayView(current).mid(5);
--        } else if (method < DigestMd5 && str.startsWith("digest"_L1, Qt::CaseInsensitive)) {
-+            headerVal = value.sliced(5).toByteArray();
-+        } else if (method < DigestMd5 && qStartsWithAuthenticationScheme(value, "digest")) {
+             headerVal = QByteArrayView(current).mid(5);
+         } else if (methodStrength(method) < methodStrength(DigestMd5)
+-                && str.startsWith("digest"_L1, Qt::CaseInsensitive)) {
++                && qStartsWithAuthenticationScheme(current, "digest")) {
              // Make sure the algorithm is actually MD5 before committing to it:
 -            if (!verifyDigestMD5(QByteArrayView(current).sliced(7)))
-+            if (!verifyDigestMD5(value.sliced(7)))
++            if (!verifyDigestMD5(QByteArrayView(current).mid(7)))
                  continue;
  
              method = DigestMd5;
--            headerVal = QByteArrayView(current).mid(7);
--        } else if (method < Negotiate && str.startsWith("negotiate"_L1, Qt::CaseInsensitive)) {
-+            headerVal = value.sliced(7).toByteArray();
-+        } else if (method < Negotiate && qStartsWithAuthenticationScheme(value, "negotiate")) {
+             headerVal = QByteArrayView(current).mid(7);
+         } else if (methodStrength(method) < methodStrength(Negotiate)
+-                && str.startsWith("negotiate"_L1, Qt::CaseInsensitive)) {
++                && qStartsWithAuthenticationScheme(current, "negotiate")) {
  #if QT_CONFIG(sspi) || QT_CONFIG(gssapi) // if it's not supported then we shouldn't try to use it
  #if QT_CONFIG(gssapi)
              // For GSSAPI there needs to be a KDC set up for the host (afaict).
-@@ -505,14 +530,14 @@ void QAuthenticatorPrivate::parseHttpResponse(const QHttpHeaders &headers,
-                 continue;
- #endif
-             method = Negotiate;
--            headerVal = QByteArrayView(current).mid(10);
-+            headerVal = value.sliced(10).toByteArray();
- #endif
-         }
-     }
- 
-     // Reparse credentials since we know the method now
-     updateCredentials();
--    challenge = headerVal.trimmed().toByteArray();
-+    challenge = headerVal.trimmed();
-     QHash<QByteArray, QByteArray> options = parseDigestAuthenticationChallenge(challenge);
- 
-     // Sets phase to Start if this updates our realm and sets the two locations where we store
-@@ -549,7 +574,7 @@ void QAuthenticatorPrivate::parseHttpResponse(const QHttpHeaders &headers,
-     default:
+@@ -635,7 +659,7 @@ void QAuthenticatorPrivate::parseHttpResponse(const QHttpHeaders &headers,
+     case None:
          realm.clear();
          challenge = QByteArray();
 -        phase = Invalid;
@@ -182,100 +165,6 @@ index 7be1d7fe3aa..d7bc68e348c 100644
      }
  }
  
-@@ -1322,30 +1347,33 @@ static QByteArray clientChallenge(const QAuthenticatorPrivate *ctx)
-     return clientCh;
- }
- 
--// caller has to ensure a valid targetInfoBuff
- static QByteArray qExtractServerTime(const QByteArray& targetInfoBuff)
- {
--    QByteArray timeArray;
--    QDataStream ds(targetInfoBuff);
--    ds.setByteOrder(QDataStream::LittleEndian);
-+    const uchar *p = reinterpret_cast<const uchar *>(targetInfoBuff.constData());
-+    const uchar *end = p + targetInfoBuff.size();
-+
-+    while (end - p >= 4) {
-+        const quint16 avId = qFromLittleEndian<quint16>(p);
-+        p += 2;
-+        const quint16 avLen = qFromLittleEndian<quint16>(p);
-+        p += 2;
- 
--    quint16 avId;
--    quint16 avLen;
-+        if (avId == 0)
-+            return QByteArray();
-+
-+        if (avLen > end - p)
-+            return QByteArray();
- 
--    ds >> avId;
--    ds >> avLen;
--    while(avId != 0) {
-         if (avId == AVTIMESTAMP) {
--            timeArray.resize(avLen);
--            //avLen size of QByteArray is allocated
--            ds.readRawData(timeArray.data(), avLen);
--            break;
-+            if (avLen != 8)
-+                return QByteArray();
-+            return QByteArray(reinterpret_cast<const char *>(p), 8);
-         }
--        ds.skipRawData(avLen);
--        ds >> avId;
--        ds >> avLen;
-+
-+        p += avLen;
-     }
--    return timeArray;
-+
-+    return QByteArray();
- }
- 
- static QByteArray qEncodeNtlmv2Response(const QAuthenticatorPrivate *ctx,
-@@ -1376,8 +1404,8 @@ static QByteArray qEncodeNtlmv2Response(const QAuthenticatorPrivate *ctx,
-     }
- 
-     //if server sends time, use it instead of current time
--    if (timeArray.size()) {
--        ds.writeRawData(timeArray.constData(), timeArray.size());
-+    if (timeArray.size() == 8) {
-+        ds.writeRawData(timeArray.constData(), 8);
-     } else {
-         // number of seconds between 1601 and the epoch (1970)
-         // 369 years, 89 leap years
-@@ -1434,6 +1462,14 @@ static QByteArray qEncodeLmv2Response(const QAuthenticatorPrivate *ctx,
-     return lmChallengeResp;
- }
- 
-+static bool qNtlmBufferFits(const QNtlmBuffer &buffer, qsizetype dataSize)
-+{
-+    const quint64 size = quint64(dataSize);
-+    const quint64 offset = buffer.offset;
-+    const quint64 len = buffer.len;
-+    return offset <= size && len <= size - offset;
-+}
-+
- static bool qNtlmDecodePhase2(const QByteArray& data, QNtlmPhase2Block& ch)
- {
-     if (data.size() < QNtlmPhase2Block::Size)
-@@ -1459,14 +1495,14 @@ static bool qNtlmDecodePhase2(const QByteArray& data, QNtlmPhase2Block& ch)
-     ds >> ch.targetInfo;
- 
-     if (ch.targetName.len > 0) {
--        if (qsizetype(ch.targetName.len + ch.targetName.offset) > data.size())
-+        if (!qNtlmBufferFits(ch.targetName, data.size()))
-             return false;
- 
-         ch.targetNameStr = qStringFromUcs2Le(data.mid(ch.targetName.offset, ch.targetName.len));
-     }
- 
-     if (ch.targetInfo.len > 0) {
--        if (ch.targetInfo.len + ch.targetInfo.offset > (unsigned)data.size())
-+        if (!qNtlmBufferFits(ch.targetInfo, data.size()))
-             return false;
- 
-         ch.targetInfoBuff = data.mid(ch.targetInfo.offset, ch.targetInfo.len);
 diff --git a/src/network/kernel/qauthenticator_p.h b/src/network/kernel/qauthenticator_p.h
 index 533ad4481f7..70cb370a6d1 100644
 --- a/src/network/kernel/qauthenticator_p.h

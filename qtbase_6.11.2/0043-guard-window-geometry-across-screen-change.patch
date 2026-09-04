@@ -22,39 +22,8 @@ This was seen live on Windows: a tool window being moved off a
 disconnected monitor crashed reading through the null platform window
 right after the screenChanged() emission.
 
-Guard the window under a QPointer across setTopLevelScreen() and re-check
-the platform window before calling through it, and hold the removeScreen()
-snapshot through QPointer the same way the leftover window loop on the
-screen removal path already does. Nothing changes when no window is
-destroyed: the guard only exists on an actual screen change.
-
-diff --git a/src/gui/kernel/qwindow.cpp b/src/gui/kernel/qwindow.cpp
-index 1af8508..7e53cfb 100644
---- a/src/gui/kernel/qwindow.cpp
-+++ b/src/gui/kernel/qwindow.cpp
-@@ -1891,8 +1891,19 @@ void QWindow::setGeometry(const QRect &rect)
-         // the new screen without actually changing the screen, so that
-         // the geometry change is the trigger for the screen change.
-         QScreen *newScreen = d->screenForGeometry(rect);
--        if (newScreen && isTopLevel())
-+        // Patched: setTopLevelScreen() emits screenChanged() synchronously, and
-+        // the application code it runs is free to destroy() this window or to
-+        // delete it outright, both leaving platformWindow null. It is a no-op
-+        // unless the screen actually changes, so only then guard "this" across
-+        // the call, and re-check the platform window before calling through it.
-+        if (newScreen && isTopLevel() && newScreen != screen()) {
-+            QPointer<QWindow> guard(this);
-             d->setTopLevelScreen(newScreen, true);
-+            if (!guard)
-+                return;
-+        }
-+    }
-+    if (d->platformWindow) {
-         d->platformWindow->setGeometry(QHighDpi::toNativeWindowGeometry(rect, this));
-     } else {
-         d->geometry = rect;
 diff --git a/src/plugins/platforms/windows/qwindowsscreen.cpp b/src/plugins/platforms/windows/qwindowsscreen.cpp
-index acbc93a..9ed69cf 100644
+index acbc93acfd3..9ed69cffd7d 100644
 --- a/src/plugins/platforms/windows/qwindowsscreen.cpp
 +++ b/src/plugins/platforms/windows/qwindowsscreen.cpp
 @@ -13,6 +13,7 @@
