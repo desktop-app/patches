@@ -1,0 +1,14 @@
+@'
+diff --git a/configure b/configure
+index b212e07..f9a48aa 100755
+--- a/configure
++++ b/configure
+@@ -176,6 +176,7 @@ all_platforms="${all_platforms} x86_64-win64-vs14"
+ all_platforms="${all_platforms} x86_64-win64-vs15"
+ all_platforms="${all_platforms} x86_64-win64-vs16"
+ all_platforms="${all_platforms} x86_64-win64-vs17"
++all_platforms="${all_platforms} x86_64-win64-vs17-v145"
+ all_platforms="${all_platforms} generic-gnu"
+ 
+ # all_targets is a list of all targets that can be configured
+'@ | Set-Content -NoNewline -Encoding utf8 "C:\Users\UF\Documents\TBuild\patches_temp\libvpx\0007-add-x86_64-v145-toolset.patch"
