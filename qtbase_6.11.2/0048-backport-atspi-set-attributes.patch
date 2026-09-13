@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Tue, 8 Sep 2026 12:00:00
+Subject: [PATCH] backported the AT-SPI mapping of the PositionInSet/SizeOfSet attributes
+
+Backport of the Qt 6.13 change e67c4ebbd2d7268a51d54fca2dd40225915ec960
+(QTBUG-149577): the AT-SPI bridge forwards the PositionInSet and SizeOfSet
+attributes, added in 64a9bd4c2291359a125b406bff43d3ecace07b42 and
+backported in 0047, as the "posinset" and "setsize" object attributes,
+the way the Core Accessibility API Mappings specify for aria-posinset and
+aria-setsize, so assistive technology on Linux can report the position of
+an element within its set ("2 of 10") the same way as on Windows.
+
+diff --git a/src/gui/accessible/linux/atspiadaptor.cpp b/src/gui/accessible/linux/atspiadaptor.cpp
+index dae8343..11f4c78 100644
+--- a/src/gui/accessible/linux/atspiadaptor.cpp
++++ b/src/gui/accessible/linux/atspiadaptor.cpp
+@@ -2470,6 +2470,14 @@ QSpiAttributeSet AtSpiAdaptor::getAttributes(QAccessibleInterface *interface)
+             Q_ASSERT(value.canConvert<int>());
+             set.insert(QStringLiteral("level"), QString::number(value.toInt()));
+             break;
++        case QAccessible::Attribute::PositionInSet:
++            Q_ASSERT(value.canConvert<int>());
++            set.insert(QStringLiteral("posinset"), QString::number(value.toInt()));
++            break;
++        case QAccessible::Attribute::SizeOfSet:
++            Q_ASSERT(value.canConvert<int>());
++            set.insert(QStringLiteral("setsize"), QString::number(value.toInt()));
++            break;
+         default:
+             break;
+         }

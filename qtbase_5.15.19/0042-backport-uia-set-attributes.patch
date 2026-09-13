@@ -1,0 +1,74 @@
+diff --git a/src/gui/accessible/qaccessible.h b/src/gui/accessible/qaccessible.h
+index 121e519a338..f39ee239d90 100644
+--- a/src/gui/accessible/qaccessible.h
++++ b/src/gui/accessible/qaccessible.h
+@@ -390,6 +390,8 @@ public:
+         Level,
+         Locale,
+         Orientation,
++        PositionInSet,
++        SizeOfSet,
+     };
+     Q_ENUM(Attribute)
+ 
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+index 1e399f99240..ca6c664b973 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+@@ -396,6 +396,24 @@ HRESULT QWindowsUiaMainProvider::GetPatternProvider(PATTERNID idPattern, IUnknow
+     return S_OK;
+ }
+ 
++void QWindowsUiaMainProvider::setIntAttribute(QAccessibleInterface *accessible,
++                                              QAccessible::Attribute attribute,
++                                              VARIANT *pRetVal)
++{
++    Q_ASSERT(accessible);
++
++    QAccessibleAttributesInterface *attributesIface = accessible->attributesInterface();
++    if (!attributesIface)
++        return;
++
++    const QVariant value = attributesIface->attributeValue(attribute);
++    if (!value.isValid())
++        return;
++
++    Q_ASSERT(value.canConvert<int>());
++    setVariantI4(value.toInt(), pRetVal);
++}
++
+ HRESULT QWindowsUiaMainProvider::GetPropertyValue(PROPERTYID idProp, VARIANT *pRetVal)
+ {
+     qCDebug(lcQpaUiAutomation) << __FUNCTION__ << idProp;
+@@ -517,6 +535,18 @@ HRESULT QWindowsUiaMainProvider::GetPropertyValue(PROPERTYID idProp, VARIANT *pR
+         setVariantI4(orientationType, pRetVal);
+         break;
+     }
++    case UIA_LevelPropertyId:
++        // Headings convey their level through the heading text style
++        // instead, the way upstream Qt maps them.
++        if (accessible->role() != QAccessible::Heading)
++            setIntAttribute(accessible, QAccessible::Attribute::Level, pRetVal);
++        break;
++    case UIA_PositionInSetPropertyId:
++        setIntAttribute(accessible, QAccessible::Attribute::PositionInSet, pRetVal);
++        break;
++    case UIA_SizeOfSetPropertyId:
++        setIntAttribute(accessible, QAccessible::Attribute::SizeOfSet, pRetVal);
++        break;
+     case UIA_NamePropertyId: {
+         QString name = accessible->text(QAccessible::Name);
+         if (name.isEmpty() && topLevelWindow)
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.h b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.h
+index 8aadabd227f..865f41082c2 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.h
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.h
+@@ -98,6 +98,8 @@ public:
+ 
+ private:
+     QString automationIdForAccessible(const QAccessibleInterface *accessible);
++    static void setIntAttribute(QAccessibleInterface *accessible,
++                                QAccessible::Attribute attribute, VARIANT *pRetVal);
+     ULONG m_ref;
+     static QMutex m_mutex;
+ };
