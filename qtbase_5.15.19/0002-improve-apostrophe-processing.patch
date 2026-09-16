@@ -123,28 +123,28 @@ index f069951ce5f..b8408f0b6d7 100644
      QString elidedText(Qt::TextElideMode mode, const QFixed &width, int flags = 0, int from = 0, int count = -1) const;
  
 diff --git a/src/gui/text/qtextlayout.cpp b/src/gui/text/qtextlayout.cpp
-index d939127fd28..ad9c3fb6b94 100644
+index ef91ca52915..ed58a761033 100644
 --- a/src/gui/text/qtextlayout.cpp
 +++ b/src/gui/text/qtextlayout.cpp
-@@ -720,6 +720,9 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
-         // Patch: Skip to the end of the current word, not to the start of the next one.
+@@ -722,6 +722,9 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
          while (oldPos < len && attributes[oldPos].whiteSpace)
              oldPos++;
+ #endif
 +        // Patch: Improved apostrophe processing.
 +        oldPos = d->toEdge(oldPos, len, true);
 +#if 0
          if (oldPos < len && d->atWordSeparator(oldPos)) {
              oldPos++;
              while (oldPos < len && d->atWordSeparator(oldPos))
-@@ -728,6 +731,7 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
+@@ -730,6 +733,7 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
              while (oldPos < len && !attributes[oldPos].whiteSpace && !d->atWordSeparator(oldPos))
                  oldPos++;
          }
 +#endif
-     }
- 
-     return oldPos;
-@@ -757,6 +761,9 @@ int QTextLayout::previousCursorPosition(int oldPos, CursorMode mode) const
+ #ifndef Q_OS_MACOS
+         while (oldPos < len && attributes[oldPos].whiteSpace)
+             oldPos++;
+@@ -763,6 +767,9 @@ int QTextLayout::previousCursorPosition(int oldPos, CursorMode mode) const
          while (oldPos > 0 && attributes[oldPos - 1].whiteSpace)
              oldPos--;
  
@@ -154,7 +154,7 @@ index d939127fd28..ad9c3fb6b94 100644
          if (oldPos && d->atWordSeparator(oldPos-1)) {
              oldPos--;
              while (oldPos && d->atWordSeparator(oldPos-1))
-@@ -765,6 +772,7 @@ int QTextLayout::previousCursorPosition(int oldPos, CursorMode mode) const
+@@ -771,6 +778,7 @@ int QTextLayout::previousCursorPosition(int oldPos, CursorMode mode) const
              while (oldPos > 0 && !attributes[oldPos - 1].whiteSpace && !d->atWordSeparator(oldPos-1))
                  oldPos--;
          }

@@ -1,23 +1,27 @@
 diff --git a/src/gui/text/qtextlayout.cpp b/src/gui/text/qtextlayout.cpp
-index b8601e40bb0..d939127fd28 100644
+index b8601e40bb0..ef91ca52915 100644
 --- a/src/gui/text/qtextlayout.cpp
 +++ b/src/gui/text/qtextlayout.cpp
-@@ -717,6 +717,9 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
+@@ -717,6 +717,11 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
          while (oldPos < len && !attributes[oldPos].graphemeBoundary)
              oldPos++;
      } else {
++#ifdef Q_OS_MACOS
 +        // Patch: Skip to the end of the current word, not to the start of the next one.
 +        while (oldPos < len && attributes[oldPos].whiteSpace)
 +            oldPos++;
++#endif
          if (oldPos < len && d->atWordSeparator(oldPos)) {
              oldPos++;
              while (oldPos < len && d->atWordSeparator(oldPos))
-@@ -725,8 +728,6 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
+@@ -725,8 +730,10 @@ int QTextLayout::nextCursorPosition(int oldPos, CursorMode mode) const
              while (oldPos < len && !attributes[oldPos].whiteSpace && !d->atWordSeparator(oldPos))
                  oldPos++;
          }
--        while (oldPos < len && attributes[oldPos].whiteSpace)
--            oldPos++;
++#ifndef Q_OS_MACOS
+         while (oldPos < len && attributes[oldPos].whiteSpace)
+             oldPos++;
++#endif
      }
  
      return oldPos;
