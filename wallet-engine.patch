@@ -11,10 +11,10 @@ index 74fbdfd..2127462 100644
  ### Changed
  
 diff --git a/TON_CONNECT.md b/TON_CONNECT.md
-index 72292e1..e8b0247 100644
+index 72292e1..e39784a 100644
 --- a/TON_CONNECT.md
 +++ b/TON_CONNECT.md
-@@ -175,6 +175,34 @@ For a wallet-initiated disconnect, call `disconnect` and deliver its prepared
+@@ -175,6 +175,36 @@ For a wallet-initiated disconnect, call `disconnect` and deliver its prepared
  POST with the same durable sequence. Use `reject_connect` when the user rejects
  the initial connection.
  
@@ -39,6 +39,8 @@ index 72292e1..e8b0247 100644
 +   `encrypt_send_success`, `encrypt_disconnect_success`, `encrypt_error`, and
 +   `encrypt_disconnect_event`. Each returns raw `nonce || box` bytes, never
 +   base64, and carries exactly the event or request id the caller supplies.
++   A connect event with a proof writes `proof.timestamp` as a JSON number, the
++   only form `@tonconnect/sdk` accepts; the signed bytes do not depend on it.
 +
 +The derived session advertises `SendTransaction` only; `signMessage` and
 +`signData` decode as `Unsupported` with `MethodNotSupported`. The object keeps
@@ -286,10 +288,10 @@ index bc38d0f..7420a86 100644
      }
 diff --git a/src/ton_connect_derived.rs b/src/ton_connect_derived.rs
 new file mode 100644
-index 0000000..4ef6523
+index 0000000..09b8284
 --- /dev/null
 +++ b/src/ton_connect_derived.rs
-@@ -0,0 +1,893 @@
+@@ -0,0 +1,1039 @@
 +//! `MTProto`-relayed TON Connect sessions with server-nonce-derived keys.
 +//!
 +//! The server relays opaque `nonce || box` ciphertext between a dApp and every
@@ -304,9 +306,9 @@ index 0000000..4ef6523
 +use serde::Serialize;
 +use ton_connect_core::{
 +    AppRequest, CellBoc, ClientId, ConnectEvent, ConnectEventError, ConnectEventErrorCode,
-+    ConnectEventPayload, ConnectItemReply, DeviceInfo, EmptyObject, Feature, KnownAppRequest,
-+    NetworkId, RawAccountAddress, SendTransactionFeature, SessionCrypto, TonProofItemReply,
-+    WalletResponse, WalletResponseError, WalletResponseSuccess, WalletResult,
++    ConnectEventPayload, ConnectItemReply, DeviceInfo, Ed25519Signature, EmptyObject, Feature,
++    KnownAppRequest, NetworkId, RawAccountAddress, SendTransactionFeature, SessionCrypto, TonProof,
++    TonProofDomain, WalletResponse, WalletResponseError, WalletResponseSuccess, WalletResult,
 +};
 +use zeroize::Zeroizing;
 +
@@ -529,19 +531,26 @@ index 0000000..4ef6523
 +                "TON Connect account does not belong to this session",
 +            ));
 +        }
-+        let mut items = vec![ConnectItemReply::TonAddress(account_reply)];
-+        if let Some(proof) = proof.as_ref() {
-+            items.push(ConnectItemReply::TonProof(TonProofItemReply::new(
-+                proof_reply(proof)?,
-+            )));
-+        }
-+        self.encrypt(&ConnectEvent::Connect {
++        let account_item = ConnectItemReply::TonAddress(account_reply);
++        let Some(proof) = proof.as_ref() else {
++            return self.encrypt(&ConnectEvent::Connect {
++                id: event_id,
++                payload: ConnectEventPayload {
++                    items: vec![account_item],
++                    device: device_info(device)?,
++                },
++                response: None,
++            });
++        };
++        let proof = proof_reply(proof)?;
++        let device = device_info(device)?;
++        self.encrypt(&ProofConnectEvent {
++            event: "connect",
 +            id: event_id,
-+            payload: ConnectEventPayload {
-+                items,
-+                device: device_info(device)?,
++            payload: ProofConnectPayload {
++                items: (&account_item, ProofItem::new(&proof)),
++                device: &device,
 +            },
-+            response: None,
 +        })
 +    }
 +
@@ -614,6 +623,57 @@ index 0000000..4ef6523
 +    }
 +}
 +
++/// A successful connect event that carries a `ton_proof` reply.
++///
++/// It mirrors `ConnectEvent::Connect` key for key and differs from it in one
++/// token: `proof.timestamp` is a JSON number. `@tonconnect/sdk` accepts only a
++/// number there and replaces the whole item by an error otherwise, while the
++/// core type writes a decimal string. An event without a proof never takes
++/// this route, so its bytes stay those of the core type.
++#[derive(Serialize)]
++struct ProofConnectEvent<'a> {
++    event: &'static str,
++    id: u64,
++    payload: ProofConnectPayload<'a>,
++}
++
++#[derive(Serialize)]
++struct ProofConnectPayload<'a> {
++    /// A tuple serializes as an array: the `ton_addr` reply, then the proof.
++    items: (&'a ConnectItemReply, ProofItem<'a>),
++    device: &'a DeviceInfo,
++}
++
++#[derive(Serialize)]
++struct ProofItem<'a> {
++    name: &'static str,
++    proof: ProofBody<'a>,
++}
++
++#[derive(Serialize)]
++struct ProofBody<'a> {
++    /// Written by `serialize_u64` as exact decimal digits, never as a float.
++    /// The signature covers the little-endian 64-bit value, not this text.
++    timestamp: u64,
++    domain: &'a TonProofDomain,
++    payload: &'a str,
++    signature: &'a Ed25519Signature,
++}
++
++impl<'a> ProofItem<'a> {
++    const fn new(proof: &'a TonProof) -> Self {
++        Self {
++            name: "ton_proof",
++            proof: ProofBody {
++                timestamp: proof.timestamp.get(),
++                domain: &proof.domain,
++                payload: proof.payload.as_str(),
++                signature: &proof.signature,
++            },
++        }
++    }
++}
++
 +/// Builds the advertised runtime descriptor: `SendTransaction` only.
 +fn device_info(device: TonConnectDevice) -> Result<DeviceInfo, TonConnectSessionError> {
 +    let send = SendTransactionFeature::new(TON_CONNECT_MAX_MESSAGES, Some(false), None)
@@ -652,6 +712,7 @@ index 0000000..4ef6523
 +    use base64::{Engine as _, engine::general_purpose::STANDARD};
 +    use serde_json::{Value, json};
 +    use ton::ton_core::traits::tlb::TLB as _;
++    use ton_connect_core::TonProofItemReply;
 +
 +    use super::*;
 +    use crate::{Network, SendExpiration, TonConnectDevicePlatform};
@@ -768,6 +829,14 @@ index 0000000..4ef6523
 +        Ok(serde_json::from_slice(&dapp.decrypt(w(session), bytes)?)?)
 +    }
 +
++    /// The sorted keys of a JSON object.
++    fn keys(value: &Value) -> Result<Vec<&str>, Box<dyn std::error::Error>> {
++        let object = value.as_object().ok_or("value must be an object")?;
++        let mut keys = object.keys().map(String::as_str).collect::<Vec<_>>();
++        keys.sort_unstable();
++        Ok(keys)
++    }
++
 +    #[test]
 +    fn derived_public_key_matches_the_fixed_vector() -> TestResult {
 +        let peer = PEER.parse::<ClientId>()?;
@@ -814,6 +883,41 @@ index 0000000..4ef6523
 +    }
 +
 +    #[test]
++    fn connect_event_without_proof_keeps_the_core_bytes() -> TestResult {
++        let dapp = SessionCrypto::generate()?;
++        let session = session(&dapp);
++        let (info, _, _) = account();
++        let bytes = session.encrypt_connect_event(5, info.clone(), None, device())?;
++        let plaintext = String::from_utf8(dapp.decrypt(w(&session), &bytes)?)?;
++
++        let expected = format!(
++            concat!(
++                r#"{{"event":"connect","id":5,"payload":{{"items":[{{"name":"ton_addr","#,
++                r#""address":"{}","network":"-3","walletStateInit":"{}","publicKey":"{}"}}],"#,
++                r#""device":{{"platform":"mac","appName":"telegram","appVersion":"6.3.1","#,
++                r#""maxProtocolVersion":2,"features":[{{"name":"SendTransaction","#,
++                r#""maxMessages":255,"extraCurrencySupported":false}}]}}}}}}"#
++            ),
++            info.address,
++            info.wallet_state_init,
++            "00".repeat(32)
++        );
++        assert_eq!(plaintext, expected);
++
++        let (account_item, _) = account_reply(&info)?;
++        let core = serde_json::to_string(&ConnectEvent::Connect {
++            id: 5,
++            payload: ConnectEventPayload {
++                items: vec![ConnectItemReply::TonAddress(account_item)],
++                device: device_info(device())?,
++            },
++            response: None,
++        })?;
++        assert_eq!(plaintext, core);
++        Ok(())
++    }
++
++    #[test]
 +    fn dapp_decrypts_the_connect_event_with_proof() -> TestResult {
 +        let dapp = SessionCrypto::generate()?;
 +        let session = session(&dapp);
@@ -826,17 +930,61 @@ index 0000000..4ef6523
 +        };
 +        let bytes =
 +            session.encrypt_connect_event(6, info.clone(), Some(proof.clone()), device())?;
-+        let value = decrypt_json(&dapp, &session, &bytes)?;
++        let plaintext = dapp.decrypt(w(&session), &bytes)?;
++        let value: Value = serde_json::from_slice(&plaintext)?;
 +        let items = value["payload"]["items"]
 +            .as_array()
 +            .ok_or("items must be an array")?;
 +        assert_eq!(items.len(), 2);
 +        assert_eq!(items[0]["name"], "ton_addr");
 +        assert_eq!(items[1]["name"], "ton_proof");
-+        assert_eq!(items[1]["proof"]["signature"], STANDARD.encode([9_u8; 64]));
-+        assert_eq!(items[1]["proof"]["payload"], "challenge");
-+        assert_eq!(items[1]["proof"]["timestamp"], "1800000000");
-+        assert_eq!(items[1]["proof"]["domain"]["value"], "app.example");
++
++        // The checks `@tonconnect/sdk` 4.0.2 runs before it keeps a `ton_proof`
++        // item; on any failure it replaces the item by an error. The signed
++        // bytes are unaffected by the JSON form of `timestamp`: the signature
++        // covers the little-endian 64-bit value.
++        assert_eq!(keys(&items[1])?, ["name", "proof"]);
++        let item = &items[1]["proof"];
++        assert_eq!(keys(item)?, ["domain", "payload", "signature", "timestamp"]);
++        assert!(item["timestamp"].is_u64());
++        assert_eq!(item["timestamp"], 1_800_000_000_u64);
++        assert!(item["domain"]["lengthBytes"].is_u64());
++        assert_eq!(item["domain"]["lengthBytes"], "app.example".len());
++        assert_eq!(item["domain"]["value"], "app.example");
++        assert_eq!(item["payload"], "challenge");
++        let signature = item["signature"]
++            .as_str()
++            .ok_or("signature must be a string")?;
++        assert_eq!(signature.len(), 88);
++        assert!(signature.ends_with("=="));
++        assert_eq!(signature, STANDARD.encode([9_u8; 64]));
++        assert_eq!(STANDARD.decode(signature)?, vec![9_u8; 64]);
++
++        // Nothing but the timestamp token differs from the core serialization.
++        let (account_item, _) = account_reply(&info)?;
++        let core = serde_json::to_string(&ConnectEvent::Connect {
++            id: 6,
++            payload: ConnectEventPayload {
++                items: vec![
++                    ConnectItemReply::TonAddress(account_item),
++                    ConnectItemReply::TonProof(TonProofItemReply::new(proof_reply(&proof)?)),
++                ],
++                device: device_info(device())?,
++            },
++            response: None,
++        })?;
++        assert_eq!(core.matches(r#""timestamp":"1800000000""#).count(), 1);
++        assert_eq!(
++            String::from_utf8(plaintext)?,
++            core.replace(r#""timestamp":"1800000000""#, r#""timestamp":1800000000"#)
++        );
++
++        // Every `u64` is written as its exact decimal digits, never as a float.
++        let mut latest = proof.clone();
++        latest.timestamp = u64::MAX;
++        let bytes = session.encrypt_connect_event(6, info.clone(), Some(latest), device())?;
++        let plaintext = String::from_utf8(dapp.decrypt(w(&session), &bytes)?)?;
++        assert!(plaintext.contains(r#""timestamp":18446744073709551615,"#));
 +
 +        let mut short = proof;
 +        short.signature = vec![9_u8; 63];
