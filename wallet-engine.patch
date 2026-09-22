@@ -1,5 +1,5 @@
 diff --git a/CHANGELOG.md b/CHANGELOG.md
-index 74fbdfd..2127462 100644
+index 74fbdfd..f6c4704 100644
 --- a/CHANGELOG.md
 +++ b/CHANGELOG.md
 @@ -8,6 +8,7 @@ This file records user-visible changes to Wallet Engine.
@@ -9,6 +9,14 @@ index 74fbdfd..2127462 100644
 +- Added `WalletLifecycle::derive_ton_connect_session` and the `TonConnectDerivedSession` object for MTProto-relayed TON Connect sessions whose X25519 key pair is derived from the wallet's current signing key, the dApp client id, and a server nonce. The object exposes only the session public key and the signing public key, opens the server challenge, validates relayed requests, and encrypts raw `nonce || box` replies with caller-supplied ids; it advertises `SendTransaction` only and persists nothing. Appended `SecretAccessReason::DeriveTonConnectSessionKey` and `WalletLifecycleError::InvalidTonConnectSessionInput`.
  
  ### Changed
+ 
+@@ -17,6 +18,7 @@ This file records user-visible changes to Wallet Engine.
+ 
+ - Wallet rev00 key rotation can be prepared repeatedly. Later rotations are authorized by the current signing half while preserving the anchor half and wallet address.
+ - Key rotation no longer interprets Toncenter's failed `seqno` getter stack for an undeployed account. It derives sequence number zero from account state and prepares a deployable rotation BOC with `StateInit`.
++- TON Connect `sendTransaction` and `signMessage` messages now use the bounce flag of the destination's user-friendly address, as the TON Connect specification requires, instead of always being non-bounceable.
+ 
+ ## [0.0.6] - 2026-08-26
  
 diff --git a/TON_CONNECT.md b/TON_CONNECT.md
 index 72292e1..e39784a 100644
@@ -111,7 +119,7 @@ index df64aa4..ffa754e 100644
  pub use types::{
      Base64Hash, Base64HashError, Boc, BocError, NonEmptyString, NonEmptyStringError,
 diff --git a/src/ton_connect.rs b/src/ton_connect.rs
-index bc38d0f..7420a86 100644
+index bc38d0f..ced3869 100644
 --- a/src/ton_connect.rs
 +++ b/src/ton_connect.rs
 @@ -13,7 +13,7 @@ use ton_connect_client::{
@@ -230,7 +238,12 @@ index bc38d0f..7420a86 100644
          return Ok(unsupported_request(
              request_id.to_owned(),
              method,
-@@ -825,11 +848,9 @@ fn decode_transaction_request(
+@@ -821,15 +844,13 @@ fn decode_transaction_request(
+             body: payload_boc.map_or(SendMessageBody::Empty, |boc| SendMessageBody::RawPayload {
+                 boc,
+             }),
+-            bounce: false,
++            bounce: message.address.is_bounceable(),
              state_init,
          });
      }
@@ -288,10 +301,10 @@ index bc38d0f..7420a86 100644
      }
 diff --git a/src/ton_connect_derived.rs b/src/ton_connect_derived.rs
 new file mode 100644
-index 0000000..09b8284
+index 0000000..cd4a101
 --- /dev/null
 +++ b/src/ton_connect_derived.rs
-@@ -0,0 +1,1039 @@
+@@ -0,0 +1,1215 @@
 +//! `MTProto`-relayed TON Connect sessions with server-nonce-derived keys.
 +//!
 +//! The server relays opaque `nonce || box` ciphertext between a dApp and every
@@ -711,11 +724,20 @@ index 0000000..09b8284
 +
 +    use base64::{Engine as _, engine::general_purpose::STANDARD};
 +    use serde_json::{Value, json};
++    use ton::block_tlb::{CommonMsgInfo, Msg};
++    use ton::ton_core::cell::TonCell;
 +    use ton::ton_core::traits::tlb::TLB as _;
++    use ton::ton_core::types::{TonAddress, tlb_core::TLBCoins};
++    use ton::ton_wallet::WalletExtMsgBody;
 +    use ton_connect_core::TonProofItemReply;
 +
 +    use super::*;
-+    use crate::{Network, SendExpiration, TonConnectDevicePlatform};
++    use crate::wallet::send::FreshSendAccount;
++    use crate::wallet::transfer::{derive_source, prepare_transfer};
++    use crate::{
++        Network, NonEmptyString, SendAmount, SendExpiration, SendMessageBody, SendRequest,
++        TonAddressString, TonConnectDevicePlatform,
++    };
 +
 +    type TestResult = Result<(), Box<dyn std::error::Error>>;
 +
@@ -729,6 +751,20 @@ index 0000000..09b8284
 +        "0:1111111111111111111111111111111111111111111111111111111111111111";
 +
 +    const DESTINATION: &str = "Ef8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADAU";
++
++    /// The demo dApp's bounceable destination and its non-bounceable twin.
++    const BOUNCEABLE: &str = "EQCKWpx7cNMpvmcN5ObM5lLUZHZRFKqYA4xmw9jOry0ZsF9M";
++    const NON_BOUNCEABLE: &str = "UQCKWpx7cNMpvmcN5ObM5lLUZHZRFKqYA4xmw9jOry0ZsAKJ";
++    const DESTINATION_RAW: &str =
++        "0:8a5a9c7b70d329be670de4e6cce652d464765114aa98038c66c3d8ceaf2d19b0";
++
++    /// The demo dApp's "Hello!" comment payload and contract `stateInit`.
++    const DEMO_PAYLOAD: &str = "te6cckEBAQEADAAAFAAAAABIZWxsbyGVgYQo";
++    const DEMO_STATE_INIT: &str = "te6cckEBBAEAOgACATQCAQAAART/APSkE/S88sgLAwBI0wHQ0wMBcbCRW+D6QDBwgBDIywVYzxYh+gLLagHPFsmAQPsAlxCarA==";
++
++    /// The public pre-rotation fixture of the `wallet::transfer` tests.
++    const PRE_ROTATION_MNEMONIC: &str =
++        "notice tortoise soup strong gun divide offer process salon siren general carry";
 +
 +    /// The throwaway fixed-vector session secret; `crypto.rs` pins its derivation.
 +    fn fixed_secret() -> Zeroizing<[u8; 32]> {
@@ -803,6 +839,67 @@ index 0000000..09b8284
 +            ],
 +            id: id.to_owned(),
 +        }
++    }
++
++    fn request_with_messages(id: &str, from: &str, messages: Vec<Value>) -> AppRequest {
++        AppRequest {
++            method: "sendTransaction".to_owned(),
++            params: vec![
++                json!({
++                    "valid_until": 1_900_000_000_u64,
++                    "network": "-3",
++                    "from": from,
++                    "messages": messages,
++                })
++                .to_string(),
++            ],
++            id: id.to_owned(),
++        }
++    }
++
++    /// Decrypts one relayed request and returns its decoded `sendTransaction`.
++    fn decode_send(
++        dapp: &SessionCrypto,
++        session: &TonConnectDerivedSession,
++        request: &AppRequest,
++    ) -> Result<SendRequest, Box<dyn std::error::Error>> {
++        let decoded =
++            session.decrypt_request(encrypt_for(dapp, session, request)?, 1_800_000_000)?;
++        let TonConnectIncomingRequest::SendTransaction { request, .. } = decoded.request else {
++            return Err("request was not decoded as sendTransaction".into());
++        };
++        Ok(request)
++    }
++
++    /// Signs a decoded request as the engine send path does and returns the
++    /// internal messages of the signed external message, in order.
++    fn signed_internal_messages(
++        request: &SendRequest,
++    ) -> Result<Vec<Msg<TonCell>>, Box<dyn std::error::Error>> {
++        let source = derive_source(PRE_ROTATION_MNEMONIC.as_bytes(), Network::Testnet)?;
++        let source = TonAddressString::from_address(&source, Network::Testnet);
++        let prepared = prepare_transfer(
++            PRE_ROTATION_MNEMONIC.as_bytes(),
++            &NonEmptyString::try_from("record")?,
++            &source,
++            Network::Testnet,
++            request,
++            &FreshSendAccount {
++                status: crate::AccountStatus::Active,
++                seqno: 7,
++            },
++            1_900_000_000,
++        )?;
++        let external = Msg::<TonCell>::from_boc(prepared.signed_boc.as_bytes().to_vec())?;
++        if !matches!(external.info, CommonMsgInfo::ExtIn(_)) {
++            return Err("signed transfer must be an external message".into());
++        }
++        let (body, _) = WalletExtMsgBody::read_signed(&mut external.body.value.parser())?;
++        Ok(body
++            .msgs
++            .iter()
++            .map(Msg::<TonCell>::from_cell)
++            .collect::<Result<Vec<_>, _>>()?)
 +    }
 +
 +    fn disconnect_request(id: &str) -> AppRequest {
@@ -1046,6 +1143,98 @@ index 0000000..09b8284
 +        );
 +        assert_eq!(request.intent.messages.len(), 1);
 +        assert!(!request.force);
++        Ok(())
++    }
++
++    #[test]
++    fn send_transaction_messages_carry_their_address_bounce_flag() -> TestResult {
++        let dapp = SessionCrypto::generate()?;
++        let session = session(&dapp);
++        let (info, _, _) = account();
++        let request = request_with_messages(
++            "8",
++            &info.address,
++            vec![
++                json!({ "address": BOUNCEABLE, "amount": "1" }),
++                json!({ "address": NON_BOUNCEABLE, "amount": "2" }),
++            ],
++        );
++        let request = decode_send(&dapp, &session, &request)?;
++        assert!(!request.force);
++        let messages = &request.intent.messages;
++        assert_eq!(messages.len(), 2);
++        assert!(messages[0].bounce, "EQ destination must bounce");
++        assert!(!messages[1].bounce, "UQ destination must not bounce");
++        assert_eq!(messages[0].amount, SendAmount::exact("1")?);
++        assert_eq!(messages[1].amount, SendAmount::exact("2")?);
++
++        let destination = TonAddress::from_str(DESTINATION_RAW)?.to_msg_address();
++        let internal = signed_internal_messages(&request)?;
++        assert_eq!(internal.len(), 2);
++        let mut flags = Vec::new();
++        for (message, amount) in internal.iter().zip([1_u128, 2]) {
++            let CommonMsgInfo::Int(info) = &message.info else {
++                return Err("wallet message must be internal".into());
++            };
++            assert!(!info.bounced);
++            assert_eq!(info.value.coins, TLBCoins::new(amount));
++            assert_eq!(info.dst, destination);
++            flags.push(info.bounce);
++        }
++        assert_eq!(flags, [true, false]);
++        Ok(())
++    }
++
++    #[test]
++    fn demo_dapp_request_bounces_and_keeps_payload_and_state_init() -> TestResult {
++        let dapp = SessionCrypto::generate()?;
++        let session = session(&dapp);
++        let (info, _, _) = account();
++        let request = request_with_messages(
++            "9",
++            &info.address,
++            vec![json!({
++                "address": BOUNCEABLE,
++                "amount": "5000000",
++                "payload": DEMO_PAYLOAD,
++                "stateInit": DEMO_STATE_INIT,
++            })],
++        );
++        let request = decode_send(&dapp, &session, &request)?;
++        let payload = STANDARD.decode(DEMO_PAYLOAD)?;
++        let state_init = STANDARD.decode(DEMO_STATE_INIT)?;
++        let [message] = request.intent.messages.as_slice() else {
++            return Err("demo request must decode to one message".into());
++        };
++        assert!(message.bounce, "EQ destination must bounce");
++        assert_eq!(message.amount, SendAmount::exact("5000000")?);
++        let SendMessageBody::RawPayload { boc } = &message.body else {
++            return Err("demo payload must stay a raw payload".into());
++        };
++        assert_eq!(boc.as_bytes(), payload.as_slice());
++        assert_eq!(
++            message.state_init.as_ref().map(|boc| boc.as_bytes()),
++            Some(state_init.as_slice())
++        );
++
++        let internal = signed_internal_messages(&request)?;
++        let [signed] = internal.as_slice() else {
++            return Err("demo transfer must carry one internal message".into());
++        };
++        let CommonMsgInfo::Int(info) = &signed.info else {
++            return Err("wallet message must be internal".into());
++        };
++        assert!(info.bounce);
++        assert!(!info.bounced);
++        assert_eq!(
++            signed.body.value.hash()?,
++            TonCell::from_boc(payload)?.hash()?
++        );
++        let init = signed.init.as_ref().ok_or("stateInit must be attached")?;
++        assert_eq!(
++            init.value.cell_hash()?,
++            TonCell::from_boc(state_init)?.cell_hash()?
++        );
 +        Ok(())
 +    }
 +
@@ -1919,3 +2108,16 @@ index dafa004..7912b7c 100644
              ton_connect_core::WalletStateInit::try_from(account.wallet_state_init)?,
              ton_connect_core::Ed25519PublicKey::from_bytes(<[u8; 32]>::try_from(
                  signed.public_key.as_slice(),
+diff --git a/tests/support/ton_connect_scenario.rs b/tests/support/ton_connect_scenario.rs
+index 3a8b46e..b08d049 100644
+--- a/tests/support/ton_connect_scenario.rs
++++ b/tests/support/ton_connect_scenario.rs
+@@ -1763,7 +1763,7 @@ impl ScenarioRunner {
+                     destination: TonAddressString::try_from(message.address.to_string())?,
+                     amount: SendAmount::exact(message.amount.as_str().to_owned())?,
+                     body,
+-                    bounce: false,
++                    bounce: message.address.is_bounceable(),
+                     state_init: message
+                         .state_init
+                         .as_ref()
