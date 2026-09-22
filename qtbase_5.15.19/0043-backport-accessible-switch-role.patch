@@ -1,0 +1,97 @@
+diff --git a/src/gui/accessible/qaccessible.h b/src/gui/accessible/qaccessible.h
+index 121e519a33..aa605fd0fc 100644
+--- a/src/gui/accessible/qaccessible.h
++++ b/src/gui/accessible/qaccessible.h
+@@ -56,6 +56,9 @@
+ 
+ #include <stdlib.h>
+ 
++// Patch: Backported the Switch accessible role from Qt 6.11.
++#define QT_ACCESSIBLE_SWITCH_ROLE 1
++
+ QT_BEGIN_NAMESPACE
+ 
+ class QAccessibleInterface;
+@@ -300,6 +303,7 @@ public:
+         WebDocument    = 0x00000084,
+         Section        = 0x00000085,
+         Notification   = 0x00000086,
++        Switch         = 0x00000087,
+ 
+         // IAccessible2 roles
+         // IA2_ROLE_CANVAS = 0x401, // An object that can be drawn into and to manage events from the objects drawn into it
+diff --git a/src/gui/accessible/qaccessible.cpp b/src/gui/accessible/qaccessible.cpp
+index aad625ad89..464383caca 100644
+--- a/src/gui/accessible/qaccessible.cpp
++++ b/src/gui/accessible/qaccessible.cpp
+@@ -371,6 +371,7 @@ Q_LOGGING_CATEGORY(lcAccessibilityCore, "qt.accessibility.core");
+     \value Splitter         A splitter distributing available space between its child widgets.
+     \value StaticText       Static text, such as labels for other widgets.
+     \value StatusBar        A status bar.
++    \value Switch           A switch that can be toggled on or off.
+     \value Table            A table representing data in a grid of rows and columns.
+     \value Terminal         A terminal or command line interface.
+     \value TitleBar         The title bar caption of a window.
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiautils.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiautils.cpp
+index 12bdc9e6b7..5ac51df3e5 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiautils.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiautils.cpp
+@@ -195,6 +195,7 @@ long roleToControlTypeId(QAccessible::Role role)
+         {QAccessible::EditableText, UIA_EditControlTypeId},
+         {QAccessible::Button, UIA_ButtonControlTypeId},
+         {QAccessible::CheckBox, UIA_CheckBoxControlTypeId},
++        {QAccessible::Switch, UIA_ButtonControlTypeId},
+         {QAccessible::RadioButton, UIA_RadioButtonControlTypeId},
+         {QAccessible::ComboBox, UIA_ComboBoxControlTypeId},
+         {QAccessible::ProgressBar, UIA_ProgressBarControlTypeId},
+diff --git a/src/platformsupport/linuxaccessibility/bridge.cpp b/src/platformsupport/linuxaccessibility/bridge.cpp
+index fdc8cd3198..78cc5e51f7 100644
+--- a/src/platformsupport/linuxaccessibility/bridge.cpp
++++ b/src/platformsupport/linuxaccessibility/bridge.cpp
+@@ -207,6 +207,12 @@ static RoleMapping map[] = {
+     //: Role of an accessible object
+     { QAccessible::CheckBox, ATSPI_ROLE_CHECK_BOX, QT_TRANSLATE_NOOP("QSpiAccessibleBridge", "check box") },
+     //: Role of an accessible object
++#if ATSPI_ROLE_COUNT >= 132
++    { QAccessible::Switch, ATSPI_ROLE_SWITCH, QT_TRANSLATE_NOOP("QSpiAccessibleBridge", "switch") },
++#else
++    { QAccessible::Switch, ATSPI_ROLE_CHECK_BOX, QT_TRANSLATE_NOOP("QSpiAccessibleBridge", "check box") },
++#endif
++    //: Role of an accessible object
+     { QAccessible::RadioButton, ATSPI_ROLE_RADIO_BUTTON, QT_TRANSLATE_NOOP("QSpiAccessibleBridge", "radio button") },
+     //: Role of an accessible object
+     { QAccessible::ComboBox, ATSPI_ROLE_COMBO_BOX, QT_TRANSLATE_NOOP("QSpiAccessibleBridge", "combo box") },
+diff --git a/src/plugins/platforms/cocoa/qcocoaaccessibility.mm b/src/plugins/platforms/cocoa/qcocoaaccessibility.mm
+index 48edc4b5a6..6a88f007b4 100644
+--- a/src/plugins/platforms/cocoa/qcocoaaccessibility.mm
++++ b/src/plugins/platforms/cocoa/qcocoaaccessibility.mm
+@@ -136,6 +136,7 @@ static void populateRoleMap()
+     roleMap[QAccessible::ComboBox] = NSAccessibilityComboBoxRole;
+     roleMap[QAccessible::RadioButton] = NSAccessibilityRadioButtonRole;
+     roleMap[QAccessible::CheckBox] = NSAccessibilityCheckBoxRole;
++    roleMap[QAccessible::Switch] = NSAccessibilityCheckBoxRole;
+     roleMap[QAccessible::StaticText] = NSAccessibilityStaticTextRole;
+     roleMap[QAccessible::Table] = NSAccessibilityTableRole;
+     roleMap[QAccessible::StatusBar] = NSAccessibilityStaticTextRole;
+@@ -203,6 +204,8 @@ NSString *macSubrole(QAccessibleInterface *interface)
+         return NSAccessibilitySearchFieldSubrole;
+     if (s.passwordEdit)
+         return NSAccessibilitySecureTextFieldSubrole;
++    if (interface->role() == QAccessible::Switch)
++        return NSAccessibilitySwitchSubrole;
+     return nil;
+ }
+ 
+@@ -321,8 +324,11 @@ NSString *getTranslatedAction(const QString &qtAction)
+ QString translateAction(NSString *nsAction, QAccessibleInterface *interface)
+ {
+     if ([nsAction compare: NSAccessibilityPressAction] == NSOrderedSame) {
+-        if (interface->role() == QAccessible::CheckBox || interface->role() == QAccessible::RadioButton)
++        if (interface->role() == QAccessible::CheckBox
++            || interface->role() == QAccessible::RadioButton
++            || interface->role() == QAccessible::Switch) {
+             return QAccessibleActionInterface::toggleAction();
++        }
+         return QAccessibleActionInterface::pressAction();
+     } else if ([nsAction compare: NSAccessibilityIncrementAction] == NSOrderedSame)
+         return QAccessibleActionInterface::increaseAction();
