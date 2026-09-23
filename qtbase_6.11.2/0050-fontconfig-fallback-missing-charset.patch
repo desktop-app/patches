@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Wed, 23 Sep 2026 12:00:00
+Subject: [PATCH] check the fontconfig fallback charset before using it
+
+QFontEngineMultiFontConfig::shouldLoadFontEngineForCharacter() passed
+the address of an uninitialized FcCharSet* to FcPatternGetCharSet()
+and then called FcCharSetHasChar() on it without checking the result.
+A pattern returned by FcFontMatch() is not guaranteed to carry an
+FC_CHARSET element, and in that case the uninitialized pointer is
+dereferenced inside FcCharSetHasChar(); with
+-ftrivial-auto-var-init=pattern it crashes at 0xfefefefefefefefe.
+
+Initialize the pointer and check the FcPatternGetCharSet() result.
+When no charset can be obtained, keep the optimistic default (load the
+engine) exactly as when no match pattern is available, so glyph
+coverage is decided by the font engine itself.
+
+Backport of upstream qtbase 80ddc8dee6a05cd619085e29fc21ff92c4b877a8.
+
+diff --git a/src/gui/text/unix/qfontenginemultifontconfig.cpp b/src/gui/text/unix/qfontenginemultifontconfig.cpp
+index 6419a764..f13943ff 100644
+--- a/src/gui/text/unix/qfontenginemultifontconfig.cpp
++++ b/src/gui/text/unix/qfontenginemultifontconfig.cpp
+@@ -25,9 +25,11 @@ bool QFontEngineMultiFontConfig::shouldLoadFontEngineForCharacter(int at, uint u
+     bool charSetHasChar = true;
+     FcPattern *matchPattern = getMatchPatternForFallback(at - 1);
+     if (matchPattern != nullptr) {
+-        FcCharSet *charSet;
+-        FcPatternGetCharSet(matchPattern, FC_CHARSET, 0, &charSet);
+-        charSetHasChar = FcCharSetHasChar(charSet, ucs4);
++        FcCharSet *charSet = nullptr;
++        if (FcPatternGetCharSet(matchPattern, FC_CHARSET, 0, &charSet) == FcResultMatch
++            && charSet != nullptr) {
++            charSetHasChar = FcCharSetHasChar(charSet, ucs4);
++        }
+     }
+ 
+     return charSetHasChar;
