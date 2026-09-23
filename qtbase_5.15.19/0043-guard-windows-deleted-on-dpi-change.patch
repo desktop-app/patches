@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Wed, 23 Sep 2026 12:00:00
+Subject: [PATCH] guarded windows deleted while a screen changes its DPI
+
+QGuiApplicationPrivate::processScreenLogicalDotsPerInchChange() emits
+screenChanged() for every window on the screen whose logical DPI changed
+(added by the backported DPI change fixes). It iterates a raw pointer
+snapshot of QGuiApplication::allWindows(), and each emission synchronously
+runs application code and the geometry change processing it triggers.
+That code is free to close and delete other windows, so entries later in
+the snapshot can already be freed when the loop calls screen() on them.
+
+This was seen live on Windows: the crash lands in the loop reading the
+screen of a window that was destroyed by an earlier iteration.
+
+Hold the snapshot through QPointer and skip windows destroyed during the
+loop, the same way the leftover window loop on the screen removal path is
+already guarded. Every live window on the screen still gets screenChanged().
+
+diff --git a/src/gui/kernel/qguiapplication.cpp b/src/gui/kernel/qguiapplication.cpp
+index f88d6fe8..5f85ec0b 100644
+--- a/src/gui/kernel/qguiapplication.cpp
++++ b/src/gui/kernel/qguiapplication.cpp
+@@ -3204,9 +3204,21 @@ void QGuiApplicationPrivate::processScreenLogicalDotsPerInchChange(QWindowSystem
+     emit s->logicalDotsPerInchChanged(s->logicalDotsPerInch());
+     s->d_func()->updateGeometriesWithSignals();
+ 
+-    for (QWindow *window : QGuiApplication::allWindows())
+-        if (window->screen() == e->screen)
++    // Patched: screenChanged() runs application code synchronously (and the
++    // geometry change it triggers delivers further events), and that code is
++    // free to close and delete other windows still waiting in this snapshot.
++    // allWindows() hands out raw pointers, so hold them through QPointer and
++    // re-check every one before it is dereferenced.
++    const auto allWindows = QGuiApplication::allWindows();
++    QList<QPointer<QWindow>> windows;
++    windows.reserve(allWindows.size());
++    for (QWindow *window : allWindows)
++        windows.append(window);
++    for (const QPointer<QWindow> &guard : windows) {
++        QWindow *window = guard.data();
++        if (window && window->screen() == e->screen)
+             window->screenChanged(e->screen);
++    }
+ 
+     resetCachedDevicePixelRatio();
+ }
