@@ -1,23 +1,115 @@
 diff --git a/CHANGELOG.md b/CHANGELOG.md
-index 74fbdfd..f6c4704 100644
+index 74fbdfd..aa3c468 100644
 --- a/CHANGELOG.md
 +++ b/CHANGELOG.md
-@@ -8,6 +8,7 @@ This file records user-visible changes to Wallet Engine.
+@@ -8,6 +8,8 @@ This file records user-visible changes to Wallet Engine.
  
  - Added `detect_mnemonic_schemes`, which reports every scheme under which entered recovery words validate: `rotation` (importable), plus detection-only `ton` (passwordless legacy TON mnemonic) and `bip39` (24-word Multichain mnemonic). Applications use it to explain why an import was rejected; the engine still derives keys only from Rotation mnemonics.
  - Added `WalletClient::send_boc` and platform bindings for durable submission of an already signed external BOC. It validates fresh metadata, shares the transfer journal and single-flight slot, and returns the standard `SendResult` for normal pending resolution.
 +- Added `WalletLifecycle::derive_ton_connect_session` and the `TonConnectDerivedSession` object for MTProto-relayed TON Connect sessions whose X25519 key pair is derived from the wallet's current signing key, the dApp client id, and a server nonce. The object exposes only the session public key and the signing public key, opens the server challenge, validates relayed requests, and encrypts raw `nonce || box` replies with caller-supplied ids; it advertises `SendTransaction` only and persists nothing. Appended `SecretAccessReason::DeriveTonConnectSessionKey` and `WalletLifecycleError::InvalidTonConnectSessionInput`.
++- Added `WalletClient::resolve_encrypted_comment_recipient` and platform bindings. It returns the recipient public key `create_encrypted_comment` would encrypt for, verifying a supplied key locally and otherwise reading the recipient account state and its `get_public_key`, without any protected-secret access, so applications can learn whether a comment can be encrypted before asking for authentication. Appended `WalletClientError::EncryptedCommentLookupFailed`.
  
  ### Changed
  
-@@ -17,6 +18,7 @@ This file records user-visible changes to Wallet Engine.
+@@ -17,6 +19,8 @@ This file records user-visible changes to Wallet Engine.
  
  - Wallet rev00 key rotation can be prepared repeatedly. Later rotations are authorized by the current signing half while preserving the anchor half and wallet address.
  - Key rotation no longer interprets Toncenter's failed `seqno` getter stack for an undeployed account. It derives sequence number zero from account state and prepares a deployable rotation BOC with `StateInit`.
++- `create_encrypted_comment` no longer reports a failed, rate-limited, or cancelled recipient key lookup as `EncryptedCommentUnavailable`, which told applications the recipient cannot receive encrypted comments; it returns `EncryptedCommentLookupFailed`. It reads the recipient account state before `get_public_key`, so an undeployed or frozen wallet is reported as unavailable, and it rejects a getter result with a failed TVM exit code instead of reading its stack as a key.
 +- TON Connect `sendTransaction` and `signMessage` messages now use the bounce flag of the destination's user-friendly address, as the TON Connect specification requires, instead of always being non-bounceable.
  
  ## [0.0.6] - 2026-08-26
  
+diff --git a/KOTLIN.md b/KOTLIN.md
+index b381b9f..78c014b 100644
+--- a/KOTLIN.md
++++ b/KOTLIN.md
+@@ -181,10 +181,18 @@ for an uninitialized wallet. The engine verifies that the supplied key derives
+ the recipient address using supported default wallet parameters; see
+ [supplied-key verification](README.md#sending-gram). A mismatch is rejected
+ before any HTTP request or protected-secret access. The default `null` uses the
+-lookup. The engine requests the protected mnemonic with
++lookup, which reads the recipient account state and calls `get_public_key` on
++an active wallet. The engine requests the protected mnemonic with
+ `SecretAccessReason.ENCRYPT_COMMENT`, and returns a BOC. Use that BOC as a
+ `SendMessageBody.RawPayload`, then preview and send the same intent.
+ 
++`WalletClient.resolveEncryptedCommentRecipient` takes the same recipient and
++optional key and returns the key `createEncryptedComment` would encrypt for,
++without any protected-secret access. `EncryptedCommentUnavailable` means the
++recipient cannot receive an encrypted comment; `EncryptedCommentLookupFailed`
++means the provider did not answer and the call can be retried. See
++[recipient resolution](README.md#sending-gram).
++
+ Encrypted activity has `encryptedComment` instead of `comment`. Decrypt it
+ explicitly with `WalletClient.decryptComment`, passing the sender address. For
+ received activity the sender is `counterparty`; for sent activity it is the
+diff --git a/README.md b/README.md
+index a70c17f..4c20acd 100644
+--- a/README.md
++++ b/README.md
+@@ -940,10 +940,11 @@ caller-built payload cell.
+ 
+ For an encrypted transfer comment, call `createEncryptedComment` before
+ preview. The engine uses the optional 32-byte Ed25519 `recipientPublicKey`, or
+-calls `get_public_key` on the recipient wallet when it is omitted or `null`.
+-Supplying the key skips that lookup and supports uninitialized wallets. The
+-engine locally reconstructs supported default wallet `StateInit` values from
+-the supplied key and requires one to derive the recipient address. A mismatch
++reads the recipient account state and calls `get_public_key` on an active
++recipient wallet when it is omitted or `null`. Supplying the key skips that
++lookup and supports uninitialized wallets. The engine locally reconstructs
++supported default wallet `StateInit` values from the supplied key and requires
++one to derive the recipient address. A mismatch
+ is rejected before any HTTP request or protected-secret access. It authorizes
+ the protected sender mnemonic through the platform host, applies the TON
+ Ed25519/X25519, HMAC-SHA512, AES-256-CBC, and snake-cell format, and returns a
+@@ -958,6 +959,21 @@ default ID, and the engine's Wallet rev00 with its default ID in workchain 0.
+ Custom wallet IDs and unsupported initial parameters are rejected. This local
+ verification applies only when `recipientPublicKey` is supplied.
+ 
++To learn whether a comment for a recipient can be encrypted before any secret
++is involved, call `resolveEncryptedCommentRecipient` with the same `recipient`
++and optional `recipientPublicKey`. It resolves the key exactly as
++`createEncryptedComment` does and returns the 32 bytes that call would encrypt
++for, but it never requests a protected secret, so a client without a local
++signing secret can call it too. A supplied key is verified locally, without an
++HTTP request and without taking the single-flight slot.
++`EncryptedCommentUnavailable` means the recipient cannot receive an encrypted
++comment: the supplied key does not derive its address, its wallet is not
++deployed or is frozen, or its contract returned no public key.
++`EncryptedCommentLookupFailed` means the provider failed, limited, or cancelled
++the lookup, so nothing is known about the recipient and the call can be
++retried. `createEncryptedComment` returns the same two errors, before it
++requests the secret.
++
+ `SendAmount.all` must be the only message in its batch. Wallet V5 applies the
+ batch in order.
+ 
+diff --git a/SWIFT.md b/SWIFT.md
+index 9820a02..06b2ec7 100644
+--- a/SWIFT.md
++++ b/SWIFT.md
+@@ -172,10 +172,18 @@ for an uninitialized wallet. The engine verifies that the supplied key derives
+ the recipient address using supported default wallet parameters; see
+ [supplied-key verification](README.md#sending-gram). A mismatch is rejected
+ before any HTTP request or protected-secret access. The default `nil` uses the
+-lookup. The engine requests the protected mnemonic with
++lookup, which reads the recipient account state and calls `get_public_key` on
++an active wallet. The engine requests the protected mnemonic with
+ `SecretAccessReason.encryptComment`, and returns a BOC. Use that BOC as a
+ `SendMessageBody.rawPayload`, then preview and send the same intent.
+ 
++`WalletClient.resolveEncryptedCommentRecipient` takes the same recipient and
++optional key and returns the key `createEncryptedComment` would encrypt for,
++without any protected-secret access. `EncryptedCommentUnavailable` means the
++recipient cannot receive an encrypted comment; `EncryptedCommentLookupFailed`
++means the provider did not answer and the call can be retried. See
++[recipient resolution](README.md#sending-gram).
++
+ Encrypted activity has `encryptedComment` instead of `comment`. Decrypt it
+ explicitly with `WalletClient.decryptComment`, passing the sender address. For
+ received activity the sender is `counterparty`; for sent activity it is the
 diff --git a/TON_CONNECT.md b/TON_CONNECT.md
 index 72292e1..e39784a 100644
 --- a/TON_CONNECT.md
@@ -59,6 +151,58 @@ index 72292e1..e39784a 100644
  ## Durable bridge responses
  
  Each connect event, RPC response, or disconnect event creates a
+diff --git a/WASM.md b/WASM.md
+index 5eabd42..685f39a 100644
+--- a/WASM.md
++++ b/WASM.md
+@@ -293,6 +293,21 @@ or protected-secret access. The engine asks the platform host for the protected
+ mnemonic with reason `"encryptComment"`. Put `body` into the same immutable
+ intent passed to `previewSend` and `send`.
+ 
++To learn whether a recipient can receive an encrypted comment without any
++protected-secret access, resolve its key first:
++
++```ts
++const key = await client.resolveEncryptedCommentRecipient({
++  recipient: destination,
++  recipientPublicKey: recipientKeyBytes, // Optional, verified as above.
++})
++```
++
++It returns the 32 key bytes `createEncryptedComment` would encrypt for. An
++`encrypted comment is unavailable` error means the recipient cannot receive
++one; `encrypted-comment recipient lookup failed` means the provider did not
++answer and the call can be retried.
++
+ Encrypted activity exposes `encryptedComment` instead of `comment`. Decryption
+ is explicit, so refresh never opens an authentication prompt:
+ 
+diff --git a/bindgen/wasm/src/wallet.rs b/bindgen/wasm/src/wallet.rs
+index 07b0a7d..401fcf5 100644
+--- a/bindgen/wasm/src/wallet.rs
++++ b/bindgen/wasm/src/wallet.rs
+@@ -214,6 +214,21 @@ impl WalletClient {
+         to_value(&body)
+     }
+ 
++    /// Resolves the recipient key an encrypted comment uses, without a secret.
++    #[wasm_bindgen(js_name = resolveEncryptedCommentRecipient)]
++    pub async fn resolve_encrypted_comment_recipient(
++        &self,
++        request: JsValue,
++    ) -> Result<JsValue, JsValue> {
++        let request = from_value(request)?;
++        let public_key = self
++            .inner
++            .resolve_encrypted_comment_recipient(request)
++            .await
++            .map_err(|error| engine_error(&error))?;
++        to_value(&public_key)
++    }
++
+     /// Explicitly authorizes and decrypts a TON encrypted-comment body.
+     #[wasm_bindgen(js_name = decryptComment)]
+     pub async fn decrypt_comment(&self, request: JsValue) -> Result<JsValue, JsValue> {
 diff --git a/crates/ton-connect-core/src/session.rs b/crates/ton-connect-core/src/session.rs
 index fefb1a4..6f8fafa 100644
 --- a/crates/ton-connect-core/src/session.rs
@@ -77,6 +221,56 @@ index fefb1a4..6f8fafa 100644
          let secret_key = SecretKey::from(bytes);
          let client_id = ClientId::from_bytes(secret_key.public_key().to_bytes());
          Self {
+diff --git a/src/domain/encrypted_comment.rs b/src/domain/encrypted_comment.rs
+index d5bdfbc..f84d323 100644
+--- a/src/domain/encrypted_comment.rs
++++ b/src/domain/encrypted_comment.rs
+@@ -24,6 +24,25 @@ pub struct CreateEncryptedCommentRequest {
+     pub recipient_public_key: Option<Vec<u8>>,
+ }
+ 
++/// Asks which public key a TON encrypted comment for a recipient would use.
++///
++/// The fields mean the same as in [`CreateEncryptedCommentRequest`], so the
++/// answer predicts whether that request can encrypt, without a comment and
++/// without any protected-secret access.
++#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record)]
++#[serde(rename_all = "camelCase")]
++pub struct EncryptedCommentRecipientRequest {
++    /// Recipient wallet address.
++    pub recipient: TonAddressString,
++    /// Optional 32-byte Ed25519 public key used instead of an on-chain lookup.
++    ///
++    /// It is verified against `recipient` exactly as
++    /// [`CreateEncryptedCommentRequest::recipient_public_key`] is.
++    #[serde(default)]
++    #[uniffi(default = None)]
++    pub recipient_public_key: Option<Vec<u8>>,
++}
++
+ /// Requests explicit decryption of one encrypted-comment message body.
+ #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record)]
+ #[serde(rename_all = "camelCase")]
+diff --git a/src/domain/error.rs b/src/domain/error.rs
+index f347ecd..ff47684 100644
+--- a/src/domain/error.rs
++++ b/src/domain/error.rs
+@@ -317,4 +317,15 @@ pub enum WalletClientError {
+     /// The client is shut down and accepts no new work.
+     #[error("wallet client is shut down")]
+     Shutdown,
++    /// The recipient's encrypted-comment public key could not be read now.
++    ///
++    /// The provider failed, limited, or cancelled the lookup, so nothing is
++    /// known about the recipient and the same request can be retried. It is
++    /// never returned when the recipient is known to be unable to receive an
++    /// encrypted comment; that is [`Self::EncryptedCommentUnavailable`].
++    #[error("encrypted-comment recipient lookup failed: {diagnostic}")]
++    EncryptedCommentLookupFailed {
++        /// Bounded developer-facing reason that contains no secret material.
++        diagnostic: String,
++    },
+ }
 diff --git a/src/domain/secret.rs b/src/domain/secret.rs
 index 4d98615..d327a18 100644
 --- a/src/domain/secret.rs
@@ -90,6 +284,781 @@ index 4d98615..d327a18 100644
  }
  
  /// A request to read and authorize access to protected secret bytes.
+diff --git a/src/engine/encrypted_comment.rs b/src/engine/encrypted_comment.rs
+index 96eb0ea..f3911ae 100644
+--- a/src/engine/encrypted_comment.rs
++++ b/src/engine/encrypted_comment.rs
+@@ -1,24 +1,32 @@
+ //! Explicit encrypted-comment preparation and decryption workflows.
+ 
++use serde_json::Value;
++
+ use crate::domain::{SecretAccessReason, bounded_diagnostic};
++use crate::transport::build_toncenter_v2_request;
+ use crate::wallet::encrypted_comment::{
+     EncryptedCommentError, MAX_ENCRYPTED_COMMENT_BYTES, decrypt_comment as decrypt_body,
+     encrypt_comment as encrypt_body, validate_encrypted_comment_body,
+ };
+ use crate::wallet::recipient_public_key::verify_recipient_public_key;
+ use crate::{
+-    Boc, CreateEncryptedCommentRequest, DecryptCommentRequest, HttpRequest, ProtectedSecretRead,
+-    WalletClientError,
++    AccountStatus, Boc, CreateEncryptedCommentRequest, DecryptCommentRequest,
++    EncryptedCommentRecipientRequest, HttpRequest, Network, ProtectedSecretRead, TonAddressString,
++    WalletClientConfig, WalletClientError,
+ };
+ 
+ use super::WalletClient;
++use super::provider::parse_account;
+ use super::send_http::{build_public_key_request, parse_public_key};
+ use super::send_state::SensitiveBytes;
+-use super::state::{OperationFamily, ensure_running};
++use super::state::{OperationFamily, State, ensure_running};
+ 
+ enum RecipientPublicKeySource {
+     Provided([u8; 32]),
+-    OnChain(HttpRequest),
++    OnChain {
++        account: HttpRequest,
++        public_key: HttpRequest,
++    },
+ }
+ 
+ #[uniffi::export]
+@@ -31,6 +39,9 @@ impl WalletClient {
+     /// A supplied key must locally derive the recipient's address using supported
+     /// default wallet parameters. Verification happens before secret authorization.
+     /// No secret is requested when the comment is already too large.
++    /// The recipient key is resolved exactly as
++    /// [`Self::resolve_encrypted_comment_recipient`] resolves it, including its
++    /// errors, and before any secret is requested.
+     pub async fn create_encrypted_comment(
+         &self,
+         request: CreateEncryptedCommentRequest,
+@@ -40,14 +51,7 @@ impl WalletClient {
+                 "the encrypted comment exceeds 960 UTF-8 bytes",
+             ));
+         }
+-        let provided_public_key = request
+-            .recipient_public_key
+-            .as_deref()
+-            .map(<[u8; 32]>::try_from)
+-            .transpose()
+-            .map_err(|_| {
+-                encrypted_comment_error(EncryptedCommentError::InvalidPeerPublicKey.to_string())
+-            })?;
++        let provided_public_key = provided_recipient_key(request.recipient_public_key.as_deref())?;
+ 
+         let (generation, config, public_key_source, secret_request) = {
+             let mut state = self.lock()?;
+@@ -61,23 +65,16 @@ impl WalletClient {
+                 return Err(WalletClientError::SendAlreadyInProgress);
+             }
+             if let Some(key) = &provided_public_key {
+-                verify_recipient_public_key(&request.recipient, key, state.config.network)
+-                    .map_err(|error| encrypted_comment_error(error.to_string()))?;
++                verify_provided_recipient_key(&request.recipient, key, state.config.network)?;
+             }
+-            state.resolution_generation = state
+-                .resolution_generation
+-                .checked_add(1)
+-                .ok_or(WalletClientError::IdentifierExhausted)?;
+-            let generation = state.resolution_generation;
++            let generation = next_resolution_generation(&mut state)?;
+             let config = state.config.clone();
+-            let public_key_source = match provided_public_key {
+-                Some(key) => RecipientPublicKeySource::Provided(key),
+-                None => RecipientPublicKeySource::OnChain(build_public_key_request(
+-                    &config,
+-                    state.allocate_request_id()?,
+-                    &request.recipient,
+-                )?),
+-            };
++            let public_key_source = recipient_public_key_source(
++                &mut state,
++                &config,
++                &request.recipient,
++                provided_public_key,
++            )?;
+             state.active_resolution = Some((generation, Vec::new()));
+             (
+                 generation,
+@@ -91,23 +88,9 @@ impl WalletClient {
+             )
+         };
+ 
+-        let recipient_public_key = match public_key_source {
+-            RecipientPublicKeySource::Provided(key) => key,
+-            RecipientPublicKeySource::OnChain(public_key_request) => match self
+-                .execute_tracked_standalone_resolution_request(generation, &public_key_request)
+-                .await
+-            {
+-                Ok(result) => result
+-                    .and_then(|body| parse_public_key(&body))
+-                    .map_err(|error| {
+-                        self.fail_encrypted_comment(generation, error.developer_message)
+-                    })?,
+-                Err(error) => {
+-                    self.discard_encrypted_comment_operation(generation);
+-                    return Err(error);
+-                }
+-            },
+-        };
++        let recipient_public_key = self
++            .resolve_recipient_public_key(generation, public_key_source)
++            .await?;
+ 
+         let secret = SensitiveBytes::new(
+             self.platform_host
+@@ -134,6 +117,52 @@ impl WalletClient {
+         Ok(body)
+     }
+ 
++    /// Resolves the Ed25519 public key an encrypted comment for a recipient uses.
++    ///
++    /// This answers whether [`Self::create_encrypted_comment`] with the same
++    /// recipient and supplied key can encrypt, without a comment and without
++    /// requesting any protected secret, so a client configured without a local
++    /// signing secret can ask it too. A supplied key is verified locally, with
++    /// no HTTP request and without the single-flight slot. Otherwise the engine
++    /// reads the recipient account state and, for an active contract, calls its
++    /// `get_public_key` get-method.
++    ///
++    /// `EncryptedCommentUnavailable` means the recipient cannot receive an
++    /// encrypted comment: the supplied key does not derive its address, its
++    /// wallet is not deployed or is frozen, or its contract did not return a
++    /// public key. `EncryptedCommentLookupFailed` means the provider did not
++    /// answer and nothing is known about the recipient.
++    pub async fn resolve_encrypted_comment_recipient(
++        &self,
++        request: EncryptedCommentRecipientRequest,
++    ) -> Result<Vec<u8>, WalletClientError> {
++        let provided_public_key = provided_recipient_key(request.recipient_public_key.as_deref())?;
++
++        let (generation, public_key_source) = {
++            let mut state = self.lock()?;
++            ensure_running(&state)?;
++            if let Some(key) = provided_public_key {
++                verify_provided_recipient_key(&request.recipient, &key, state.config.network)?;
++                return Ok(key.to_vec());
++            }
++            if state.active_send.is_some() || state.active_resolution.is_some() {
++                return Err(WalletClientError::SendAlreadyInProgress);
++            }
++            let generation = next_resolution_generation(&mut state)?;
++            let config = state.config.clone();
++            let public_key_source =
++                recipient_public_key_source(&mut state, &config, &request.recipient, None)?;
++            state.active_resolution = Some((generation, Vec::new()));
++            (generation, public_key_source)
++        };
++
++        let recipient_public_key = self
++            .resolve_recipient_public_key(generation, public_key_source)
++            .await?;
++        self.complete_encrypted_comment_operation(generation)?;
++        Ok(recipient_public_key.to_vec())
++    }
++
+     /// Decrypts one TON encrypted-comment body after explicit host authorization.
+     ///
+     /// The caller supplies the sender address because TON uses its bounceable,
+@@ -251,6 +280,158 @@ fn encrypted_comment_error(message: impl AsRef<str>) -> WalletClientError {
+     }
+ }
+ 
++impl WalletClient {
++    /// Resolves the recipient key while `generation` holds the resolution slot.
++    ///
++    /// Every failure releases the slot. Only evidence about the recipient
++    /// becomes `EncryptedCommentUnavailable`; a provider that did not answer
++    /// becomes `EncryptedCommentLookupFailed`, so no caller gives up on
++    /// encryption because of a transient failure.
++    async fn resolve_recipient_public_key(
++        &self,
++        generation: u64,
++        source: RecipientPublicKeySource,
++    ) -> Result<[u8; 32], WalletClientError> {
++        let (account_request, public_key_request) = match source {
++            RecipientPublicKeySource::Provided(key) => return Ok(key),
++            RecipientPublicKeySource::OnChain {
++                account,
++                public_key,
++            } => (account, public_key),
++        };
++
++        let body = self
++            .execute_recipient_request(generation, &account_request)
++            .await?;
++        let account = parse_account(&body)
++            .map_err(|error| self.fail_recipient_lookup(generation, error.developer_message))?;
++        match account.status {
++            AccountStatus::Active => {}
++            AccountStatus::Nonexistent | AccountStatus::Uninitialized => {
++                return Err(self.fail_encrypted_comment(
++                    generation,
++                    "the recipient wallet is not deployed and cannot report its public key",
++                ));
++            }
++            AccountStatus::Frozen => {
++                return Err(self.fail_encrypted_comment(
++                    generation,
++                    "the recipient account is frozen and cannot report its public key",
++                ));
++            }
++            AccountStatus::Unknown => {
++                return Err(self.fail_recipient_lookup(
++                    generation,
++                    "the provider returned an unrecognized recipient account state",
++                ));
++            }
++        }
++
++        let body = self
++            .execute_recipient_request(generation, &public_key_request)
++            .await?;
++        if let Some(message) = provider_refusal(&body) {
++            return Err(self.fail_recipient_lookup(generation, message));
++        }
++        parse_public_key(&body)
++            .map_err(|error| self.fail_encrypted_comment(generation, error.developer_message))
++    }
++
++    async fn execute_recipient_request(
++        &self,
++        generation: u64,
++        request: &HttpRequest,
++    ) -> Result<Vec<u8>, WalletClientError> {
++        match self
++            .execute_tracked_standalone_resolution_request(generation, request)
++            .await
++        {
++            Ok(Ok(body)) => Ok(body),
++            Ok(Err(error)) => Err(self.fail_recipient_lookup(generation, error.developer_message)),
++            Err(error) => {
++                self.discard_encrypted_comment_operation(generation);
++                Err(error)
++            }
++        }
++    }
++
++    fn fail_recipient_lookup(
++        &self,
++        generation: u64,
++        message: impl AsRef<str>,
++    ) -> WalletClientError {
++        self.discard_encrypted_comment_operation(generation);
++        WalletClientError::EncryptedCommentLookupFailed {
++            diagnostic: bounded_diagnostic(message),
++        }
++    }
++}
++
++fn provided_recipient_key(key: Option<&[u8]>) -> Result<Option<[u8; 32]>, WalletClientError> {
++    key.map(<[u8; 32]>::try_from).transpose().map_err(|_| {
++        encrypted_comment_error(EncryptedCommentError::InvalidPeerPublicKey.to_string())
++    })
++}
++
++fn verify_provided_recipient_key(
++    recipient: &TonAddressString,
++    key: &[u8; 32],
++    network: Network,
++) -> Result<(), WalletClientError> {
++    verify_recipient_public_key(recipient, key, network)
++        .map_err(|error| encrypted_comment_error(error.to_string()))
++}
++
++fn next_resolution_generation(state: &mut State) -> Result<u64, WalletClientError> {
++    state.resolution_generation = state
++        .resolution_generation
++        .checked_add(1)
++        .ok_or(WalletClientError::IdentifierExhausted)?;
++    Ok(state.resolution_generation)
++}
++
++fn recipient_public_key_source(
++    state: &mut State,
++    config: &WalletClientConfig,
++    recipient: &TonAddressString,
++    provided: Option<[u8; 32]>,
++) -> Result<RecipientPublicKeySource, WalletClientError> {
++    if let Some(key) = provided {
++        return Ok(RecipientPublicKeySource::Provided(key));
++    }
++    let account = build_toncenter_v2_request(
++        config,
++        state.allocate_request_id()?,
++        "getAddressInformation",
++        &[("address", recipient.as_str())],
++    )?;
++    let public_key = build_public_key_request(config, state.allocate_request_id()?, recipient)?;
++    Ok(RecipientPublicKeySource::OnChain {
++        account,
++        public_key,
++    })
++}
++
++/// Names a getter response that carries no answer from the recipient contract.
++///
++/// A body that is not JSON, a provider error, or an envelope without a result
++/// says nothing about the recipient, unlike a result whose getter failed.
++fn provider_refusal(body: &[u8]) -> Option<String> {
++    let Ok(value) = serde_json::from_slice::<Value>(body) else {
++        return Some("the provider returned a response that is not JSON".to_owned());
++    };
++    if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
++        return Some(error.to_string());
++    }
++    if value.get("ok").and_then(Value::as_bool) == Some(false) {
++        return Some("the provider rejected the get-method request".to_owned());
++    }
++    value
++        .get("result")
++        .is_none()
++        .then(|| "the provider returned no get-method result".to_owned())
++}
++
+ #[cfg(test)]
+ mod tests {
+     use std::sync::{Arc, Mutex};
+@@ -261,10 +442,11 @@ mod tests {
+     use super::*;
+     use crate::wallet::crypto::derive_wallet;
+     use crate::{
+-        HttpHostError, HttpRequest, HttpRequestId, HttpResponse, JournalCompareExchange,
+-        JournalCompareExchangeResult, JournalHostError, JournalKey, JournalRecord, Network,
+-        NonEmptyString, ProtectedSecretHostError, ProtectedSecretRef, ProtectedSecretStore,
+-        ProviderConfig, TonAddressString, WalletClientConfig, WalletHttpHost, WalletPlatformHost,
++        HttpHostError, HttpHostErrorKind, HttpRequest, HttpRequestId, HttpResponse,
++        JournalCompareExchange, JournalCompareExchangeResult, JournalHostError, JournalKey,
++        JournalRecord, Network, NonEmptyString, ProtectedSecretHostError, ProtectedSecretRef,
++        ProtectedSecretStore, ProviderConfig, TonAddressString, WalletClientConfig, WalletHttpHost,
++        WalletPlatformHost,
+     };
+ 
+     const MNEMONIC: &str = "notice tortoise soup strong gun divide offer process salon siren general carry clump left year void clutch tool case burden fix income champion lounge";
+@@ -282,25 +464,109 @@ mod tests {
+                 .lock()
+                 .expect("request lock")
+                 .push(request.clone());
+-            let encoded = self
+-                .public_key
+-                .iter()
+-                .map(|byte| format!("{byte:02x}"))
+-                .collect::<String>();
+-            Ok(HttpResponse {
+-                status: 200,
+-                headers: Vec::new(),
+-                body: serde_json::to_vec(&serde_json::json!({
+-                    "result": { "stack": [["num", format!("0x{encoded}")]] }
+-                }))
+-                .expect("response JSON"),
+-                final_url: request.url,
+-            })
++            let body = if is_account_request(&request) {
++                account_body("active")
++            } else {
++                public_key_body(&self.public_key)
++            };
++            Ok(response(request, 200, body))
+         }
+ 
+         async fn cancel_http(&self, _request_id: HttpRequestId) {}
+     }
+ 
++    /// How a scripted provider answers the recipient `get_public_key` call.
++    #[derive(Clone)]
++    enum GetterReply {
++        Key([u8; 32]),
++        Body(u16, String),
++        HostFailure,
++    }
++
++    /// Answers the account-state read with `account_state` and the getter
++    /// with `getter`, recording every request.
++    struct RecipientHost {
++        account_state: Option<&'static str>,
++        getter: GetterReply,
++        requests: Mutex<Vec<HttpRequest>>,
++    }
++
++    impl RecipientHost {
++        fn new(account_state: Option<&'static str>, getter: GetterReply) -> Self {
++            Self {
++                account_state,
++                getter,
++                requests: Mutex::new(Vec::new()),
++            }
++        }
++
++        fn request_count(&self) -> usize {
++            self.requests.lock().expect("request lock").len()
++        }
++    }
++
++    #[async_trait::async_trait]
++    impl WalletHttpHost for RecipientHost {
++        async fn execute_http(&self, request: HttpRequest) -> Result<HttpResponse, HttpHostError> {
++            self.requests
++                .lock()
++                .expect("request lock")
++                .push(request.clone());
++            if is_account_request(&request) {
++                return match self.account_state {
++                    Some(state) => Ok(response(request, 200, account_body(state))),
++                    None => Err(HttpHostError::Failed {
++                        kind: HttpHostErrorKind::Offline,
++                        diagnostic: "scripted offline".to_owned(),
++                    }),
++                };
++            }
++            match self.getter.clone() {
++                GetterReply::Key(key) => Ok(response(request, 200, public_key_body(&key))),
++                GetterReply::Body(status, body) => Ok(response(request, status, body.into_bytes())),
++                GetterReply::HostFailure => Err(HttpHostError::Failed {
++                    kind: HttpHostErrorKind::Timeout,
++                    diagnostic: "scripted timeout".to_owned(),
++                }),
++            }
++        }
++
++        async fn cancel_http(&self, _request_id: HttpRequestId) {}
++    }
++
++    fn is_account_request(request: &HttpRequest) -> bool {
++        request.url.contains("getAddressInformation")
++    }
++
++    fn account_body(state: &str) -> Vec<u8> {
++        serde_json::to_vec(&serde_json::json!({
++            "ok": true,
++            "result": { "balance": "1000000000", "state": state, "sync_utime": 1 }
++        }))
++        .expect("response JSON")
++    }
++
++    fn public_key_body(public_key: &[u8; 32]) -> Vec<u8> {
++        let encoded = public_key
++            .iter()
++            .map(|byte| format!("{byte:02x}"))
++            .collect::<String>();
++        serde_json::to_vec(&serde_json::json!({
++            "ok": true,
++            "result": { "exit_code": 0, "stack": [["num", format!("0x{encoded}")]] }
++        }))
++        .expect("response JSON")
++    }
++
++    fn response(request: HttpRequest, status: u16, body: Vec<u8>) -> HttpResponse {
++        HttpResponse {
++            status,
++            headers: Vec::new(),
++            body,
++            final_url: request.url,
++        }
++    }
++
+     struct SecretHost {
+         reasons: Mutex<Vec<SecretAccessReason>>,
+     }
+@@ -400,7 +666,7 @@ mod tests {
+         .expect("outgoing comment decrypts");
+ 
+         assert_eq!(plaintext, "secret hello");
+-        assert_eq!(http.requests.lock().expect("request lock").len(), 1);
++        assert_eq!(http.requests.lock().expect("request lock").len(), 2);
+         assert_eq!(
+             *platform.reasons.lock().expect("reason lock"),
+             [
+@@ -548,4 +814,233 @@ mod tests {
+             [SecretAccessReason::EncryptComment],
+         );
+     }
++
++    fn resolve(
++        client: &WalletClient,
++        recipient: TonAddressString,
++        recipient_public_key: Option<Vec<u8>>,
++    ) -> Result<Vec<u8>, WalletClientError> {
++        block_on(
++            client.resolve_encrypted_comment_recipient(EncryptedCommentRecipientRequest {
++                recipient,
++                recipient_public_key,
++            }),
++        )
++    }
++
++    fn raw_recipient() -> TonAddressString {
++        TonAddressString::try_from(RECIPIENT).expect("recipient")
++    }
++
++    fn secretless_config() -> WalletClientConfig {
++        WalletClientConfig {
++            local_secret_ref: None,
++            ..client_config()
++        }
++    }
++
++    fn secret_host() -> Arc<SecretHost> {
++        Arc::new(SecretHost {
++            reasons: Mutex::new(Vec::new()),
++        })
++    }
++
++    fn slot_released(client: &WalletClient) -> bool {
++        client
++            .lock()
++            .expect("state lock")
++            .active_resolution
++            .is_none()
++    }
++
++    #[test]
++    fn resolution_reads_the_recipient_key_without_a_secret() {
++        let key = SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes();
++        let http = Arc::new(RecipientHost::new(Some("active"), GetterReply::Key(key)));
++        let platform = secret_host();
++        let client = WalletClient::new(secretless_config(), http.clone(), platform.clone())
++            .expect("a client without a local secret builds");
++
++        let resolved = resolve(&client, raw_recipient(), None).expect("an active wallet answers");
++
++        assert_eq!(resolved, key.to_vec());
++        assert_eq!(http.request_count(), 2);
++        assert!(platform.reasons.lock().expect("reason lock").is_empty());
++        assert!(slot_released(&client));
++
++        let json_rpc_success = format!(
++            r#"{{"ok":true,"error":null,"result":{{"exit_code":0,"stack":[["num","0x{}"]]}}}}"#,
++            "11".repeat(32)
++        );
++        let http = Arc::new(RecipientHost::new(
++            Some("active"),
++            GetterReply::Body(200, json_rpc_success),
++        ));
++        let client =
++            WalletClient::new(secretless_config(), http, secret_host()).expect("client builds");
++        assert_eq!(
++            resolve(&client, raw_recipient(), None).expect("a null error is no error"),
++            vec![0x11; 32]
++        );
++    }
++
++    #[test]
++    fn resolution_verifies_a_supplied_key_locally_even_while_the_slot_is_busy() {
++        let config = secretless_config();
++        let recipient = config.address.clone();
++        let correct_key = config.public_key.clone();
++        let wrong_key = SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes();
++        let http = Arc::new(RecipientHost::new(None, GetterReply::HostFailure));
++        let platform = secret_host();
++        let client =
++            WalletClient::new(config, http.clone(), platform.clone()).expect("client builds");
++        client.lock().expect("state lock").active_resolution = Some((u64::MAX, Vec::new()));
++
++        assert_eq!(
++            resolve(&client, recipient.clone(), Some(correct_key.clone()))
++                .expect("the supplied key derives the recipient"),
++            correct_key
++        );
++        assert!(matches!(
++            resolve(&client, recipient.clone(), Some(wrong_key.to_vec())),
++            Err(WalletClientError::EncryptedCommentUnavailable { .. })
++        ));
++        assert!(matches!(
++            resolve(&client, recipient.clone(), Some(vec![7; 31])),
++            Err(WalletClientError::EncryptedCommentUnavailable { .. })
++        ));
++        assert_eq!(
++            resolve(&client, recipient, None),
++            Err(WalletClientError::SendAlreadyInProgress)
++        );
++        assert_eq!(http.request_count(), 0);
++        assert!(platform.reasons.lock().expect("reason lock").is_empty());
++    }
++
++    #[test]
++    fn undeployed_and_frozen_recipients_cannot_receive_encrypted_comments() {
++        for state in ["uninit", "uninitialized", "nonexist", "frozen"] {
++            let http = Arc::new(RecipientHost::new(Some(state), GetterReply::HostFailure));
++            let client = WalletClient::new(secretless_config(), http.clone(), secret_host())
++                .expect("client builds");
++
++            let error = resolve(&client, raw_recipient(), None).expect_err("no key to resolve");
++
++            assert!(
++                matches!(error, WalletClientError::EncryptedCommentUnavailable { .. }),
++                "{state}: {error:?}"
++            );
++            assert_eq!(http.request_count(), 1, "{state} never runs the getter");
++            assert!(slot_released(&client), "{state}");
++        }
++    }
++
++    #[test]
++    fn only_a_contract_answer_is_evidence_that_encryption_is_unavailable() {
++        let key = "11".repeat(32);
++        let unavailable = [
++            format!(r#"{{"ok":true,"result":{{"exit_code":11,"stack":[["num","0x{key}"]]}}}}"#),
++            r#"{"ok":true,"result":{"exit_code":0,"stack":[]}}"#.to_owned(),
++            r#"{"ok":true,"result":{"exit_code":0,"stack":[["num","0"]]}}"#.to_owned(),
++        ];
++        for body in unavailable {
++            let http = Arc::new(RecipientHost::new(
++                Some("active"),
++                GetterReply::Body(200, body.clone()),
++            ));
++            let client =
++                WalletClient::new(secretless_config(), http, secret_host()).expect("client builds");
++            let error = resolve(&client, raw_recipient(), None).expect_err("no usable key");
++            assert!(
++                matches!(error, WalletClientError::EncryptedCommentUnavailable { .. }),
++                "{body}: {error:?}"
++            );
++            assert!(slot_released(&client), "{body}");
++        }
++
++        let silent = [
++            (Some("active"), GetterReply::HostFailure),
++            (None, GetterReply::Key([0x11; 32])),
++            (Some("strange"), GetterReply::Key([0x11; 32])),
++            (
++                Some("active"),
++                GetterReply::Body(
++                    429,
++                    r#"{"ok":false,"error":"Ratelimit exceed","code":429}"#.to_owned(),
++                ),
++            ),
++            (
++                Some("active"),
++                GetterReply::Body(502, "<html>Bad gateway</html>".to_owned()),
++            ),
++            (
++                Some("active"),
++                GetterReply::Body(
++                    200,
++                    r#"{"ok":false,"error":"LITE_SERVER_NETWORK","code":500}"#.to_owned(),
++                ),
++            ),
++            (
++                Some("active"),
++                GetterReply::Body(200, "<html>proxy</html>".to_owned()),
++            ),
++            (
++                Some("active"),
++                GetterReply::Body(200, r#"{"ok":true}"#.to_owned()),
++            ),
++        ];
++        for (index, (account, getter)) in silent.into_iter().enumerate() {
++            let http = Arc::new(RecipientHost::new(account, getter));
++            let client =
++                WalletClient::new(secretless_config(), http, secret_host()).expect("client builds");
++            let error = resolve(&client, raw_recipient(), None).expect_err("lookup fails");
++            assert!(
++                matches!(
++                    error,
++                    WalletClientError::EncryptedCommentLookupFailed { .. }
++                ),
++                "case {index}: {error:?}"
++            );
++            assert!(slot_released(&client), "case {index}");
++        }
++    }
++
++    #[test]
++    fn encryption_resolves_the_recipient_before_asking_for_the_secret() {
++        let cases = [
++            (Some("uninit"), GetterReply::HostFailure, false),
++            (Some("active"), GetterReply::HostFailure, true),
++        ];
++        for (account, getter, lookup_failed) in cases {
++            let http = Arc::new(RecipientHost::new(account, getter));
++            let platform = secret_host();
++            let client =
++                WalletClient::new(client_config(), http, platform.clone()).expect("client builds");
++
++            let error = block_on(
++                client.create_encrypted_comment(CreateEncryptedCommentRequest {
++                    recipient: raw_recipient(),
++                    comment: "must stay private".to_owned(),
++                    recipient_public_key: None,
++                }),
++            )
++            .expect_err("nothing to encrypt for");
++
++            assert_eq!(
++                matches!(
++                    error,
++                    WalletClientError::EncryptedCommentLookupFailed { .. }
++                ),
++                lookup_failed,
++                "{error:?}"
++            );
++            assert_eq!(
++                matches!(error, WalletClientError::EncryptedCommentUnavailable { .. }),
++                !lookup_failed,
++                "{error:?}"
++            );
++            assert!(platform.reasons.lock().expect("reason lock").is_empty());
++            assert!(slot_released(&client));
++        }
++    }
+ }
+diff --git a/src/engine/send_http.rs b/src/engine/send_http.rs
+index 5ba17f5..e2407c3 100644
+--- a/src/engine/send_http.rs
++++ b/src/engine/send_http.rs
+@@ -94,9 +94,22 @@ pub(super) fn parse_public_key(body: &[u8]) -> Result<[u8; 32], DomainError> {
+     let value: Value =
+         serde_json::from_slice(body).map_err(|error| invalid_json(error.to_string()))?;
+ 
+-    if let Some(error) = value.get("error") {
++    if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
+         return Err(invalid_json(error.to_string()));
+     }
++    // TVM exits 0 or 1 on success; any other exit leaves no answer on the stack.
++    if let Some(exit_code) = value.pointer("/result/exit_code")
++        && !matches!(
++            exit_code
++                .as_i64()
++                .or_else(|| exit_code.as_str().and_then(|code| code.parse().ok())),
++            Some(0 | 1)
++        )
++    {
++        return Err(invalid_json(format!(
++            "get_public_key exited with code {exit_code}"
++        )));
++    }
+ 
+     let first = value
+         .pointer("/result/stack/0")
+@@ -297,10 +310,25 @@ mod tests {
+                 "11".repeat(33)
+             ),
+             r#"{"result":{"stack":[["cell","1"]]}}"#.to_owned(),
++            format!(
++                r#"{{"result":{{"exit_code":11,"stack":[["num","0x{}"]]}}}}"#,
++                "11".repeat(32)
++            ),
++            r#"{"result":{"exit_code":-13,"stack":[["num","7"]]}}"#.to_owned(),
+         ] {
+             let error = parse_public_key(body.as_bytes()).expect_err("public key must fail");
+             assert_eq!(error.code, ErrorCode::InvalidProviderResponse);
+         }
++        for exit_code in ["0", "1", r#""0""#] {
++            let body = format!(
++                r#"{{"ok":true,"error":null,"result":{{"exit_code":{exit_code},"stack":[["num","0x{}"]]}}}}"#,
++                "11".repeat(32)
++            );
++            assert_eq!(
++                parse_public_key(body.as_bytes()).expect("successful getter parses"),
++                [0x11; 32]
++            );
++        }
+     }
+ 
+     #[test]
 diff --git a/src/lib.rs b/src/lib.rs
 index df64aa4..ffa754e 100644
 --- a/src/lib.rs
