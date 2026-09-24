@@ -1,17 +1,18 @@
 diff --git a/CHANGELOG.md b/CHANGELOG.md
-index 74fbdfd..aa3c468 100644
+index 74fbdfd..3789868 100644
 --- a/CHANGELOG.md
 +++ b/CHANGELOG.md
-@@ -8,6 +8,8 @@ This file records user-visible changes to Wallet Engine.
+@@ -8,6 +8,9 @@ This file records user-visible changes to Wallet Engine.
  
  - Added `detect_mnemonic_schemes`, which reports every scheme under which entered recovery words validate: `rotation` (importable), plus detection-only `ton` (passwordless legacy TON mnemonic) and `bip39` (24-word Multichain mnemonic). Applications use it to explain why an import was rejected; the engine still derives keys only from Rotation mnemonics.
  - Added `WalletClient::send_boc` and platform bindings for durable submission of an already signed external BOC. It validates fresh metadata, shares the transfer journal and single-flight slot, and returns the standard `SendResult` for normal pending resolution.
-+- Added `WalletLifecycle::derive_ton_connect_session` and the `TonConnectDerivedSession` object for MTProto-relayed TON Connect sessions whose X25519 key pair is derived from the wallet's current signing key, the dApp client id, and a server nonce. The object exposes only the session public key and the signing public key, opens the server challenge, validates relayed requests, and encrypts raw `nonce || box` replies with caller-supplied ids; it advertises `SendTransaction` only and persists nothing. Appended `SecretAccessReason::DeriveTonConnectSessionKey` and `WalletLifecycleError::InvalidTonConnectSessionInput`.
++- Added `WalletLifecycle::derive_ton_connect_session` and the `TonConnectDerivedSession` object for MTProto-relayed TON Connect sessions whose X25519 key pair is derived from the wallet's current signing key, the dApp client id, and a server nonce. The object exposes only the session public key and the signing public key, opens the server challenge, validates relayed requests, and encrypts raw `nonce || box` replies with caller-supplied ids; it persists nothing. Appended `SecretAccessReason::DeriveTonConnectSessionKey` and `WalletLifecycleError::InvalidTonConnectSessionInput`.
 +- Added `WalletClient::resolve_encrypted_comment_recipient` and platform bindings. It returns the recipient public key `create_encrypted_comment` would encrypt for, verifying a supplied key locally and otherwise reading the recipient account state and its `get_public_key`, without any protected-secret access, so applications can learn whether a comment can be encrypted before asking for authentication. Appended `WalletClientError::EncryptedCommentLookupFailed`.
++- Added TON Connect `signData` (`text`, `binary`, `cell`) to derived sessions. Their connect event now advertises `SignData` beside `SendTransaction`, and `decrypt_request` returns the new `TonConnectIncomingRequest::SignData` with a `TonConnectSignDataRequest` (`TonConnectSignDataPayload`) validated against the session wallet. `WalletLifecycle::sign_ton_connect_data` signs a `TonConnectSignDataSignRequest` with the current signing key and returns `TonConnectSignedData`, which `TonConnectDerivedSession::encrypt_sign_data_success` answers with. Appended `SecretAccessReason::SignTonConnectData`.
  
  ### Changed
  
-@@ -17,6 +19,8 @@ This file records user-visible changes to Wallet Engine.
+@@ -17,6 +20,8 @@ This file records user-visible changes to Wallet Engine.
  
  - Wallet rev00 key rotation can be prepared repeatedly. Later rotations are authorized by the current signing half while preserving the anchor half and wallet address.
  - Key rotation no longer interprets Toncenter's failed `seqno` getter stack for an undeployed account. It derives sequence number zero from account state and prepares a deployable rotation BOC with `StateInit`.
@@ -111,10 +112,10 @@ index 9820a02..06b2ec7 100644
  explicitly with `WalletClient.decryptComment`, passing the sender address. For
  received activity the sender is `counterparty`; for sent activity it is the
 diff --git a/TON_CONNECT.md b/TON_CONNECT.md
-index 72292e1..e39784a 100644
+index 72292e1..84220f9 100644
 --- a/TON_CONNECT.md
 +++ b/TON_CONNECT.md
-@@ -175,6 +175,36 @@ For a wallet-initiated disconnect, call `disconnect` and deliver its prepared
+@@ -175,6 +175,43 @@ For a wallet-initiated disconnect, call `disconnect` and deliver its prepared
  POST with the same durable sequence. Use `reject_connect` when the user rejects
  the initial connection.
  
@@ -142,8 +143,15 @@ index 72292e1..e39784a 100644
 +   A connect event with a proof writes `proof.timestamp` as a JSON number, the
 +   only form `@tonconnect/sdk` accepts; the signed bytes do not depend on it.
 +
-+The derived session advertises `SendTransaction` only; `signMessage` and
-+`signData` decode as `Unsupported` with `MethodNotSupported`. The object keeps
++The derived session advertises `SendTransaction` and `SignData` (`text`,
++`binary`, `cell`). A `signData` request decodes to `SignData` with its payload
++strings exactly as the dApp sent them, already validated against the session
++wallet; a mismatched `network` or `from`, invalid base64, or an invalid cell
++decodes as `Unsupported` with `BadRequest`. To answer it, sign the request with
++`WalletLifecycle.sign_ton_connect_data` (reason `signTonConnectData`) for the
++dApp manifest domain the user approved and the signing time, then pass the
++result to `encrypt_sign_data_success`. `signMessage` still decodes as
++`Unsupported` with `MethodNotSupported`. The object keeps
 +no replay state, no event counter, and nothing persisted: the server issues
 +event ids and orders requests. A signing-key rotation changes the key of every
 +later derivation; an existing session object stays valid in memory.
@@ -272,15 +280,17 @@ index f347ecd..ff47684 100644
 +    },
  }
 diff --git a/src/domain/secret.rs b/src/domain/secret.rs
-index 4d98615..d327a18 100644
+index 4d98615..cf0e539 100644
 --- a/src/domain/secret.rs
 +++ b/src/domain/secret.rs
-@@ -26,6 +26,8 @@ pub enum SecretAccessReason {
+@@ -26,6 +26,10 @@ pub enum SecretAccessReason {
      DecryptComment,
      /// The user requested the recovery phrase.
      RevealRecoveryPhrase,
 +    /// The engine needs the current signing key to derive a TON Connect session key.
 +    DeriveTonConnectSessionKey,
++    /// The engine needs the current signing key to sign TON Connect signData.
++    SignTonConnectData,
  }
  
  /// A request to read and authorize access to protected secret bytes.
@@ -1088,7 +1098,7 @@ index df64aa4..ffa754e 100644
  pub use types::{
      Base64Hash, Base64HashError, Boc, BocError, NonEmptyString, NonEmptyStringError,
 diff --git a/src/ton_connect.rs b/src/ton_connect.rs
-index bc38d0f..ced3869 100644
+index bc38d0f..5ace0c8 100644
 --- a/src/ton_connect.rs
 +++ b/src/ton_connect.rs
 @@ -13,7 +13,7 @@ use ton_connect_client::{
@@ -1100,7 +1110,33 @@ index bc38d0f..ced3869 100644
      ConnectItemReply, DeviceInfo, DevicePlatform, Ed25519PublicKey, Ed25519Signature,
      EmbeddedResponse, EmbeddedResponseError, Feature, HeartbeatMode, HttpBridgeUrl,
      KnownAppRequest, NetworkId, RawAccountAddress, RpcErrorCode, SendTransactionFeature,
-@@ -220,7 +220,7 @@ struct TonConnectSessionState {
+@@ -24,7 +24,8 @@ use ton_connect_core::{
+ 
+ use crate::{
+     Boc, NonEmptyString, SendAmount, SendExpiration, SendIntent, SendMessage, SendMessageBody,
+-    SendRequest, SignMessageRequest, TonConnectAccountInfo, WalletClientError, bounded_diagnostic,
++    SendRequest, SignMessageRequest, TonConnectAccountInfo, TonConnectSignDataRequest,
++    WalletClientError, bounded_diagnostic,
+ };
+ 
+ /// Limits and bridge identity for one wallet-side TON Connect session.
+@@ -189,6 +190,15 @@ pub enum TonConnectIncomingRequest {
+         /// Sanitized protocol diagnostic.
+         error_message: String,
+     },
++    /// A validated `signData` request of a derived session; the classic session reports it as `Unsupported`.
++    SignData {
++        /// Exact dApp request identifier.
++        id: String,
++        /// Exact RPC method name.
++        method: String,
++        /// Validated data to show and sign.
++        request: TonConnectSignDataRequest,
++    },
+ }
+ 
+ /// Failure at the FFI-safe TON Connect session boundary.
+@@ -220,7 +230,7 @@ struct TonConnectSessionState {
  }
  
  /// Maximum raw-message batch represented by the Wallet V5 action list.
@@ -1109,7 +1145,7 @@ index bc38d0f..ced3869 100644
  
  /// Thread-safe TON Connect session exposed to Swift, Kotlin, and other hosts.
  #[derive(uniffi::Object)]
-@@ -664,7 +664,7 @@ fn stage_post(
+@@ -664,7 +674,7 @@ fn stage_post(
      post
  }
  
@@ -1118,7 +1154,7 @@ index bc38d0f..ced3869 100644
      account: &TonConnectAccountInfo,
  ) -> Result<(TonAddressItemReply, NetworkId), TonConnectSessionError> {
      let address = account
-@@ -687,7 +687,9 @@ fn account_reply(
+@@ -687,7 +697,9 @@ fn account_reply(
      ))
  }
  
@@ -1129,7 +1165,7 @@ index bc38d0f..ced3869 100644
      let signature = <[u8; 64]>::try_from(proof.signature.as_slice())
          .map_err(|_| failed("TON Connect proof signature must contain 64 bytes"))?;
      Ok(TonProof {
-@@ -707,7 +709,7 @@ fn decode_incoming(
+@@ -707,7 +719,7 @@ fn decode_incoming(
      let method = incoming.request().method.clone();
      let decoded = match incoming.decode() {
          Ok(KnownAppRequest::SendTransaction(request)) => decode_transaction_request(
@@ -1138,7 +1174,7 @@ index bc38d0f..ced3869 100644
              &id,
              method,
              request.payload,
-@@ -715,7 +717,7 @@ fn decode_incoming(
+@@ -715,7 +727,7 @@ fn decode_incoming(
              TransactionRequestKind::Send,
          )?,
          Ok(KnownAppRequest::SignMessage(request)) => decode_transaction_request(
@@ -1147,7 +1183,7 @@ index bc38d0f..ced3869 100644
              &id,
              method,
              request.payload,
-@@ -741,20 +743,25 @@ fn decode_incoming(
+@@ -741,20 +753,25 @@ fn decode_incoming(
  
  /// Selects the public operation produced from a transaction-shaped RPC payload.
  #[derive(Clone, Copy)]
@@ -1182,7 +1218,7 @@ index bc38d0f..ced3869 100644
      let network = state
          .connected_network
          .as_ref()
-@@ -763,7 +770,23 @@ fn decode_transaction_request(
+@@ -763,7 +780,23 @@ fn decode_transaction_request(
          .client
          .connected_address()
          .ok_or_else(|| failed("connected address is unavailable"))?;
@@ -1207,7 +1243,7 @@ index bc38d0f..ced3869 100644
          return Ok(unsupported_request(
              request_id.to_owned(),
              method,
-@@ -821,15 +844,13 @@ fn decode_transaction_request(
+@@ -821,15 +854,13 @@ fn decode_transaction_request(
              body: payload_boc.map_or(SendMessageBody::Empty, |boc| SendMessageBody::RawPayload {
                  boc,
              }),
@@ -1227,7 +1263,7 @@ index bc38d0f..ced3869 100644
      let intent = SendIntent {
          expiration: payload
              .valid_until
-@@ -862,7 +883,7 @@ fn decode_transaction_request(
+@@ -862,7 +893,7 @@ fn decode_transaction_request(
      })
  }
  
@@ -1236,7 +1272,7 @@ index bc38d0f..ced3869 100644
      id: String,
      method: String,
      code: TonConnectRpcErrorCode,
-@@ -876,7 +897,7 @@ fn unsupported_request(
+@@ -876,7 +907,7 @@ fn unsupported_request(
      }
  }
  
@@ -1245,7 +1281,7 @@ index bc38d0f..ced3869 100644
      match platform {
          TonConnectDevicePlatform::Iphone => DevicePlatform::Iphone,
          TonConnectDevicePlatform::Ipad => DevicePlatform::Ipad,
-@@ -888,7 +909,7 @@ const fn device_platform(platform: TonConnectDevicePlatform) -> DevicePlatform {
+@@ -888,7 +919,7 @@ const fn device_platform(platform: TonConnectDevicePlatform) -> DevicePlatform {
      }
  }
  
@@ -1254,7 +1290,7 @@ index bc38d0f..ced3869 100644
      match code {
          TonConnectRpcErrorCode::Unknown => RpcErrorCode::Unknown,
          TonConnectRpcErrorCode::BadRequest => RpcErrorCode::BadRequest,
-@@ -898,11 +919,11 @@ const fn rpc_error_code(code: TonConnectRpcErrorCode) -> RpcErrorCode {
+@@ -898,11 +929,11 @@ const fn rpc_error_code(code: TonConnectRpcErrorCode) -> RpcErrorCode {
      }
  }
  
@@ -1270,10 +1306,10 @@ index bc38d0f..ced3869 100644
      }
 diff --git a/src/ton_connect_derived.rs b/src/ton_connect_derived.rs
 new file mode 100644
-index 0000000..cd4a101
+index 0000000..bb19f94
 --- /dev/null
 +++ b/src/ton_connect_derived.rs
-@@ -0,0 +1,1215 @@
+@@ -0,0 +1,1841 @@
 +//! `MTProto`-relayed TON Connect sessions with server-nonce-derived keys.
 +//!
 +//! The server relays opaque `nonce || box` ciphertext between a dApp and every
@@ -1286,11 +1322,14 @@ index 0000000..cd4a101
 +use std::sync::Arc;
 +
 +use serde::Serialize;
++use serde_json::Value;
 +use ton_connect_core::{
-+    AppRequest, CellBoc, ClientId, ConnectEvent, ConnectEventError, ConnectEventErrorCode,
-+    ConnectEventPayload, ConnectItemReply, DeviceInfo, Ed25519Signature, EmptyObject, Feature,
-+    KnownAppRequest, NetworkId, RawAccountAddress, SendTransactionFeature, SessionCrypto, TonProof,
-+    TonProofDomain, WalletResponse, WalletResponseError, WalletResponseSuccess, WalletResult,
++    AccountAddress, AppRequest, Base64Value, CellBoc, ClientId, ConnectEvent, ConnectEventError,
++    ConnectEventErrorCode, ConnectEventPayload, ConnectItemReply, DeviceInfo, Ed25519PublicKey,
++    Ed25519Signature, EmptyObject, Feature, KnownAppRequest, NetworkId, RawAccountAddress,
++    SendTransactionFeature, SessionCrypto, SignDataFeature, SignDataPayload, SignDataResult,
++    SignDataType, TonProof, TonProofDomain, WalletResponse, WalletResponseError,
++    WalletResponseSuccess, WalletResult,
 +};
 +use zeroize::Zeroizing;
 +
@@ -1329,7 +1368,8 @@ index 0000000..cd4a101
 +/// One authenticated dApp request relayed by the server.
 +#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 +pub struct TonConnectDerivedRequest {
-+    /// The validated request, exactly as the classic bridge session reports it.
++    /// The validated request. Only a derived session reports `SignData`; the
++    /// classic bridge session reports `signData` as `Unsupported`.
 +    pub request: TonConnectIncomingRequest,
 +    /// The request `id` as a signed 64-bit value.
 +    ///
@@ -1337,6 +1377,67 @@ index 0000000..cd4a101
 +    /// value; `request` is still decoded so the host can answer with the exact
 +    /// id string.
 +    pub request_id: Option<i64>,
++}
++
++/// The data of one `signData` request, exactly as the dApp sent it.
++#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
++pub enum TonConnectSignDataPayload {
++    /// UTF-8 text shown to the user and signed verbatim.
++    Text {
++        /// The text to sign.
++        text: String,
++    },
++    /// Opaque bytes.
++    Binary {
++        /// The bytes in base64, exactly as the dApp sent them.
++        bytes: String,
++    },
++    /// A TVM cell described by a TL-B schema.
++    Cell {
++        /// The TL-B schema whose last declaration is the root.
++        schema: String,
++        /// The one-root cell `BoC` in base64, exactly as the dApp sent it.
++        cell: String,
++    },
++}
++
++/// A `signData` request already validated against the session's wallet.
++#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
++pub struct TonConnectSignDataRequest {
++    /// The data to show and sign.
++    pub payload: TonConnectSignDataPayload,
++    /// The network global ID the dApp named, exactly as sent; it matches the wallet.
++    pub network: Option<String>,
++    /// The signer address the dApp named, exactly as sent; it is the wallet's address.
++    pub from: Option<String>,
++}
++
++/// Requests a TON Connect `signData` signature with the wallet's current signing key.
++#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
++pub struct TonConnectSignDataSignRequest {
++    /// Wallet whose protected key must sign the data.
++    pub descriptor: WalletDescriptor,
++    /// The decoded request to sign.
++    pub request: TonConnectSignDataRequest,
++    /// Exact dApp manifest domain shown to and approved by the user.
++    pub domain: String,
++    /// Unix signing time in seconds.
++    pub timestamp: u64,
++}
++
++/// A signed TON Connect `signData` request, ready for the success response.
++#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
++pub struct TonConnectSignedData {
++    /// The signed request.
++    pub request: TonConnectSignDataRequest,
++    /// The domain bound into the signature.
++    pub domain: String,
++    /// The Unix signing time in seconds bound into the signature.
++    pub timestamp: u64,
++    /// Exact 64-byte Ed25519 signature.
++    pub signature: Vec<u8>,
++    /// The current 32-byte Ed25519 signing public key that made the signature.
++    pub public_key: Vec<u8>,
 +}
 +
 +/// `ephemeral_pk(32) || nonce(24) || box(48)`: a 32-byte answer sealed to `W`.
@@ -1410,13 +1511,29 @@ index 0000000..cd4a101
 +                now,
 +                TransactionRequestKind::Send,
 +            )?,
-+            Ok(KnownAppRequest::SignMessage(_) | KnownAppRequest::SignData(_)) => {
-+                unsupported_request(
-+                    id,
-+                    method,
-+                    TonConnectRpcErrorCode::MethodNotSupported,
-+                    "Method is not supported",
-+                )
++            Ok(KnownAppRequest::SignMessage(_)) => unsupported_request(
++                id,
++                method,
++                TonConnectRpcErrorCode::MethodNotSupported,
++                "Method is not supported",
++            ),
++            Ok(KnownAppRequest::SignData(request)) => {
++                match request
++                    .payload
++                    .validate_context(&self.network, &self.address)
++                {
++                    Err(error) => unsupported_request(
++                        id,
++                        method,
++                        TonConnectRpcErrorCode::BadRequest,
++                        &error.to_string(),
++                    ),
++                    Ok(()) => TonConnectIncomingRequest::SignData {
++                        id,
++                        method,
++                        request: sign_data_request(request.payload),
++                    },
++                }
 +            }
 +            Ok(KnownAppRequest::Disconnect(_)) => {
 +                TonConnectIncomingRequest::Disconnect { id, method }
@@ -1499,7 +1616,8 @@ index 0000000..cd4a101
 +    /// Encrypts a successful connect event for the dApp.
 +    ///
 +    /// `account` must belong to this session; `proof` is included when the
-+    /// dApp requested `ton_proof`. The device advertises `SendTransaction` only.
++    /// dApp requested `ton_proof`. The device advertises `SendTransaction` and
++    /// `SignData` (`text`, `binary`, `cell`).
 +    pub fn encrypt_connect_event(
 +        &self,
 +        event_id: u64,
@@ -1561,6 +1679,45 @@ index 0000000..cd4a101
 +        let boc = CellBoc::try_from(signed_boc).map_err(session_error)?;
 +        self.encrypt(&WalletResponse::Success(WalletResponseSuccess {
 +            result: WalletResult::String(boc.as_str().to_owned()),
++            id: request_id,
++        }))
++    }
++
++    /// Encrypts a successful `signData` response for the signed data.
++    ///
++    /// The response names this session's wallet address and is refused unless
++    /// `signed_data.signature` verifies with `signed_data.public_key` for exactly
++    /// that address, request, domain, and timestamp.
++    pub fn encrypt_sign_data_success(
++        &self,
++        request_id: String,
++        signed_data: TonConnectSignedData,
++    ) -> Result<Vec<u8>, TonConnectSessionError> {
++        let payload = sign_data_payload(&signed_data.request)?;
++        let signature = <[u8; 64]>::try_from(signed_data.signature.as_slice())
++            .map_err(|_| failed("TON Connect signData signature must contain 64 bytes"))?;
++        let public_key = <[u8; 32]>::try_from(signed_data.public_key.as_slice())
++            .map_err(|_| failed("TON Connect signData public key must contain 32 bytes"))?;
++        let result = SignDataResult {
++            signature: Ed25519Signature::from_bytes(signature),
++            address: self.address,
++            timestamp: signed_data.timestamp,
++            domain: signed_data.domain,
++            payload,
++        };
++        if !result
++            .verify(&Ed25519PublicKey::from_bytes(public_key))
++            .map_err(session_error)?
++        {
++            return Err(failed(
++                "TON Connect signData signature does not match its request",
++            ));
++        }
++        let Value::Object(object) = serde_json::to_value(&result).map_err(session_error)? else {
++            return Err(failed("TON Connect signData result must be an object"));
++        };
++        self.encrypt(&WalletResponse::Success(WalletResponseSuccess {
++            result: WalletResult::Object(object),
 +            id: request_id,
 +        }))
 +    }
@@ -1656,18 +1813,120 @@ index 0000000..cd4a101
 +    }
 +}
 +
-+/// Builds the advertised runtime descriptor: `SendTransaction` only.
++/// Builds the advertised runtime descriptor: `SendTransaction` and `SignData`.
 +fn device_info(device: TonConnectDevice) -> Result<DeviceInfo, TonConnectSessionError> {
 +    let send = SendTransactionFeature::new(TON_CONNECT_MAX_MESSAGES, Some(false), None)
 +        .map_err(session_error)?;
++    let data = SignDataFeature::new(vec![
++        SignDataType::Text,
++        SignDataType::Binary,
++        SignDataType::Cell,
++    ])
++    .map_err(session_error)?;
 +    DeviceInfo::new(
 +        device_platform(device.platform),
 +        device.app_name,
 +        device.app_version,
 +        u32::from(ton_connect_core::PROTOCOL_VERSION),
-+        vec![Feature::SendTransaction(send)],
++        vec![Feature::SendTransaction(send), Feature::SignData(data)],
 +    )
 +    .map_err(session_error)
++}
++
++/// Converts a validated core payload into the FFI request, keeping every string as sent.
++fn sign_data_request(payload: SignDataPayload) -> TonConnectSignDataRequest {
++    let (payload, network, from) = match payload {
++        SignDataPayload::Text {
++            text,
++            network,
++            from,
++        } => (TonConnectSignDataPayload::Text { text }, network, from),
++        SignDataPayload::Binary {
++            bytes,
++            network,
++            from,
++        } => (
++            TonConnectSignDataPayload::Binary {
++                bytes: bytes.into_string(),
++            },
++            network,
++            from,
++        ),
++        SignDataPayload::Cell {
++            schema,
++            cell,
++            network,
++            from,
++        } => (
++            TonConnectSignDataPayload::Cell {
++                schema,
++                cell: cell.as_str().to_owned(),
++            },
++            network,
++            from,
++        ),
++    };
++    TonConnectSignDataRequest {
++        payload,
++        network: network.map(NetworkId::into_string),
++        from: from.map(|address| address.to_string()),
++    }
++}
++
++/// Rebuilds the core payload of a request, validating every string again.
++///
++/// The original strings are kept, so the result equals the payload the dApp sent.
++pub(crate) fn sign_data_payload(
++    request: &TonConnectSignDataRequest,
++) -> Result<SignDataPayload, TonConnectSessionError> {
++    let network = request
++        .network
++        .as_deref()
++        .map(NetworkId::try_from)
++        .transpose()
++        .map_err(session_error)?;
++    let from = request
++        .from
++        .as_deref()
++        .map(AccountAddress::try_from)
++        .transpose()
++        .map_err(session_error)?;
++    Ok(match &request.payload {
++        TonConnectSignDataPayload::Text { text } => SignDataPayload::Text {
++            text: text.clone(),
++            network,
++            from,
++        },
++        TonConnectSignDataPayload::Binary { bytes } => SignDataPayload::Binary {
++            bytes: Base64Value::try_from(bytes.as_str()).map_err(session_error)?,
++            network,
++            from,
++        },
++        TonConnectSignDataPayload::Cell { schema, cell } => SignDataPayload::Cell {
++            schema: schema.clone(),
++            cell: CellBoc::try_from(cell.as_str()).map_err(session_error)?,
++            network,
++            from,
++        },
++    })
++}
++
++/// Builds a `signData` result with an all-zero signature.
++///
++/// Its `signing_hash` is the digest the wallet signs, the one `verify` checks.
++pub(crate) const fn unsigned_sign_data_result(
++    address: RawAccountAddress,
++    domain: String,
++    timestamp: u64,
++    payload: SignDataPayload,
++) -> SignDataResult {
++    SignDataResult {
++        signature: Ed25519Signature::from_bytes([0; 64]),
++        address,
++        timestamp,
++        domain,
++        payload,
++    }
 +}
 +
 +const fn connect_error_code(code: TonConnectConnectErrorCode) -> ConnectEventErrorCode {
@@ -1692,13 +1951,14 @@ index 0000000..cd4a101
 +    use std::str::FromStr as _;
 +
 +    use base64::{Engine as _, engine::general_purpose::STANDARD};
-+    use serde_json::{Value, json};
++    use ed25519_dalek::{Signer as _, SigningKey};
++    use serde_json::json;
 +    use ton::block_tlb::{CommonMsgInfo, Msg};
 +    use ton::ton_core::cell::TonCell;
 +    use ton::ton_core::traits::tlb::TLB as _;
 +    use ton::ton_core::types::{TonAddress, tlb_core::TLBCoins};
 +    use ton::ton_wallet::WalletExtMsgBody;
-+    use ton_connect_core::TonProofItemReply;
++    use ton_connect_core::{KnownWalletResponse, TonProofItemReply};
 +
 +    use super::*;
 +    use crate::wallet::send::FreshSendAccount;
@@ -1903,6 +2163,102 @@ index 0000000..cd4a101
 +        Ok(keys)
 +    }
 +
++    const SIGN_DATA_TEXT: &str = "Confirm new 2fa number:\n+1 *** *** ** 89";
++    const SIGN_DATA_BYTES: &str = "I0hlbGxvLCBXb3JsZCE=";
++    const SIGN_DATA_SCHEMA: &str =
++        "message#_ len:uint7 {len <= 127} text:(bits len * 8) = Message;";
++    const SIGN_DATA_DOMAIN: &str = "tonconnect-sdk-demo-dapp.vercel.app";
++    const SIGN_DATA_TIMESTAMP: u64 = 1_800_000_000;
++
++    fn sign_data_app_request(id: &str, payload: &Value) -> AppRequest {
++        AppRequest {
++            method: "signData".to_owned(),
++            params: vec![payload.to_string()],
++            id: id.to_owned(),
++        }
++    }
++
++    /// The three payload types, each with the FFI payload it must decode to.
++    fn sign_data_payloads() -> [(Value, TonConnectSignDataPayload); 3] {
++        [
++            (
++                json!({"type": "text", "text": SIGN_DATA_TEXT}),
++                TonConnectSignDataPayload::Text {
++                    text: SIGN_DATA_TEXT.to_owned(),
++                },
++            ),
++            (
++                json!({"type": "binary", "bytes": SIGN_DATA_BYTES}),
++                TonConnectSignDataPayload::Binary {
++                    bytes: SIGN_DATA_BYTES.to_owned(),
++                },
++            ),
++            (
++                json!({"type": "cell", "schema": SIGN_DATA_SCHEMA, "cell": DEMO_PAYLOAD}),
++                TonConnectSignDataPayload::Cell {
++                    schema: SIGN_DATA_SCHEMA.to_owned(),
++                    cell: DEMO_PAYLOAD.to_owned(),
++                },
++            ),
++        ]
++    }
++
++    /// The session wallet in user-friendly form.
++    fn friendly_session_address() -> Result<String, Box<dyn std::error::Error>> {
++        let (info, _, _) = account();
++        let address = TonAddress::from_str(&info.address)?;
++        Ok(TonAddressString::from_address(&address, Network::Testnet).into_string())
++    }
++
++    /// A throwaway signer standing in for the wallet's current signing key.
++    fn signer() -> SigningKey {
++        SigningKey::from_bytes(&[0x55; 32])
++    }
++
++    fn other_public_key() -> Ed25519PublicKey {
++        Ed25519PublicKey::from_bytes(
++            SigningKey::from_bytes(&[0x66; 32])
++                .verifying_key()
++                .to_bytes(),
++        )
++    }
++
++    /// Signs `request` for `address` the way `WalletLifecycle::sign_ton_connect_data` does.
++    fn signed_data(
++        key: &SigningKey,
++        address: RawAccountAddress,
++        request: TonConnectSignDataRequest,
++    ) -> Result<TonConnectSignedData, Box<dyn std::error::Error>> {
++        let hash = unsigned_sign_data_result(
++            address,
++            SIGN_DATA_DOMAIN.to_owned(),
++            SIGN_DATA_TIMESTAMP,
++            sign_data_payload(&request)?,
++        )
++        .signing_hash()?;
++        Ok(TonConnectSignedData {
++            request,
++            domain: SIGN_DATA_DOMAIN.to_owned(),
++            timestamp: SIGN_DATA_TIMESTAMP,
++            signature: key.sign(&hash).to_bytes().to_vec(),
++            public_key: key.verifying_key().to_bytes().to_vec(),
++        })
++    }
++
++    /// Decrypts one relayed request and returns its decoded `signData`.
++    fn decode_sign_data(
++        dapp: &SessionCrypto,
++        session: &TonConnectDerivedSession,
++        request: &AppRequest,
++    ) -> Result<TonConnectSignDataRequest, Box<dyn std::error::Error>> {
++        let decoded =
++            session.decrypt_request(encrypt_for(dapp, session, request)?, 1_800_000_000)?;
++        let TonConnectIncomingRequest::SignData { request, .. } = decoded.request else {
++            return Err(format!("request was not decoded as signData: {decoded:?}").into());
++        };
++        Ok(request)
++    }
++
 +    #[test]
 +    fn derived_public_key_matches_the_fixed_vector() -> TestResult {
 +        let peer = PEER.parse::<ClientId>()?;
@@ -1914,7 +2270,7 @@ index 0000000..cd4a101
 +    }
 +
 +    #[test]
-+    fn dapp_decrypts_the_connect_event_with_send_transaction_only() -> TestResult {
++    fn dapp_decrypts_the_connect_event_with_its_features() -> TestResult {
 +        let dapp = SessionCrypto::generate()?;
 +        let session = session(&dapp);
 +        let (info, _, _) = account();
@@ -1937,12 +2293,26 @@ index 0000000..cd4a101
 +        assert_eq!(device["maxProtocolVersion"], 2);
 +        assert_eq!(
 +            device["features"],
-+            json!([{
-+                "name": "SendTransaction",
-+                "maxMessages": 255,
-+                "extraCurrencySupported": false
-+            }])
++            json!([
++                {
++                    "name": "SendTransaction",
++                    "maxMessages": 255,
++                    "extraCurrencySupported": false
++                },
++                {
++                    "name": "SignData",
++                    "types": ["text", "binary", "cell"]
++                }
++            ])
 +        );
++        let features = device["features"]
++            .as_array()
++            .ok_or("features must be an array")?;
++        assert_eq!(features.len(), 2);
++        for feature in features {
++            assert_ne!(feature["name"], "SignMessage");
++            assert_ne!(feature["name"], "EmbeddedRequest");
++        }
 +        assert!(value.get("response").is_none());
 +        let _ = serde_json::from_slice::<ConnectEvent>(&plaintext)?;
 +        Ok(())
@@ -1962,7 +2332,8 @@ index 0000000..cd4a101
 +                r#""address":"{}","network":"-3","walletStateInit":"{}","publicKey":"{}"}}],"#,
 +                r#""device":{{"platform":"mac","appName":"telegram","appVersion":"6.3.1","#,
 +                r#""maxProtocolVersion":2,"features":[{{"name":"SendTransaction","#,
-+                r#""maxMessages":255,"extraCurrencySupported":false}}]}}}}}}"#
++                r#""maxMessages":255,"extraCurrencySupported":false}},"#,
++                r#"{{"name":"SignData","types":["text","binary","cell"]}}]}}}}}}"#
 +            ),
 +            info.address,
 +            info.wallet_state_init,
@@ -2443,6 +2814,297 @@ index 0000000..cd4a101
 +        }
 +    }
 +
++    #[test]
++    fn sign_data_requests_decode_with_their_payload() -> TestResult {
++        let dapp = SessionCrypto::generate()?;
++        let session = session(&dapp);
++        let (info, _, _) = account();
++        let friendly = friendly_session_address()?;
++        assert_ne!(friendly, info.address);
++        let mut next_id = 20_i64;
++        for (payload, expected) in sign_data_payloads() {
++            let constraints = [
++                (None, None),
++                (Some("-3"), Some(info.address.as_str())),
++                (None, Some(friendly.as_str())),
++            ];
++            for (network, from) in constraints {
++                let mut payload = payload.clone();
++                let object = payload.as_object_mut().ok_or("payload is an object")?;
++                if let Some(network) = network {
++                    let _ = object.insert("network".to_owned(), json!(network));
++                }
++                if let Some(from) = from {
++                    let _ = object.insert("from".to_owned(), json!(from));
++                }
++                next_id += 1;
++                let id = next_id.to_string();
++                let request = sign_data_app_request(&id, &payload);
++                let decoded = session
++                    .decrypt_request(encrypt_for(&dapp, &session, &request)?, 1_800_000_000)?;
++                assert_eq!(decoded.request_id, Some(next_id));
++                assert_eq!(
++                    decoded.request,
++                    TonConnectIncomingRequest::SignData {
++                        id,
++                        method: "signData".to_owned(),
++                        request: TonConnectSignDataRequest {
++                            payload: expected.clone(),
++                            network: network.map(str::to_owned),
++                            from: from.map(str::to_owned),
++                        },
++                    }
++                );
++            }
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn sign_data_requests_that_cannot_be_signed_are_bad_requests() -> TestResult {
++        let dapp = SessionCrypto::generate()?;
++        let session = session(&dapp);
++        let now = 1_800_000_000;
++        let bad_payloads = [
++            json!({"type": "text", "text": "hi", "network": "-239"}),
++            json!({"type": "text", "text": "hi", "from": OTHER_ADDRESS}),
++            json!({"type": "binary", "bytes": "not base64!"}),
++            json!({"type": "binary", "bytes": "+/8_"}),
++            json!({"type": "cell", "schema": SIGN_DATA_SCHEMA, "cell": "not a boc"}),
++            json!({"type": "cell", "schema": SIGN_DATA_SCHEMA, "cell": "AAAA"}),
++            json!({"type": "cell", "schema": SIGN_DATA_SCHEMA, "cell": null}),
++            json!({"type": "unknown", "text": "hi"}),
++            json!({"type": "text", "text": "hi", "extra": 1}),
++        ];
++        for (index, payload) in bad_payloads.iter().enumerate() {
++            let id = format!("{}", index + 30);
++            let request = sign_data_app_request(&id, payload);
++            let decoded = session.decrypt_request(encrypt_for(&dapp, &session, &request)?, now)?;
++            let TonConnectIncomingRequest::Unsupported {
++                id: decoded_id,
++                method,
++                error_code,
++                error_message,
++            } = decoded.request
++            else {
++                return Err(format!("{payload} must be a bad request: {decoded:?}").into());
++            };
++            assert_eq!(decoded_id, id);
++            assert_eq!(method, "signData");
++            assert_eq!(error_code, TonConnectRpcErrorCode::BadRequest, "{payload}");
++            if index == 0 {
++                // The caller answers with exactly this error: code 1 on the wire.
++                let bytes = session.encrypt_error(id.clone(), error_code, error_message)?;
++                let value = decrypt_json(&dapp, &session, &bytes)?;
++                assert_eq!(value["error"]["code"], 1);
++                assert_eq!(
++                    value["error"]["message"],
++                    "TON Connect request network differs from the active network"
++                );
++                assert_eq!(value["id"], id);
++            }
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn sign_message_and_unknown_methods_decode_as_before() -> TestResult {
++        let dapp = SessionCrypto::generate()?;
++        let session = session(&dapp);
++        let (info, _, _) = account();
++        let now = 1_800_000_000;
++
++        let mut sign = send_request("40", "-3", &info.address, 1_900_000_000, 1);
++        sign.method = "signMessage".to_owned();
++        let decoded = session.decrypt_request(encrypt_for(&dapp, &session, &sign)?, now)?;
++        assert_eq!(
++            decoded.request,
++            TonConnectIncomingRequest::Unsupported {
++                id: "40".to_owned(),
++                method: "signMessage".to_owned(),
++                error_code: TonConnectRpcErrorCode::MethodNotSupported,
++                error_message: "Method is not supported".to_owned(),
++            }
++        );
++
++        let (text, _) = sign_data_payloads()[0].clone();
++        for method in ["signDataV2", "foo"] {
++            let mut request = sign_data_app_request("41", &text);
++            request.method = method.to_owned();
++            let decoded = session.decrypt_request(encrypt_for(&dapp, &session, &request)?, now)?;
++            let TonConnectIncomingRequest::Unsupported {
++                method: decoded_method,
++                error_code,
++                error_message,
++                ..
++            } = decoded.request
++            else {
++                return Err(format!("{method} must be unsupported: {decoded:?}").into());
++            };
++            assert_eq!(decoded_method, method);
++            assert_eq!(error_code, TonConnectRpcErrorCode::BadRequest);
++            assert!(
++                error_message.starts_with("unsupported TON Connect RPC method"),
++                "{error_message}"
++            );
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn dapp_decrypts_the_sign_data_response() -> TestResult {
++        let dapp = SessionCrypto::generate()?;
++        let session = session(&dapp);
++        let (info, address, _) = account();
++        let key = signer();
++        let public_key = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
++        for (payload, _) in sign_data_payloads() {
++            let app_request = sign_data_app_request("11", &payload);
++            let request = decode_sign_data(&dapp, &session, &app_request)?;
++            let signed = signed_data(&key, address, request)?;
++            let bytes = session.encrypt_sign_data_success("11".to_owned(), signed)?;
++            let plaintext = dapp.decrypt(w(&session), &bytes)?;
++
++            let value: Value = serde_json::from_slice(&plaintext)?;
++            assert_eq!(keys(&value)?, ["id", "result"]);
++            assert_eq!(value["id"], "11");
++            let result = &value["result"];
++            assert_eq!(
++                keys(result)?,
++                ["address", "domain", "payload", "signature", "timestamp"]
++            );
++            assert!(result["timestamp"].is_u64());
++            assert_eq!(result["timestamp"], SIGN_DATA_TIMESTAMP);
++            assert_eq!(result["address"], info.address.as_str());
++            assert_eq!(result["domain"], SIGN_DATA_DOMAIN);
++            assert_eq!(result["payload"], payload);
++
++            let response = serde_json::from_slice::<WalletResponse>(&plaintext)?;
++            let KnownWalletResponse::SignData(result) =
++                response.validate_for(&app_request.decode()?)?
++            else {
++                return Err("response must be a signData result".into());
++            };
++            assert_eq!(result.address, address);
++            assert_eq!(result.domain, SIGN_DATA_DOMAIN);
++            assert_eq!(result.timestamp, SIGN_DATA_TIMESTAMP);
++            assert!(result.verify(&public_key)?);
++            assert!(!result.verify(&other_public_key())?);
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn sign_data_response_refuses_a_signature_that_does_not_match() -> TestResult {
++        let dapp = SessionCrypto::generate()?;
++        let session = session(&dapp);
++        let (_, address, _) = account();
++        let key = signer();
++        let request = TonConnectSignDataRequest {
++            payload: TonConnectSignDataPayload::Text {
++                text: SIGN_DATA_TEXT.to_owned(),
++            },
++            network: None,
++            from: None,
++        };
++        let signed = signed_data(&key, address, request.clone())?;
++        let _ = session.encrypt_sign_data_success("12".to_owned(), signed.clone())?;
++
++        let other_address = RawAccountAddress::from_str(OTHER_ADDRESS)?;
++        let mut cases = vec![signed_data(&key, other_address, request)?];
++        let mut other_domain = signed.clone();
++        other_domain.domain = "other.example".to_owned();
++        cases.push(other_domain);
++        let mut other_timestamp = signed.clone();
++        other_timestamp.timestamp += 1;
++        cases.push(other_timestamp);
++        let mut altered_text = signed.clone();
++        altered_text.request.payload = TonConnectSignDataPayload::Text {
++            text: "Confirm new 2fa number:\n+1 *** *** ** 88".to_owned(),
++        };
++        cases.push(altered_text);
++        let mut wrong_key = signed.clone();
++        wrong_key.public_key = other_public_key().as_bytes().to_vec();
++        cases.push(wrong_key);
++        let mut short_signature = signed.clone();
++        short_signature.signature.truncate(63);
++        cases.push(short_signature);
++        let mut short_key = signed.clone();
++        short_key.public_key.truncate(31);
++        cases.push(short_key);
++        let mut garbage = signed.clone();
++        garbage.request.payload = TonConnectSignDataPayload::Binary {
++            bytes: "not base64!".to_owned(),
++        };
++        cases.push(garbage);
++        let mut garbage_network = signed.clone();
++        garbage_network.request.network = Some("mainnet".to_owned());
++        cases.push(garbage_network);
++        let mut garbage_from = signed;
++        garbage_from.request.from = Some("nobody".to_owned());
++        cases.push(garbage_from);
++
++        for signed in cases {
++            assert!(
++                matches!(
++                    session.encrypt_sign_data_success("12".to_owned(), signed.clone()),
++                    Err(TonConnectSessionError::Failed { .. })
++                ),
++                "{signed:?}"
++            );
++        }
++        Ok(())
++    }
++
++    proptest::proptest! {
++        #[test]
++        fn arbitrary_sign_data_params_never_panic(
++            param in proptest::prelude::any::<String>(),
++            shaped in "[{}\":, a-z0-9+/=_-]{0,80}",
++            kind in "(text|binary|cell|unknown)",
++            value in proptest::prelude::any::<String>(),
++            network in proptest::option::of(proptest::prelude::any::<String>()),
++            from in proptest::option::of(proptest::prelude::any::<String>()),
++            variant in 0_u8..3,
++            signature in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..70),
++            public_key in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..40),
++        ) {
++            let dapp = SessionCrypto::generate().expect("entropy");
++            let session = session(&dapp);
++            let field = match kind.as_str() {
++                "binary" => "bytes",
++                "cell" => "cell",
++                _ => "text",
++            };
++            let structured = json!({"type": kind, field: value, "schema": value}).to_string();
++            for param in [param, shaped, structured] {
++                let request = AppRequest {
++                    method: "signData".to_owned(),
++                    params: vec![param],
++                    id: "1".to_owned(),
++                };
++                let body = encrypt_for(&dapp, &session, &request).expect("request encrypts");
++                let _ = session.decrypt_request(body, 1_800_000_000);
++            }
++
++            let payload = match variant {
++                0 => TonConnectSignDataPayload::Text { text: value.clone() },
++                1 => TonConnectSignDataPayload::Binary { bytes: value.clone() },
++                _ => TonConnectSignDataPayload::Cell { schema: value.clone(), cell: value.clone() },
++            };
++            let _ = session.encrypt_sign_data_success(
++                value.clone(),
++                TonConnectSignedData {
++                    request: TonConnectSignDataRequest { payload, network, from },
++                    domain: value,
++                    timestamp: u64::from(variant),
++                    signature,
++                    public_key,
++                },
++            );
++        }
++    }
++
 +    proptest::proptest! {
 +        #[test]
 +        fn arbitrary_bodies_and_challenges_never_panic(
@@ -2490,7 +3152,7 @@ index 0000000..cd4a101
 +    }
 +}
 diff --git a/src/wallet/crypto.rs b/src/wallet/crypto.rs
-index 01817a7..8ba4868 100644
+index 01817a7..b553915 100644
 --- a/src/wallet/crypto.rs
 +++ b/src/wallet/crypto.rs
 @@ -15,6 +15,8 @@
@@ -2521,10 +3183,15 @@ index 01817a7..8ba4868 100644
  /// Mnemonic bytes owned by one Rust operation.
  ///
  /// Platform and FFI boundaries can still create transient copies. This type
-@@ -82,6 +87,18 @@ impl SensitiveWallet {
+@@ -82,6 +87,23 @@ impl SensitiveWallet {
          self.signing.sign(hash).to_bytes()
      }
  
++    /// Signs the domain-separated TON Connect signData digest with the current key.
++    pub(crate) fn sign_ton_connect_data_hash(&self, hash: &[u8; 32]) -> [u8; 64] {
++        self.signing.sign(hash).to_bytes()
++    }
++
 +    /// Derives the X25519 secret of one TON Connect session from the current signing key.
 +    ///
 +    /// Scheme v1 of the `MTProto` TON Connect flow; `dapp_client_id` is the decoded
@@ -2540,7 +3207,7 @@ index 01817a7..8ba4868 100644
      /// Builds and signs an external Wallet request while preserving anchor-based `StateInit`.
      pub(crate) fn create_ext_in_msg_with_modes(
          &self,
-@@ -201,6 +218,45 @@ pub(crate) fn derive_half_key(half: &Bip39Half) -> SigningKey {
+@@ -201,6 +223,45 @@ pub(crate) fn derive_half_key(half: &Bip39Half) -> SigningKey {
      signing_key(&derive_path(half.to_seed("").as_slice(), &TON_ACCOUNT_PATH))
  }
  
@@ -2586,7 +3253,7 @@ index 01817a7..8ba4868 100644
  /// Generates the initial 12-word recovery phrase from one 128-bit draw.
  ///
  /// A new wallet starts before its first key rotation: the signing key
-@@ -302,6 +358,9 @@ mod tests {
+@@ -302,6 +363,9 @@ mod tests {
      const ROTATION_PHRASE: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about \
                                     zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong";
  
@@ -2596,7 +3263,7 @@ index 01817a7..8ba4868 100644
      fn hex(bytes: &[u8]) -> String {
          bytes.iter().map(|byte| format!("{byte:02x}")).collect()
      }
-@@ -396,8 +455,6 @@ mod tests {
+@@ -396,8 +460,6 @@ mod tests {
      #[test]
      fn twelve_word_phrase_derives_the_duplicated_wallet() -> Result<(), Box<dyn std::error::Error>>
      {
@@ -2605,7 +3272,7 @@ index 01817a7..8ba4868 100644
          let duplicated = format!("{HALF} {HALF}");
          let from_half = derive_wallet(HALF, Network::Testnet)?;
          let from_duplicated = derive_wallet(&duplicated, Network::Testnet)?;
-@@ -446,4 +503,63 @@ mod tests {
+@@ -446,4 +508,63 @@ mod tests {
              Err(WalletCryptoError::InvalidMnemonic)
          ));
      }
@@ -2670,7 +3337,7 @@ index 01817a7..8ba4868 100644
 +    }
  }
 diff --git a/src/wallet/mod.rs b/src/wallet/mod.rs
-index dafa004..7912b7c 100644
+index dafa004..c8ebe32 100644
 --- a/src/wallet/mod.rs
 +++ b/src/wallet/mod.rs
 @@ -19,7 +19,7 @@ pub use mnemonic_scheme::{MnemonicScheme, detect_mnemonic_schemes, rotation_mnem
@@ -2682,16 +3349,21 @@ index dafa004..7912b7c 100644
  
  use self::crypto::{
      SensitiveMnemonic, derive_wallet, derive_wallet_public_state, generate_mnemonic,
-@@ -30,7 +30,7 @@ use crate::domain::{
+@@ -29,8 +29,12 @@ use crate::domain::{
+     ProtectedSecretRef, ProtectedSecretStore, SecretAccessReason, bounded_diagnostic,
  };
  use crate::engine::WalletPlatformHost;
++use crate::ton_connect_derived::{sign_data_payload, unsigned_sign_data_result};
  use crate::types::TonAddressExt as _;
 -use crate::{Boc, TonAddressString};
-+use crate::{Boc, TonAddressString, TonConnectDerivedSession, TonConnectDerivedSessionRequest};
++use crate::{
++    Boc, TonAddressString, TonConnectDerivedSession, TonConnectDerivedSessionRequest,
++    TonConnectSignDataSignRequest, TonConnectSignedData,
++};
  
  const MAX_RECORD_ID_BYTES: usize = 128;
  
-@@ -248,6 +248,9 @@ pub enum WalletLifecycleError {
+@@ -248,6 +252,9 @@ pub enum WalletLifecycleError {
          /// A sanitized developer-facing diagnostic.
          diagnostic: String,
      },
@@ -2701,7 +3373,7 @@ index dafa004..7912b7c 100644
  }
  
  impl From<ProtectedSecretHostError> for WalletLifecycleError {
-@@ -406,6 +409,40 @@ impl WalletLifecycle {
+@@ -406,6 +413,71 @@ impl WalletLifecycle {
          sign_ton_connect_proof(&secret, &request)
      }
  
@@ -2739,10 +3411,41 @@ index dafa004..7912b7c 100644
 +        derive_ton_connect_session(&secret, &request, peer)
 +    }
 +
++    /// Authorizes the current signing key and signs one TON Connect `signData` request.
++    ///
++    /// Rust validates the request against this wallet and builds the protocol digest
++    /// for `domain` and `timestamp` before any secret access, so the caller cannot use
++    /// this API as a generic signing oracle. The returned record is what
++    /// `TonConnectDerivedSession::encrypt_sign_data_success` answers with. The host
++    /// must block this operation while a key rotation is unresolved.
++    pub async fn sign_ton_connect_data(
++        &self,
++        request: TonConnectSignDataSignRequest,
++    ) -> Result<TonConnectSignedData, WalletLifecycleError> {
++        validate_descriptor(&request.descriptor)?;
++        let digest = sign_data_digest(&request)?;
++
++        let bytes = self
++            .platform_host
++            .read_protected_secret(ProtectedSecretRead {
++                secret_ref: request.descriptor.secret_ref.clone(),
++                reason: SecretAccessReason::SignTonConnectData,
++                prompt: format!(
++                    "Authenticate to sign data for {} with TON Connect",
++                    request.domain
++                ),
++            })
++            .await?;
++        let secret = SensitiveMnemonic::from_bytes(bytes)
++            .map_err(|_| WalletLifecycleError::InvalidRecoveryPhrase)?;
++
++        sign_ton_connect_data(&secret, request, &digest)
++    }
++
      /// Derives initial TON Connect account material without reading a secret.
      ///
      /// Address and `StateInit` remain anchor-based after rotation. For a proof
-@@ -514,6 +551,37 @@ fn sign_ton_connect_proof(
+@@ -514,6 +586,85 @@ fn sign_ton_connect_proof(
      })
  }
  
@@ -2777,10 +3480,58 @@ index dafa004..7912b7c 100644
 +    ))
 +}
 +
++/// Validates a `signData` request against the descriptor's wallet and returns its digest.
++///
++/// `validate_descriptor` has already proved the descriptor address is the one its
++/// anchor key derives, so no secret is needed.
++fn sign_data_digest(
++    request: &TonConnectSignDataSignRequest,
++) -> Result<[u8; 32], WalletLifecycleError> {
++    let anchor = request.descriptor.address.as_address();
++    let address_hash = <[u8; 32]>::try_from(anchor.hash.as_slice())
++        .map_err(|_| WalletLifecycleError::TonConnectSigningFailed)?;
++    let address = RawAccountAddress::new(anchor.workchain, address_hash);
++    let network = NetworkId::try_from(network_global_id(request.descriptor.network))
++        .map_err(|_| WalletLifecycleError::TonConnectSigningFailed)?;
++    let payload = sign_data_payload(&request.request)
++        .map_err(|_| WalletLifecycleError::TonConnectSigningFailed)?;
++    payload
++        .validate_context(&network, &address)
++        .map_err(|_| WalletLifecycleError::TonConnectSigningFailed)?;
++    unsigned_sign_data_result(address, request.domain.clone(), request.timestamp, payload)
++        .signing_hash()
++        .map_err(|_| WalletLifecycleError::TonConnectSigningFailed)
++}
++
++fn sign_ton_connect_data(
++    secret: &SensitiveMnemonic,
++    request: TonConnectSignDataSignRequest,
++    digest: &[u8; 32],
++) -> Result<TonConnectSignedData, WalletLifecycleError> {
++    let phrase = secret
++        .as_str()
++        .map_err(|_| WalletLifecycleError::InvalidRecoveryPhrase)?;
++    let wallet = derive_wallet(phrase, request.descriptor.network)
++        .map_err(|_| WalletLifecycleError::AddressDerivationFailed)?;
++    if wallet.address != *request.descriptor.address.as_address()
++        || wallet.key_pair.public_key.as_slice() != request.descriptor.public_key
++    {
++        return Err(WalletLifecycleError::SecretWalletMismatch);
++    }
++
++    Ok(TonConnectSignedData {
++        request: request.request,
++        domain: request.domain,
++        timestamp: request.timestamp,
++        signature: wallet.sign_ton_connect_data_hash(digest).to_vec(),
++        public_key: wallet.signing_public_key().to_vec(),
++    })
++}
++
  fn derive_ton_connect_account(
      descriptor: WalletDescriptor,
  ) -> Result<TonConnectAccountInfo, WalletLifecycleError> {
-@@ -527,16 +595,20 @@ fn derive_ton_connect_account(
+@@ -527,16 +678,20 @@ fn derive_ton_connect_account(
  
      Ok(TonConnectAccountInfo {
          address: address.to_hex(),
@@ -2806,19 +3557,23 @@ index dafa004..7912b7c 100644
  fn secret_ref_for(record_id: &str) -> ProtectedSecretRef {
      ProtectedSecretRef {
          value: format!("wallet:{record_id}:mnemonic"),
-@@ -575,11 +647,261 @@ fn validate_record_id(record_id: &str) -> Result<(), WalletLifecycleError> {
+@@ -575,11 +730,265 @@ fn validate_record_id(record_id: &str) -> Result<(), WalletLifecycleError> {
  #[cfg(test)]
  mod tests {
      use std::str::FromStr as _;
 +    use std::sync::Mutex;
 +
 +    use futures::executor::block_on;
-+    use ton_connect_core::SessionCrypto;
++    use serde_json::json;
++    use ton_connect_core::{
++        AppRequest, KnownWalletResponse, SessionCrypto, SignDataResult, WalletResponse,
++    };
  
      use super::*;
 +    use crate::{
 +        JournalCompareExchange, JournalCompareExchangeResult, JournalHostError, JournalKey,
-+        JournalRecord,
++        JournalRecord, TonConnectIncomingRequest, TonConnectSignDataPayload,
++        TonConnectSignDataRequest,
 +    };
  
      const MNEMONIC: &str = "notice tortoise soup strong gun divide offer process salon siren general carry clump left year void clutch tool case burden fix income champion lounge";
@@ -3068,7 +3823,7 @@ index dafa004..7912b7c 100644
      #[test]
      fn descriptor_rejects_each_broken_identity_binding_independently() {
          let descriptor = valid_descriptor();
-@@ -713,7 +1035,7 @@ mod tests {
+@@ -713,7 +1122,7 @@ mod tests {
          assert_eq!(signed.public_key, account.public_key);
          let account = ton_connect_core::TonAddressItemReply::new(
              RawAccountAddress::from_str(&account.address)?,
@@ -3077,6 +3832,255 @@ index dafa004..7912b7c 100644
              ton_connect_core::WalletStateInit::try_from(account.wallet_state_init)?,
              ton_connect_core::Ed25519PublicKey::from_bytes(<[u8; 32]>::try_from(
                  signed.public_key.as_slice(),
+@@ -731,6 +1140,248 @@ mod tests {
+         Ok(())
+     }
+ 
++    const SIGN_DATA_DOMAIN: &str = "tonconnect-sdk-demo-dapp.vercel.app";
++    const SIGN_DATA_TIMESTAMP: u64 = 1_800_000_000;
++    const SIGN_DATA_CELL: &str = "te6cckEBAQEADAAAFAAAAABIZWxsbyGVgYQo";
++    const SIGN_DATA_SCHEMA: &str =
++        "message#_ len:uint7 {len <= 127} text:(bits len * 8) = Message;";
++
++    fn sign_data_payloads() -> [serde_json::Value; 3] {
++        [
++            json!({"type": "text", "text": "Confirm new 2fa number:\n+1 *** *** ** 89"}),
++            json!({"type": "binary", "bytes": "I0hlbGxvLCBXb3JsZCE="}),
++            json!({"type": "cell", "schema": SIGN_DATA_SCHEMA, "cell": SIGN_DATA_CELL}),
++        ]
++    }
++
++    fn text_sign_data_request() -> TonConnectSignDataRequest {
++        TonConnectSignDataRequest {
++            payload: TonConnectSignDataPayload::Text {
++                text: "Approve login".to_owned(),
++            },
++            network: None,
++            from: None,
++        }
++    }
++
++    /// The dApp side of one `signData` exchange through a real derived session.
++    ///
++    /// Returns the signed record and the result the dApp validated for its request.
++    fn sign_data_round_trip(
++        lifecycle: &WalletLifecycle,
++        descriptor: &WalletDescriptor,
++        id: &str,
++        payload: &serde_json::Value,
++    ) -> Result<(TonConnectSignedData, SignDataResult), Box<dyn std::error::Error>> {
++        let dapp = SessionCrypto::generate()?;
++        let session = block_on(lifecycle.derive_ton_connect_session(
++            TonConnectDerivedSessionRequest {
++                descriptor: descriptor.clone(),
++                dapp_client_id: dapp.client_id().to_string(),
++                nonce: vec![5_u8; 24],
++            },
++        ))?;
++        let w = session.public_key_hex().parse::<ClientId>()?;
++        let app_request = AppRequest {
++            method: "signData".to_owned(),
++            params: vec![payload.to_string()],
++            id: id.to_owned(),
++        };
++        let body = dapp.encrypt(w, &serde_json::to_vec(&app_request)?)?;
++        let decoded = session.decrypt_request(body, SIGN_DATA_TIMESTAMP)?;
++        let TonConnectIncomingRequest::SignData {
++            id: request_id,
++            method,
++            request,
++        } = decoded.request
++        else {
++            return Err(format!("request was not decoded as signData: {decoded:?}").into());
++        };
++        assert_eq!(request_id, id);
++        assert_eq!(method, "signData");
++
++        let signed = block_on(
++            lifecycle.sign_ton_connect_data(TonConnectSignDataSignRequest {
++                descriptor: descriptor.clone(),
++                request: request.clone(),
++                domain: SIGN_DATA_DOMAIN.to_owned(),
++                timestamp: SIGN_DATA_TIMESTAMP,
++            }),
++        )?;
++        assert_eq!(signed.request, request);
++        assert_eq!(signed.domain, SIGN_DATA_DOMAIN);
++        assert_eq!(signed.timestamp, SIGN_DATA_TIMESTAMP);
++        let bytes = session.encrypt_sign_data_success(request_id, signed.clone())?;
++        let response = serde_json::from_slice::<WalletResponse>(&dapp.decrypt(w, &bytes)?)?;
++        let KnownWalletResponse::SignData(result) =
++            response.validate_for(&app_request.decode()?)?
++        else {
++            return Err("response must be a signData result".into());
++        };
++        Ok((signed, *result))
++    }
++
++    #[test]
++    fn sign_data_round_trips_for_each_payload_with_the_rotated_signing_key()
++    -> Result<(), Box<dyn std::error::Error>> {
++        let secret = SensitiveMnemonic::from_bytes(MNEMONIC.as_bytes().to_vec())?;
++        let descriptor = derive_descriptor("ton-connect-sign-data", Network::Testnet, &secret)?;
++        let account = derive_ton_connect_account(descriptor.clone())?;
++        let mnemonic = mnemonic::RotationMnemonic::parse(MNEMONIC)?;
++        let signing_key = crypto::derive_half_key(mnemonic.signing())
++            .verifying_key()
++            .to_bytes();
++        let anchor_key = <[u8; 32]>::try_from(descriptor.public_key.as_slice())?;
++        assert_ne!(
++            signing_key, anchor_key,
++            "fixture must contain a rotated key"
++        );
++        let other = ton_connect_core::Ed25519PublicKey::from_bytes(
++            ed25519_dalek::SigningKey::from_bytes(&[0x66; 32])
++                .verifying_key()
++                .to_bytes(),
++        );
++
++        let host = phrase_host(MNEMONIC);
++        let lifecycle = WalletLifecycle::new(host.clone());
++        for (index, payload) in sign_data_payloads().iter().enumerate() {
++            let id = format!("{}", index + 1);
++            let (signed, result) = sign_data_round_trip(&lifecycle, &descriptor, &id, payload)?;
++            assert_eq!(signed.public_key, signing_key.to_vec());
++            assert_eq!(signed.signature.len(), 64);
++            assert_eq!(serde_json::to_value(&result.payload)?, *payload);
++            assert_eq!(result.address.to_string(), account.address);
++            assert_eq!(result.domain, SIGN_DATA_DOMAIN);
++            assert_eq!(result.timestamp, SIGN_DATA_TIMESTAMP);
++            assert!(result.verify(&ton_connect_core::Ed25519PublicKey::from_bytes(signing_key))?);
++            assert!(!result.verify(&ton_connect_core::Ed25519PublicKey::from_bytes(anchor_key))?);
++            assert!(!result.verify(&other)?);
++        }
++        assert_eq!(
++            *host.reasons.lock().expect("reason lock"),
++            [
++                SecretAccessReason::DeriveTonConnectSessionKey,
++                SecretAccessReason::SignTonConnectData,
++                SecretAccessReason::DeriveTonConnectSessionKey,
++                SecretAccessReason::SignTonConnectData,
++                SecretAccessReason::DeriveTonConnectSessionKey,
++                SecretAccessReason::SignTonConnectData,
++            ]
++        );
++        Ok(())
++    }
++
++    #[test]
++    fn sign_data_before_rotation_verifies_with_the_initial_account()
++    -> Result<(), Box<dyn std::error::Error>> {
++        let secret = SensitiveMnemonic::from_bytes(INITIAL_MNEMONIC.as_bytes().to_vec())?;
++        let descriptor =
++            derive_descriptor("ton-connect-sign-data-initial", Network::Testnet, &secret)?;
++        let account = derive_ton_connect_account(descriptor.clone())?;
++        let lifecycle = WalletLifecycle::new(phrase_host(INITIAL_MNEMONIC));
++        let (signed, result) =
++            sign_data_round_trip(&lifecycle, &descriptor, "1", &sign_data_payloads()[0])?;
++        assert_eq!(signed.public_key, descriptor.public_key);
++
++        let account = ton_connect_core::TonAddressItemReply::new(
++            RawAccountAddress::from_str(&account.address)?,
++            NetworkId::try_from(account.network.as_str())?,
++            ton_connect_core::WalletStateInit::try_from(account.wallet_state_init)?,
++            ton_connect_core::Ed25519PublicKey::from_bytes(<[u8; 32]>::try_from(
++                signed.public_key.as_slice(),
++            )?),
++        );
++        assert!(result.verify_with_account(&account)?);
++        Ok(())
++    }
++
++    #[test]
++    fn sign_data_refuses_a_secret_of_another_wallet() {
++        let lifecycle = WalletLifecycle::new(phrase_host(MNEMONIC));
++        let result = block_on(
++            lifecycle.sign_ton_connect_data(TonConnectSignDataSignRequest {
++                descriptor: valid_descriptor(),
++                request: text_sign_data_request(),
++                domain: SIGN_DATA_DOMAIN.to_owned(),
++                timestamp: SIGN_DATA_TIMESTAMP,
++            }),
++        );
++        assert_eq!(
++            result.err(),
++            Some(WalletLifecycleError::SecretWalletMismatch)
++        );
++    }
++
++    #[test]
++    fn invalid_sign_data_input_is_refused_before_the_secret_is_read()
++    -> Result<(), Box<dyn std::error::Error>> {
++        let secret = SensitiveMnemonic::from_bytes(MNEMONIC.as_bytes().to_vec())?;
++        let descriptor =
++            derive_descriptor("ton-connect-sign-data-input", Network::Testnet, &secret)?;
++        let lifecycle = WalletLifecycle::new(Arc::new(NoSecretsHost));
++        let sign_request =
++            |request: TonConnectSignDataRequest, domain: &str| TonConnectSignDataSignRequest {
++                descriptor: descriptor.clone(),
++                request,
++                domain: domain.to_owned(),
++                timestamp: SIGN_DATA_TIMESTAMP,
++            };
++        let with = |change: fn(&mut TonConnectSignDataRequest)| {
++            let mut request = text_sign_data_request();
++            change(&mut request);
++            request
++        };
++        let cell = |cell: &str| TonConnectSignDataRequest {
++            payload: TonConnectSignDataPayload::Cell {
++                schema: SIGN_DATA_SCHEMA.to_owned(),
++                cell: cell.to_owned(),
++            },
++            network: None,
++            from: None,
++        };
++        let refused = [
++            sign_request(
++                with(|request| request.network = Some("-239".to_owned())),
++                SIGN_DATA_DOMAIN,
++            ),
++            sign_request(
++                with(|request| {
++                    request.from = Some(
++                        "0:1111111111111111111111111111111111111111111111111111111111111111"
++                            .to_owned(),
++                    );
++                }),
++                SIGN_DATA_DOMAIN,
++            ),
++            sign_request(
++                with(|request| {
++                    request.payload = TonConnectSignDataPayload::Binary {
++                        bytes: "not base64!".to_owned(),
++                    };
++                }),
++                SIGN_DATA_DOMAIN,
++            ),
++            sign_request(cell("not a boc"), SIGN_DATA_DOMAIN),
++            sign_request(cell(SIGN_DATA_CELL), "127.0.0.1"),
++        ];
++        for request in refused {
++            let result = block_on(lifecycle.sign_ton_connect_data(request.clone()));
++            assert_eq!(
++                result.err(),
++                Some(WalletLifecycleError::TonConnectSigningFailed),
++                "{request:?}"
++            );
++        }
++
++        let mut broken = sign_request(text_sign_data_request(), SIGN_DATA_DOMAIN);
++        broken.descriptor.record_id = String::new();
++        assert_eq!(
++            block_on(lifecycle.sign_ton_connect_data(broken)).err(),
++            Some(WalletLifecycleError::InvalidRecordId)
++        );
++        Ok(())
++    }
++
+     #[test]
+     fn ton_connect_account_material_is_self_consistent() -> Result<(), Box<dyn std::error::Error>> {
+         let info = derive_ton_connect_account(valid_descriptor())?;
 diff --git a/tests/support/ton_connect_scenario.rs b/tests/support/ton_connect_scenario.rs
 index 3a8b46e..b08d049 100644
 --- a/tests/support/ton_connect_scenario.rs
