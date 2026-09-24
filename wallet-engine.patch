@@ -1,5 +1,5 @@
 diff --git a/CHANGELOG.md b/CHANGELOG.md
-index 74fbdfd..ebd6617 100644
+index 74fbdfd..e30c154 100644
 --- a/CHANGELOG.md
 +++ b/CHANGELOG.md
 @@ -8,6 +8,10 @@ This file records user-visible changes to Wallet Engine.
@@ -13,12 +13,13 @@ index 74fbdfd..ebd6617 100644
  
  ### Changed
  
-@@ -17,6 +21,8 @@ This file records user-visible changes to Wallet Engine.
+@@ -17,6 +21,9 @@ This file records user-visible changes to Wallet Engine.
  
  - Wallet rev00 key rotation can be prepared repeatedly. Later rotations are authorized by the current signing half while preserving the anchor half and wallet address.
  - Key rotation no longer interprets Toncenter's failed `seqno` getter stack for an undeployed account. It derives sequence number zero from account state and prepares a deployable rotation BOC with `StateInit`.
 +- `create_encrypted_comment` no longer reports a failed, rate-limited, or cancelled recipient key lookup as `EncryptedCommentUnavailable`, which told applications the recipient cannot receive encrypted comments; it returns `EncryptedCommentLookupFailed`. It reads the recipient account state before `get_public_key`, so an undeployed or frozen wallet is reported as unavailable, and it rejects a getter result with a failed TVM exit code instead of reading its stack as a key.
 +- TON Connect `sendTransaction` and `signMessage` messages now use the bounce flag of the destination's user-friendly address, as the TON Connect specification requires, instead of always being non-bounceable.
++- TON Connect cell `BoC`s deeper than 1024 cells, the TVM's maximum cell depth, are now rejected as invalid before the cell tree is built. A few thousand nested cells in a `signData` cell or a `sendTransaction` payload overflowed a 512 KiB thread stack and aborted the process. An indexed `BoC` whose header claims more index entries than it carries is rejected before its index is allocated.
  
  ## [0.0.6] - 2026-08-26
  
@@ -113,10 +114,10 @@ index 9820a02..06b2ec7 100644
  explicitly with `WalletClient.decryptComment`, passing the sender address. For
  received activity the sender is `counterparty`; for sent activity it is the
 diff --git a/TON_CONNECT.md b/TON_CONNECT.md
-index 72292e1..b880127 100644
+index 72292e1..f1f33a2 100644
 --- a/TON_CONNECT.md
 +++ b/TON_CONNECT.md
-@@ -175,6 +175,55 @@ For a wallet-initiated disconnect, call `disconnect` and deliver its prepared
+@@ -175,6 +175,58 @@ For a wallet-initiated disconnect, call `disconnect` and deliver its prepared
  POST with the same durable sequence. Use `reject_connect` when the user rejects
  the initial connection.
  
@@ -148,8 +149,11 @@ index 72292e1..b880127 100644
 +`binary`, `cell`). A `signData` request decodes to `SignData` with its payload
 +strings exactly as the dApp sent them, already validated against the session
 +wallet; a mismatched `network` or `from`, invalid base64, or an invalid cell
-+decodes as `Unsupported` with `BadRequest`. To answer it, sign the request with
-+`WalletLifecycle.sign_ton_connect_data` (reason `signTonConnectData`) for the
++decodes as `Unsupported` with `BadRequest`. Every cell `BoC` a request carries
++(`signData` cells, `sendTransaction` payloads and `stateInit`s) is also invalid
++when it is deeper than 1024 cells, the TVM's own maximum, so a deep chain cannot
++exhaust the stack of the thread that decodes it. To answer it, sign the request
++with `WalletLifecycle.sign_ton_connect_data` (reason `signTonConnectData`) for the
 +dApp manifest domain the user approved and the signing time, then pass the
 +result to `encrypt_sign_data_success`. `signMessage` still decodes as
 +`Unsupported` with `MethodNotSupported`. The object keeps
@@ -224,6 +228,233 @@ index 07b0a7d..401fcf5 100644
      /// Explicitly authorizes and decrypts a TON encrypted-comment body.
      #[wasm_bindgen(js_name = decryptComment)]
      pub async fn decrypt_comment(&self, request: JsValue) -> Result<JsValue, JsValue> {
+diff --git a/crates/ton-connect-core/src/cell_boc.rs b/crates/ton-connect-core/src/cell_boc.rs
+index e9170e9..3fb742b 100644
+--- a/crates/ton-connect-core/src/cell_boc.rs
++++ b/crates/ton-connect-core/src/cell_boc.rs
+@@ -12,6 +12,15 @@ use crate::{Base64Value, ValueError};
+ const GENERIC_BOC_MAGIC: [u8; 4] = [0xb5, 0xee, 0x9c, 0x72];
+ const CRC_32C: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
+ 
++/// Deepest cell accepted in a TON Connect `BoC`: TON's `vm::CellTraits::max_depth`.
++///
++/// A cell without references has depth 0; any other cell is one deeper than its deepest
++/// reference. The TVM refuses cells deeper than 1024, so no valid cell is lost. `ton_core`
++/// drops a parsed cell tree recursively, one stack frame chain per level, and a few thousand
++/// levels overflow a 512 KiB thread stack and abort the process; the validation therefore
++/// rejects deeper `BoC`s before `ton_core` builds the tree.
++const MAX_CELL_DEPTH: u16 = 1024;
++
+ /// Base64 wire value known to contain exactly one valid TON cell root.
+ #[derive(Clone, Eq, PartialEq)]
+ pub struct CellBoc {
+@@ -105,7 +114,8 @@ pub enum CellBocError {
+ /// `ton_core` 0.1.4 assumes root and reference indices are in range and sizes
+ /// its allocations from header counters. Checking those invariants here keeps
+ /// malformed dApp payloads on the ordinary `Err` path instead of allowing an
+-/// index panic or a header-amplified allocation.
++/// index panic or a header-amplified allocation. It also rejects cells deeper
++/// than `MAX_CELL_DEPTH`, whose recursive drop would overflow the stack.
+ pub(crate) fn parse_single_root(bytes: &[u8]) -> Result<TonCell, CellBocError> {
+     validate_single_root_boc(bytes)?;
+     TonCell::from_boc(bytes.to_vec()).map_err(|_| CellBocError::InvalidBoc)
+@@ -155,6 +165,19 @@ fn validate_single_root_boc(bytes: &[u8]) -> Result<(), CellBocError> {
+     }
+ 
+     let expected_offsets = if has_index {
++        // The index and the cells must both be present, so the header cannot size an
++        // allocation beyond the input.
++        let needed = cells
++            .checked_mul(offset_bytes)
++            .and_then(|index_bytes| index_bytes.checked_add(cell_bytes))
++            .ok_or(CellBocError::InvalidBoc)?;
++        let remaining = bytes
++            .len()
++            .checked_sub(reader.position())
++            .ok_or(CellBocError::InvalidBoc)?;
++        if needed > remaining {
++            return Err(CellBocError::InvalidBoc);
++        }
+         let mut offsets = Vec::with_capacity(cells);
+         let mut previous = 0_usize;
+         for _ in 0..cells {
+@@ -200,6 +223,12 @@ fn validate_single_root_boc(bytes: &[u8]) -> Result<(), CellBocError> {
+     Ok(())
+ }
+ 
++/// Checks every serialized cell and measures the `BoC`'s cell depth in one pass.
++///
++/// References point strictly forward, so a cell's height (the longest reference
++/// path leading to it) is final when the cell is read, and the largest height is
++/// the depth of the whole `BoC`. Unreachable cells count too: `ton_core` builds
++/// and drops every serialized cell, not only the ones under the root.
+ fn validate_cells(
+     bytes: &[u8],
+     cells: usize,
+@@ -207,6 +236,8 @@ fn validate_cells(
+     expected_offsets: Option<&[usize]>,
+ ) -> Result<(), CellBocError> {
+     let mut reader = BocReader::new(bytes);
++    // `cells <= bytes.len() / 2`, so this is bounded by the input length.
++    let mut heights = vec![0_u16; cells];
+     for cell_index in 0..cells {
+         let descriptor = reader.byte().ok_or(CellBocError::InvalidBoc)?;
+         let bits_descriptor = reader.byte().ok_or(CellBocError::InvalidBoc)?;
+@@ -214,6 +245,10 @@ fn validate_cells(
+         if references > 4 {
+             return Err(CellBocError::InvalidBoc);
+         }
++        let height = heights
++            .get(cell_index)
++            .copied()
++            .ok_or(CellBocError::InvalidBoc)?;
+ 
+         if descriptor & 0x10 != 0 {
+             let hash_count = usize::try_from((descriptor >> 5).count_ones())
+@@ -242,6 +277,12 @@ fn validate_cells(
+             if reference <= cell_index || reference >= cells {
+                 return Err(CellBocError::InvalidBoc);
+             }
++            let child = height
++                .checked_add(1)
++                .filter(|depth| *depth <= MAX_CELL_DEPTH)
++                .ok_or(CellBocError::InvalidBoc)?;
++            let slot = heights.get_mut(reference).ok_or(CellBocError::InvalidBoc)?;
++            *slot = (*slot).max(child);
+         }
+ 
+         if expected_offsets
+@@ -351,6 +392,130 @@ mod tests {
+         Ok(())
+     }
+ 
++    /// Serializes data-less cells with the given forward references: 2-byte
++    /// indices, 4-byte offsets, no index, no checksum, root 0.
++    fn boc_cells(cells: &[Vec<usize>]) -> Vec<u8> {
++        let mut body = Vec::new();
++        for references in cells {
++            body.push(u8::try_from(references.len()).unwrap());
++            body.push(0);
++            for reference in references {
++                body.extend_from_slice(&u16::try_from(*reference).unwrap().to_be_bytes());
++            }
++        }
++        let mut bytes = GENERIC_BOC_MAGIC.to_vec();
++        bytes.extend_from_slice(&[0x02, 0x04]);
++        bytes.extend_from_slice(&u16::try_from(cells.len()).unwrap().to_be_bytes());
++        bytes.extend_from_slice(&[0x00, 0x01, 0x00, 0x00]);
++        bytes.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
++        bytes.extend_from_slice(&[0x00, 0x00]);
++        bytes.extend(body);
++        bytes
++    }
++
++    /// Cells `start..start + length`, each referencing the next one.
++    fn chain(start: usize, length: usize) -> Vec<Vec<usize>> {
++        let end = start.checked_add(length).unwrap();
++        (start..end)
++            .map(|index| {
++                let next = index.checked_add(1).unwrap();
++                if next < end { vec![next] } else { Vec::new() }
++            })
++            .collect()
++    }
++
++    fn chain_boc(cells: usize) -> Vec<u8> {
++        boc_cells(&chain(0, cells))
++    }
++
++    fn validate(bytes: &[u8]) -> Result<CellBoc, CellBocError> {
++        CellBoc::try_from(STANDARD.encode(bytes))
++    }
++
++    fn on_stack<T: Send + 'static>(size: usize, job: impl FnOnce() -> T + Send + 'static) -> T {
++        std::thread::Builder::new()
++            .stack_size(size)
++            .spawn(job)
++            .unwrap()
++            .join()
++            .unwrap()
++    }
++
++    #[test]
++    fn accepts_cells_at_the_depth_bound_and_rejects_deeper_ones() {
++        // The accepted side builds and drops a 1 025-level tree (~465 KiB in debug).
++        let (at_bound, deeper) = on_stack(4 << 20, || {
++            (validate(&chain_boc(1025)), validate(&chain_boc(1026)))
++        });
++        assert!(at_bound.is_ok());
++        assert_eq!(deeper, Err(CellBocError::InvalidBoc));
++    }
++
++    #[test]
++    fn rejects_a_deep_chain_on_a_512_kib_stack_before_building_it() {
++        let outcome = on_stack(512 * 1024, || validate(&chain_boc(5000)));
++        assert_eq!(outcome, Err(CellBocError::InvalidBoc));
++    }
++
++    #[test]
++    fn measures_depth_over_every_serialized_cell() {
++        let with_unreachable_chain = |length: usize| {
++            let mut cells = vec![vec![1], Vec::new()];
++            cells.extend(chain(2, length));
++            boc_cells(&cells)
++        };
++        let (at_bound, deeper) = on_stack(4 << 20, move || {
++            (
++                validate(&with_unreachable_chain(1025)),
++                validate(&with_unreachable_chain(1026)),
++            )
++        });
++        assert!(at_bound.is_ok());
++        assert_eq!(deeper, Err(CellBocError::InvalidBoc));
++    }
++
++    #[test]
++    fn depth_follows_the_longest_reference_path() {
++        let mut deep_last = vec![vec![1, 2], Vec::new()];
++        deep_last.extend(chain(2, 1025));
++        assert_eq!(
++            validate(&boc_cells(&deep_last)),
++            Err(CellBocError::InvalidBoc)
++        );
++
++        let ladder = (0..1025_usize)
++            .map(|index| {
++                let next = index.checked_add(1).unwrap();
++                if next < 1025 {
++                    vec![next; 4]
++                } else {
++                    Vec::new()
++                }
++            })
++            .collect::<Vec<_>>();
++        let started = std::time::Instant::now();
++        let outcome = on_stack(4 << 20, move || validate(&boc_cells(&ladder)));
++        assert!(outcome.is_ok());
++        assert!(started.elapsed() < std::time::Duration::from_secs(1));
++    }
++
++    #[test]
++    fn rejects_an_index_larger_than_the_input() {
++        let mut overflowing = GENERIC_BOC_MAGIC.to_vec();
++        overflowing.extend_from_slice(&[0x84, 0x08]);
++        overflowing.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
++        overflowing.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
++        overflowing.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
++        overflowing.extend_from_slice(&u64::MAX.to_be_bytes());
++        overflowing.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
++        assert_eq!(validate(&overflowing), Err(CellBocError::InvalidBoc));
++
++        let mut truncated = overflowing;
++        let cell_bytes = truncated.get_mut(18..26).unwrap();
++        cell_bytes.copy_from_slice(&0x2_0000_0000_u64.to_be_bytes());
++        assert_eq!(validate(&truncated), Err(CellBocError::InvalidBoc));
++    }
++
+     proptest! {
+         #[test]
+         fn arbitrary_generic_boc_bytes_never_escape_as_a_panic(
 diff --git a/crates/ton-connect-core/src/session.rs b/crates/ton-connect-core/src/session.rs
 index fefb1a4..6f8fafa 100644
 --- a/crates/ton-connect-core/src/session.rs
@@ -1323,10 +1554,10 @@ index bc38d0f..5ace0c8 100644
      }
 diff --git a/src/ton_connect_derived.rs b/src/ton_connect_derived.rs
 new file mode 100644
-index 0000000..7e4262e
+index 0000000..218d76e
 --- /dev/null
 +++ b/src/ton_connect_derived.rs
-@@ -0,0 +1,1945 @@
+@@ -0,0 +1,2128 @@
 +//! `MTProto`-relayed TON Connect sessions with server-nonce-derived keys.
 +//!
 +//! The server relays opaque `nonce || box` ciphertext between a dApp and every
@@ -3177,6 +3408,189 @@ index 0000000..7e4262e
 +        Ok(())
 +    }
 +
++    /// A standard base64 `BoC` of `levels` data-less cells, each referencing the next one.
++    fn deep_chain_cell(levels: usize) -> String {
++        let mut body = Vec::new();
++        for index in 1..=levels {
++            if index < levels {
++                body.extend_from_slice(&[1, 0]);
++                body.extend_from_slice(&u16::try_from(index).expect("u16 index").to_be_bytes());
++            } else {
++                body.extend_from_slice(&[0, 0]);
++            }
++        }
++        let mut boc = vec![0xb5, 0xee, 0x9c, 0x72, 0x02, 0x04];
++        boc.extend_from_slice(&u16::try_from(levels).expect("u16 count").to_be_bytes());
++        boc.extend_from_slice(&[0, 1, 0, 0]);
++        boc.extend_from_slice(&u32::try_from(body.len()).expect("u32 size").to_be_bytes());
++        boc.extend_from_slice(&[0, 0]);
++        boc.extend(body);
++        STANDARD.encode(boc)
++    }
++
++    /// Runs `job` on a 512 KiB stack: Telegram decrypts and decodes requests on a
++    /// default `std::thread`, which gets 512 KiB on macOS.
++    fn on_worker_stack(job: impl FnOnce() -> TestResult + Send + 'static) -> TestResult {
++        std::thread::Builder::new()
++            .name("wallet-worker-512k".into())
++            .stack_size(512 * 1024)
++            .spawn(move || job().map_err(|error| error.to_string()))
++            .expect("spawn")
++            .join()
++            .expect("the job must not panic")?;
++        Ok(())
++    }
++
++    #[test]
++    fn deep_sign_data_cells_are_refused_on_a_512_kib_stack() -> TestResult {
++        on_worker_stack(|| {
++            let dapp = SessionCrypto::generate()?;
++            let session = session(&dapp);
++            let cell = deep_chain_cell(5000);
++            let payload = json!({"type": "cell", "schema": SIGN_DATA_SCHEMA, "cell": cell});
++            let request = sign_data_app_request("50", &payload);
++            let decoded =
++                session.decrypt_request(encrypt_for(&dapp, &session, &request)?, 1_800_000_000)?;
++            let TonConnectIncomingRequest::Unsupported {
++                id,
++                method,
++                error_code,
++                ..
++            } = decoded.request
++            else {
++                return Err(format!("a deep cell must be a bad request: {decoded:?}").into());
++            };
++            assert_eq!(id, "50");
++            assert_eq!(method, "signData");
++            assert_eq!(error_code, TonConnectRpcErrorCode::BadRequest);
++
++            assert_eq!(
++                session.decode_sign_data_cell(SIGN_DATA_SCHEMA.to_owned(), cell),
++                TonConnectSignDataCellDecoding::NotDecodable {
++                    failure: crate::TonConnectSignDataCellFailure::InvalidCell,
++                    detail: "cell is not a one-root BoC".to_owned(),
++                }
++            );
++            Ok(())
++        })
++    }
++
++    #[test]
++    fn deep_send_transaction_payloads_are_refused_on_a_512_kib_stack() -> TestResult {
++        on_worker_stack(|| {
++            let dapp = SessionCrypto::generate()?;
++            let session = session(&dapp);
++            let (info, _, _) = account();
++            let deep = deep_chain_cell(5000);
++            let deep_payload = json!({
++                "address": DESTINATION,
++                "amount": "1000000",
++                "payload": deep,
++            });
++            let deep_state_init = json!({
++                "address": DESTINATION,
++                "amount": "1000000",
++                "payload": DEMO_PAYLOAD,
++                "stateInit": deep,
++            });
++            let mut sign = request_with_messages("53", &info.address, vec![deep_payload.clone()]);
++            sign.method = "signMessage".to_owned();
++            let requests = [
++                request_with_messages("51", &info.address, vec![deep_payload]),
++                request_with_messages("52", &info.address, vec![deep_state_init]),
++                sign,
++            ];
++            for request in requests {
++                let decoded = session
++                    .decrypt_request(encrypt_for(&dapp, &session, &request)?, 1_800_000_000)?;
++                let TonConnectIncomingRequest::Unsupported {
++                    id,
++                    method,
++                    error_code,
++                    ..
++                } = decoded.request
++                else {
++                    return Err(format!("a deep payload must be a bad request: {decoded:?}").into());
++                };
++                assert_eq!(id, request.id);
++                assert_eq!(method, request.method);
++                assert_eq!(
++                    error_code,
++                    TonConnectRpcErrorCode::BadRequest,
++                    "{}",
++                    request.id
++                );
++            }
++            Ok(())
++        })
++    }
++
++    #[test]
++    fn cells_below_the_depth_bound_still_pass_on_a_512_kib_stack() -> TestResult {
++        on_worker_stack(|| {
++            let dapp = SessionCrypto::generate()?;
++            let session = session(&dapp);
++            let (info, _, _) = account();
++            // 1 025 cells are 1 024 levels deep: the deepest cell the TVM accepts.
++            for levels in [1000, 1025] {
++                let cell = deep_chain_cell(levels);
++                let payload = json!({"type": "cell", "schema": SIGN_DATA_SCHEMA, "cell": cell});
++                let request =
++                    decode_sign_data(&dapp, &session, &sign_data_app_request("60", &payload))?;
++                assert_eq!(
++                    request.payload,
++                    TonConnectSignDataPayload::Cell {
++                        schema: SIGN_DATA_SCHEMA.to_owned(),
++                        cell,
++                    }
++                );
++            }
++
++            let chain = deep_chain_cell(1000);
++            let message = json!({"address": DESTINATION, "amount": "1000000", "payload": chain});
++            let request = request_with_messages("61", &info.address, vec![message]);
++            let request = decode_send(&dapp, &session, &request)?;
++            let [message] = request.intent.messages.as_slice() else {
++                return Err("the request must decode to one message".into());
++            };
++            let SendMessageBody::RawPayload { boc } = &message.body else {
++                return Err("a deep payload must stay a raw payload".into());
++            };
++            assert_eq!(boc.to_base64(), chain);
++
++            let schema = "c#_ v:^Cell = C;";
++            let TonConnectSignDataCellDecoding::NotDecodable { failure, detail } =
++                session.decode_sign_data_cell(schema.to_owned(), chain)
++            else {
++                return Err("a 1 000-level cell value must reach the decoder's cap".into());
++            };
++            assert_eq!(
++                failure,
++                crate::TonConnectSignDataCellFailure::LimitExceeded,
++                "{detail}"
++            );
++            assert!(detail.contains("256 cells"), "{detail}");
++
++            let short = deep_chain_cell(250);
++            let fields = decoded_cell_fields(
++                session.decode_sign_data_cell(schema.to_owned(), short.clone()),
++            )?;
++            let [(0, name, hex)] = fields.as_slice() else {
++                return Err(format!("one root field expected: {fields:?}").into());
++            };
++            assert_eq!(name, "v");
++            assert!(hex.starts_with("b5ee9c72"), "{hex}");
++            let bytes = hex
++                .as_bytes()
++                .chunks(2)
++                .map(|pair| Ok(u8::from_str_radix(std::str::from_utf8(pair)?, 16)?))
++                .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
++            let root = TonCell::from_boc(STANDARD.decode(&short)?)?;
++            assert_eq!(TonCell::from_boc(bytes)?.hash()?, root.refs()[0].hash()?);
++            Ok(())
++        })
++    }
++
 +    proptest::proptest! {
 +        #[test]
 +        fn arbitrary_sign_data_params_never_panic(
@@ -3274,10 +3688,10 @@ index 0000000..7e4262e
 +}
 diff --git a/src/ton_connect_tlb.rs b/src/ton_connect_tlb.rs
 new file mode 100644
-index 0000000..60268e6
+index 0000000..477fd32
 --- /dev/null
 +++ b/src/ton_connect_tlb.rs
-@@ -0,0 +1,2613 @@
+@@ -0,0 +1,2618 @@
 +//! TL-B display decoding of TON Connect `signData` cells.
 +//!
 +//! A `signData` request of type `cell` carries a one-root cell `BoC` and the
@@ -5756,15 +6170,20 @@ index 0000000..60268e6
 +
 +    #[test]
 +    fn large_cell_values_are_bounded() {
-+        // The DAG is 4 001 levels deep; drop it on a thread with room for that.
++        // The DAG is 1 002 levels deep; drop it on a thread with room for that.
 +        std::thread::Builder::new()
 +            .stack_size(256 << 20)
 +            .spawn(|| {
 +                for (schema, wrapped) in [("a#_ c:^Cell = A;", true), ("a#_ c:Any = A;", false)] {
-+                    let dag = non_topological_dag(4_000, wrapped);
++                    let dag = non_topological_dag(1_000, wrapped);
 +                    let (kind, detail) = prompt_failure(schema, &dag);
 +                    assert_eq!(kind, F::LimitExceeded, "{schema}: {detail}");
 +                    assert!(detail.contains("256 cells"), "{schema}: {detail}");
++                    let too_deep = non_topological_dag(4_000, wrapped);
++                    assert_eq!(
++                        failure_of(schema, &too_deep),
++                        (F::InvalidCell, "cell is not a one-root BoC".to_owned())
++                    );
 +                }
 +                // Control: a small DAG of the same shape is shown in full.
 +                let small = non_topological_dag(3, true);
