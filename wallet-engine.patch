@@ -1,5 +1,5 @@
 diff --git a/CHANGELOG.md b/CHANGELOG.md
-index 74fbdfd..e30c154 100644
+index 74fbdfd..3bcce29 100644
 --- a/CHANGELOG.md
 +++ b/CHANGELOG.md
 @@ -8,6 +8,10 @@ This file records user-visible changes to Wallet Engine.
@@ -13,13 +13,14 @@ index 74fbdfd..e30c154 100644
  
  ### Changed
  
-@@ -17,6 +21,9 @@ This file records user-visible changes to Wallet Engine.
+@@ -17,6 +21,10 @@ This file records user-visible changes to Wallet Engine.
  
  - Wallet rev00 key rotation can be prepared repeatedly. Later rotations are authorized by the current signing half while preserving the anchor half and wallet address.
  - Key rotation no longer interprets Toncenter's failed `seqno` getter stack for an undeployed account. It derives sequence number zero from account state and prepares a deployable rotation BOC with `StateInit`.
 +- `create_encrypted_comment` no longer reports a failed, rate-limited, or cancelled recipient key lookup as `EncryptedCommentUnavailable`, which told applications the recipient cannot receive encrypted comments; it returns `EncryptedCommentLookupFailed`. It reads the recipient account state before `get_public_key`, so an undeployed or frozen wallet is reported as unavailable, and it rejects a getter result with a failed TVM exit code instead of reading its stack as a key.
 +- TON Connect `sendTransaction` and `signMessage` messages now use the bounce flag of the destination's user-friendly address, as the TON Connect specification requires, instead of always being non-bounceable.
 +- TON Connect cell `BoC`s deeper than 1024 cells, the TVM's maximum cell depth, are now rejected as invalid before the cell tree is built. A few thousand nested cells in a `signData` cell or a `sendTransaction` payload overflowed a 512 KiB thread stack and aborted the process. An indexed `BoC` whose header claims more index entries than it carries is rejected before its index is allocated.
++- `ton://transfer` `bin` payloads and every other `Boc` read from text (UniFFI arguments, JSON) now pass the same envelope and depth validation as TON Connect cell `BoC`s before `ton_core` parses them. A 32-character `bin` claiming 2^32-1 cells made `ton_core` request about 1.2 TB and abort the process on Linux and Windows, a reference past the last cell panicked, and a few thousand nested cells overflowed the stack.
  
  ## [0.0.6] - 2026-08-26
  
@@ -48,10 +49,21 @@ index b381b9f..78c014b 100644
  explicitly with `WalletClient.decryptComment`, passing the sender address. For
  received activity the sender is `counterparty`; for sent activity it is the
 diff --git a/README.md b/README.md
-index a70c17f..4c20acd 100644
+index a70c17f..fa75e23 100644
 --- a/README.md
 +++ b/README.md
-@@ -940,10 +940,11 @@ caller-built payload cell.
+@@ -236,6 +236,10 @@ The parser validates addresses, decimal values, and single-root BOCs. It does
+ not resolve chain state, check expiration, select bounce behavior, or authorize
+ a send. Query parsing follows URI rules, so a literal `+` remains `+`.
+ 
++A `bin` BOC must pass the same envelope and depth checks as a TON Connect cell:
++its header counts must be backed by the input, its references must stay in
++range, and it may be at most 1024 cells deep.
++
+ ### Mnemonic word list
+ 
+ Swift, Kotlin, and TypeScript expose `mnemonicWordlist`. Rust and C++ expose
+@@ -940,10 +944,11 @@ caller-built payload cell.
  
  For an encrypted transfer comment, call `createEncryptedComment` before
  preview. The engine uses the optional 32-byte Ed25519 `recipientPublicKey`, or
@@ -67,7 +79,7 @@ index a70c17f..4c20acd 100644
  is rejected before any HTTP request or protected-secret access. It authorizes
  the protected sender mnemonic through the platform host, applies the TON
  Ed25519/X25519, HMAC-SHA512, AES-256-CBC, and snake-cell format, and returns a
-@@ -958,6 +959,21 @@ default ID, and the engine's Wallet rev00 with its default ID in workchain 0.
+@@ -958,6 +963,21 @@ default ID, and the engine's Wallet rev00 with its default ID in workchain 0.
  Custom wallet IDs and unsupported initial parameters are rejected. This local
  verification applies only when `recipientPublicKey` is supplied.
  
@@ -229,7 +241,7 @@ index 07b0a7d..401fcf5 100644
      #[wasm_bindgen(js_name = decryptComment)]
      pub async fn decrypt_comment(&self, request: JsValue) -> Result<JsValue, JsValue> {
 diff --git a/crates/ton-connect-core/src/cell_boc.rs b/crates/ton-connect-core/src/cell_boc.rs
-index e9170e9..3fb742b 100644
+index e9170e9..a6882cb 100644
 --- a/crates/ton-connect-core/src/cell_boc.rs
 +++ b/crates/ton-connect-core/src/cell_boc.rs
 @@ -12,6 +12,15 @@ use crate::{Base64Value, ValueError};
@@ -248,7 +260,7 @@ index e9170e9..3fb742b 100644
  /// Base64 wire value known to contain exactly one valid TON cell root.
  #[derive(Clone, Eq, PartialEq)]
  pub struct CellBoc {
-@@ -105,7 +114,8 @@ pub enum CellBocError {
+@@ -105,13 +114,22 @@ pub enum CellBocError {
  /// `ton_core` 0.1.4 assumes root and reference indices are in range and sizes
  /// its allocations from header counters. Checking those invariants here keeps
  /// malformed dApp payloads on the ordinary `Err` path instead of allowing an
@@ -258,7 +270,22 @@ index e9170e9..3fb742b 100644
  pub(crate) fn parse_single_root(bytes: &[u8]) -> Result<TonCell, CellBocError> {
      validate_single_root_boc(bytes)?;
      TonCell::from_boc(bytes.to_vec()).map_err(|_| CellBocError::InvalidBoc)
-@@ -155,6 +165,19 @@ fn validate_single_root_boc(bytes: &[u8]) -> Result<(), CellBocError> {
+ }
+ 
+-fn validate_single_root_boc(bytes: &[u8]) -> Result<(), CellBocError> {
++/// Checks that untrusted bytes are one complete single-root cell `BoC` that
++/// `ton_core` can parse without panicking, aborting or overflowing the stack.
++///
++/// Linear in the input and never allocates more than the input length: header
++/// counts must be backed by the input, root and reference indices must be in
++/// range and point forward, and no cell may be deeper than `MAX_CELL_DEPTH`.
++/// It does not build the cell tree; [`CellBoc`] and the wallet engine's own
++/// `BoC` type run it before they call `TonCell::from_boc`.
++pub fn validate_single_root_boc(bytes: &[u8]) -> Result<(), CellBocError> {
+     let mut reader = BocReader::new(bytes);
+     if reader.take(GENERIC_BOC_MAGIC.len()) != Some(GENERIC_BOC_MAGIC.as_slice()) {
+         return Err(CellBocError::InvalidBoc);
+@@ -155,6 +173,19 @@ fn validate_single_root_boc(bytes: &[u8]) -> Result<(), CellBocError> {
      }
  
      let expected_offsets = if has_index {
@@ -278,7 +305,7 @@ index e9170e9..3fb742b 100644
          let mut offsets = Vec::with_capacity(cells);
          let mut previous = 0_usize;
          for _ in 0..cells {
-@@ -200,6 +223,12 @@ fn validate_single_root_boc(bytes: &[u8]) -> Result<(), CellBocError> {
+@@ -200,6 +231,12 @@ fn validate_single_root_boc(bytes: &[u8]) -> Result<(), CellBocError> {
      Ok(())
  }
  
@@ -291,7 +318,7 @@ index e9170e9..3fb742b 100644
  fn validate_cells(
      bytes: &[u8],
      cells: usize,
-@@ -207,6 +236,8 @@ fn validate_cells(
+@@ -207,6 +244,8 @@ fn validate_cells(
      expected_offsets: Option<&[usize]>,
  ) -> Result<(), CellBocError> {
      let mut reader = BocReader::new(bytes);
@@ -300,7 +327,7 @@ index e9170e9..3fb742b 100644
      for cell_index in 0..cells {
          let descriptor = reader.byte().ok_or(CellBocError::InvalidBoc)?;
          let bits_descriptor = reader.byte().ok_or(CellBocError::InvalidBoc)?;
-@@ -214,6 +245,10 @@ fn validate_cells(
+@@ -214,6 +253,10 @@ fn validate_cells(
          if references > 4 {
              return Err(CellBocError::InvalidBoc);
          }
@@ -311,7 +338,7 @@ index e9170e9..3fb742b 100644
  
          if descriptor & 0x10 != 0 {
              let hash_count = usize::try_from((descriptor >> 5).count_ones())
-@@ -242,6 +277,12 @@ fn validate_cells(
+@@ -242,6 +285,12 @@ fn validate_cells(
              if reference <= cell_index || reference >= cells {
                  return Err(CellBocError::InvalidBoc);
              }
@@ -324,7 +351,7 @@ index e9170e9..3fb742b 100644
          }
  
          if expected_offsets
-@@ -351,6 +392,130 @@ mod tests {
+@@ -351,6 +400,130 @@ mod tests {
          Ok(())
      }
  
@@ -455,6 +482,19 @@ index e9170e9..3fb742b 100644
      proptest! {
          #[test]
          fn arbitrary_generic_boc_bytes_never_escape_as_a_panic(
+diff --git a/crates/ton-connect-core/src/lib.rs b/crates/ton-connect-core/src/lib.rs
+index 93b699e..168cd96 100644
+--- a/crates/ton-connect-core/src/lib.rs
++++ b/crates/ton-connect-core/src/lib.rs
+@@ -31,7 +31,7 @@ mod wallets_list;
+ pub use account_address::{AccountAddress, AccountAddressError};
+ pub use bridge::BridgeMessage;
+ pub use capability::CapabilityError;
+-pub use cell_boc::{CellBoc, CellBocError};
++pub use cell_boc::{CellBoc, CellBocError, validate_single_root_boc};
+ pub use connect::{
+     ConnectEvent, ConnectEventError, ConnectEventErrorCode, ConnectEventPayload, ConnectItem,
+     ConnectItemError, ConnectItemErrorCode, ConnectItemReply, ConnectRequest,
 diff --git a/crates/ton-connect-core/src/session.rs b/crates/ton-connect-core/src/session.rs
 index fefb1a4..6f8fafa 100644
 --- a/crates/ton-connect-core/src/session.rs
@@ -538,6 +578,153 @@ index 4d98615..cf0e539 100644
  }
  
  /// A request to read and authorize access to protected secret bytes.
+diff --git a/src/domain/ton_transfer_link.rs b/src/domain/ton_transfer_link.rs
+index c04523e..9e251a0 100644
+--- a/src/domain/ton_transfer_link.rs
++++ b/src/domain/ton_transfer_link.rs
+@@ -343,7 +343,9 @@ const fn hex_value(byte: u8) -> Option<u8> {
+ 
+ #[cfg(test)]
+ mod tests {
+-    use ton::ton_core::cell::TonCell;
++    use base64::Engine as _;
++    use base64::engine::general_purpose::STANDARD;
++    use ton::ton_core::cell::{BoC, TonCell};
+     use ton::ton_core::traits::tlb::TLB;
+ 
+     use super::*;
+@@ -699,6 +701,59 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn refuses_a_bin_that_claims_every_cell_count_without_an_index() {
++        assert_refused_before_ton_core(&huge_cell_count_boc());
++    }
++
++    #[test]
++    fn refuses_a_bin_with_a_reference_past_the_last_cell() {
++        assert_refused_before_ton_core(&reference_past_the_last_cell_boc());
++    }
++
++    #[test]
++    fn refuses_a_5000_level_bin_chain_on_a_512_kib_stack() {
++        // Telegram parses links on its main thread, which reserves 1 MiB on
++        // Windows; 512 KiB is a stricter bound for the whole check.
++        on_stack(512 * 1024, || {
++            assert_refused_before_ton_core(&chain_boc(5000))
++        });
++    }
++
++    #[test]
++    fn valid_bins_still_parse_to_the_same_boc() {
++        let mut builder = TonCell::builder();
++        builder
++            .write_num(&0x1234_u16, 16)
++            .expect("a small cell must build");
++        let crc_boc = BoC::new(builder.build().expect("a small cell must build"))
++            .to_bytes(true)
++            .expect("a small cell must serialize");
++        // The TON C++ serializer's shape: an index of end offsets.
++        let indexed_empty = vec![
++            0xb5, 0xee, 0x9c, 0x72, 0x81, 0x01, 0x01, 0x01, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00,
++        ];
++        // 1,025 cells are 1024 levels deep, the deepest accepted chain.
++        for bytes in [
++            TonCell::EMPTY_BOC.to_vec(),
++            crc_boc,
++            indexed_empty,
++            chain_boc(1025),
++        ] {
++            let link = bin_link(&bytes);
++            let parsed = on_stack(1 << 20, move || parse(&link));
++            let TonTransferPayload::Boc { boc } = parsed.payload else {
++                panic!("a bin link must carry a BOC payload");
++            };
++            assert_eq!(boc.as_bytes(), bytes.as_slice());
++            assert_eq!(
++                boc,
++                on_stack(1 << 20, move || Boc::try_from(bytes)
++                    .expect("fixture BOC must be valid"))
++            );
++        }
++    }
++
+     fn parse(value: &str) -> ParsedTonTransferLink {
+         parse_ton_transfer_link(value.to_owned()).expect("fixture link must be valid")
+     }
+@@ -723,4 +778,71 @@ mod tests {
+             })
+             .expect("the finite two-byte cell set must contain every standard Base64 character")
+     }
++
++    /// No index, 4-byte counts, 2^32 - 1 cells claimed in 22 bytes.
++    fn huge_cell_count_boc() -> Vec<u8> {
++        let mut bytes = vec![0xb5, 0xee, 0x9c, 0x72, 0x04, 0x01];
++        bytes.extend_from_slice(&u32::MAX.to_be_bytes());
++        bytes.extend_from_slice(&1_u32.to_be_bytes());
++        bytes.extend_from_slice(&0_u32.to_be_bytes());
++        bytes.push(0xff);
++        bytes.extend_from_slice(&0_u32.to_be_bytes());
++        bytes
++    }
++
++    /// One cell whose only reference names cell 1, past the last cell.
++    fn reference_past_the_last_cell_boc() -> Vec<u8> {
++        vec![
++            0xb5, 0xee, 0x9c, 0x72, 0x01, 0x01, 0x01, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x01,
++        ]
++    }
++
++    /// `levels` cells, each referencing the next one; root 0, no index or CRC.
++    fn chain_boc(levels: usize) -> Vec<u8> {
++        let mut cells = Vec::new();
++        for index in 1..levels {
++            cells.extend_from_slice(&[1, 0]);
++            cells.extend_from_slice(&u16::try_from(index).expect("small chain").to_be_bytes());
++        }
++        cells.extend_from_slice(&[0, 0]);
++        let mut bytes = vec![0xb5, 0xee, 0x9c, 0x72, 0x02, 0x04];
++        bytes.extend_from_slice(&u16::try_from(levels).expect("small chain").to_be_bytes());
++        bytes.extend_from_slice(&[0, 1, 0, 0]);
++        bytes.extend_from_slice(
++            &u32::try_from(cells.len())
++                .expect("small chain")
++                .to_be_bytes(),
++        );
++        bytes.extend_from_slice(&[0, 0]);
++        bytes.extend(cells);
++        bytes
++    }
++
++    fn bin_link(bytes: &[u8]) -> String {
++        let encoded = STANDARD
++            .encode(bytes)
++            .replace('+', "%2B")
++            .replace('/', "%2F")
++            .replace('=', "%3D");
++        format!("ton://transfer/{RECIPIENT}?bin={encoded}")
++    }
++
++    fn on_stack<T: Send + 'static>(size: usize, job: impl FnOnce() -> T + Send + 'static) -> T {
++        std::thread::Builder::new()
++            .name("bin-parse".to_owned())
++            .stack_size(size)
++            .spawn(job)
++            .expect("the parse thread must start")
++            .join()
++            .expect("the parse thread must not panic")
++    }
++
++    fn assert_refused_before_ton_core(bytes: &[u8]) {
++        assert_eq!(
++            parse_error(&bin_link(bytes)),
++            TonTransferLinkError::InvalidBinaryPayload
++        );
++        let error = Boc::try_from(bytes.to_vec()).expect_err("a malformed BOC must fail");
++        assert!(error.rejected_before_ton_core(), "{error:?}");
++    }
+ }
 diff --git a/src/engine/encrypted_comment.rs b/src/engine/encrypted_comment.rs
 index 96eb0ea..f3911ae 100644
 --- a/src/engine/encrypted_comment.rs
@@ -1554,10 +1741,10 @@ index bc38d0f..5ace0c8 100644
      }
 diff --git a/src/ton_connect_derived.rs b/src/ton_connect_derived.rs
 new file mode 100644
-index 0000000..218d76e
+index 0000000..8f1a2d4
 --- /dev/null
 +++ b/src/ton_connect_derived.rs
-@@ -0,0 +1,2128 @@
+@@ -0,0 +1,2171 @@
 +//! `MTProto`-relayed TON Connect sessions with server-nonce-derived keys.
 +//!
 +//! The server relays opaque `nonce || box` ciphertext between a dApp and every
@@ -3589,6 +3776,49 @@ index 0000000..218d76e
 +            assert_eq!(TonCell::from_boc(bytes)?.hash()?, root.refs()[0].hash()?);
 +            Ok(())
 +        })
++    }
++
++    #[test]
++    fn deep_payloads_that_fit_a_message_still_prepare() -> TestResult {
++        // The claim is that such payloads still work, not a stack bound.
++        let job = || -> TestResult {
++            let dapp = SessionCrypto::generate()?;
++            let session = session(&dapp);
++            let (info, _, _) = account();
++            let send = |levels: usize| -> Result<_, Box<dyn std::error::Error>> {
++                let payload = deep_chain_cell(levels);
++                let message =
++                    json!({"address": DESTINATION, "amount": "1000000", "payload": payload});
++                let request = request_with_messages("62", &info.address, vec![message]);
++                Ok((payload, decode_send(&dapp, &session, &request)?))
++            };
++
++            let (payload, request) = send(1022)?;
++            let internal = signed_internal_messages(&request)?;
++            let [signed] = internal.as_slice() else {
++                return Err("the transfer must carry one internal message".into());
++            };
++            assert_eq!(
++                signed.body.value.hash()?,
++                TonCell::from_boc(STANDARD.decode(payload)?)?.hash()?
++            );
++
++            // Three more levels wrap the payload in the signed external,
++            // which would be 1,025 levels deep: TON refuses cells deeper
++            // than 1024 (`CellTraits::max_depth`), so preparation fails.
++            let (_, request) = send(1023)?;
++            let error = signed_internal_messages(&request)
++                .expect_err("an external deeper than 1024 levels must not prepare");
++            assert!(format!("{error:?}").contains("InvalidBoc"), "{error:?}");
++            Ok(())
++        };
++        std::thread::Builder::new()
++            .stack_size(16 << 20)
++            .spawn(move || job().map_err(|error| error.to_string()))
++            .expect("spawn")
++            .join()
++            .expect("the job must not panic")?;
++        Ok(())
 +    }
 +
 +    proptest::proptest! {
@@ -6310,6 +6540,88 @@ index 0000000..477fd32
 +        }
 +    }
 +}
+diff --git a/src/types/boc.rs b/src/types/boc.rs
+index e7eb1d9..7470553 100644
+--- a/src/types/boc.rs
++++ b/src/types/boc.rs
+@@ -6,6 +6,7 @@ use serde::{Deserializer, Serialize, Serializer, de::Error as _};
+ use ton::ton_core::cell::TonCell;
+ use ton::ton_core::errors::TonCoreError;
+ use ton::ton_core::traits::tlb::TLB;
++use ton_connect_core::{CellBocError, validate_single_root_boc};
+ 
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct Boc(Vec<u8>);
+@@ -45,6 +46,10 @@ impl TryFrom<Vec<u8>> for Boc {
+     type Error = BocError;
+ 
+     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
++        // `ton_core` sizes allocations from header counts, indexes references
++        // unchecked and drops the tree recursively; validate the envelope first.
++        validate_single_root_boc(&bytes)
++            .map_err(|error| BocError(BocErrorKind::Envelope(error)))?;
+         let _ =
+             TonCell::from_boc(bytes.clone()).map_err(|error| BocError(BocErrorKind::Ton(error)))?;
+         Ok(Self(bytes))
+@@ -80,10 +85,20 @@ impl From<Boc> for String {
+ #[error("invalid single-root BOC")]
+ pub struct BocError(#[source] BocErrorKind);
+ 
++impl BocError {
++    /// Whether the envelope validation refused the bytes before `ton_core` saw them.
++    #[cfg(test)]
++    pub(crate) const fn rejected_before_ton_core(&self) -> bool {
++        matches!(self.0, BocErrorKind::Envelope(_))
++    }
++}
++
+ #[derive(Debug, thiserror::Error)]
+ enum BocErrorKind {
+     #[error("invalid Base64")]
+     Base64(#[source] base64::DecodeError),
++    #[error("invalid BOC envelope")]
++    Envelope(#[source] CellBocError),
+     #[error("invalid BOC")]
+     Ton(#[source] TonCoreError),
+ }
+@@ -112,6 +127,37 @@ mod tests {
+         assert!(serde_json::from_str::<Boc>(&encoded).is_err());
+     }
+ 
++    #[test]
++    fn untrusted_boc_text_is_validated_before_ton_core_on_every_boundary() {
++        use uniffi::{Lift, Lower};
++
++        // No index, 4-byte counts, 2^32 - 1 cells claimed in 22 bytes.
++        let huge_cell_count = [
++            0xb5, 0xee, 0x9c, 0x72, 0x04, 0x01, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 1, 0, 0, 0, 0,
++            0xff, 0, 0, 0, 0,
++        ];
++        // One cell whose only reference names cell 1, past the last cell.
++        let reference_past_the_last_cell = [
++            0xb5, 0xee, 0x9c, 0x72, 0x01, 0x01, 0x01, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x01,
++        ];
++        for bytes in [&huge_cell_count[..], &reference_past_the_last_cell[..]] {
++            let encoded = STANDARD.encode(bytes);
++
++            let direct = Boc::try_from(encoded.clone()).expect_err("a malformed BOC must fail");
++            assert!(direct.rejected_before_ton_core(), "{direct:?}");
++
++            let json = serde_json::to_string(&encoded).expect("string serialization must work");
++            let error = serde_json::from_str::<Boc>(&json).expect_err("a malformed BOC must fail");
++            assert!(
++                error.to_string().contains("invalid single-root BOC"),
++                "{error}"
++            );
++
++            let lowered = <String as Lower<crate::UniFfiTag>>::lower(encoded);
++            assert!(<Boc as Lift<crate::UniFfiTag>>::try_lift(lowered).is_err());
++        }
++    }
++
+     #[test]
+     fn consuming_conversion_returns_the_complete_base64_boc() {
+         let boc = Boc::try_from(TonCell::EMPTY_BOC.to_vec())
 diff --git a/src/wallet/crypto.rs b/src/wallet/crypto.rs
 index 01817a7..b553915 100644
 --- a/src/wallet/crypto.rs
