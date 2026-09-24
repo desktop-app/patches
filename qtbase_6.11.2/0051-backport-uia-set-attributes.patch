@@ -1,0 +1,122 @@
+diff --git a/src/gui/accessible/qaccessible.cpp b/src/gui/accessible/qaccessible.cpp
+index f735507651..33ef394eeb 100644
+--- a/src/gui/accessible/qaccessible.cpp
++++ b/src/gui/accessible/qaccessible.cpp
+@@ -461,6 +461,17 @@ Q_STATIC_LOGGING_CATEGORY(lcAccessibilityCore, "qt.accessibility.core");
+     \value [since 6.11] Orientation value type: \a Qt::Orientation
+                                 Orientation of the element. This attribute conceptually matches
+                                 the "aria-orientation" property in ARIA.
++    \value [since 6.13] PositionInSet value type: \a int
++                                1-based position of the element within the set of elements it
++                                belongs to, e.g. the position of an item in a list or of a radio
++                                button in its group. Together with \a SizeOfSet, this lets
++                                assistive technologies announce e.g. "item 2 of 10". This
++                                attribute conceptually matches the "aria-posinset" property
++                                in ARIA.
++    \value [since 6.13] SizeOfSet value type: \a int
++                                Number of elements in the set of elements the element belongs
++                                to. This attribute conceptually matches the "aria-setsize"
++                                property in ARIA.
+ 
+     \sa QAccessibleAttributesInterface
+ */
+diff --git a/src/gui/accessible/qaccessible_base.h b/src/gui/accessible/qaccessible_base.h
+index 04efeddf06..aab5851235 100644
+--- a/src/gui/accessible/qaccessible_base.h
++++ b/src/gui/accessible/qaccessible_base.h
+@@ -16,6 +16,9 @@
+ 
+ #include <cstring> // memset, memcmp
+ 
++// Patch: Backported the PositionInSet/SizeOfSet accessibility attributes.
++#define QT_ACCESSIBLE_SET_POSITION_ATTRIBUTES 1
++
+ QT_BEGIN_NAMESPACE
+ 
+ class QAccessibleInterface;
+@@ -383,6 +386,8 @@ public:
+         Level,
+         Locale,
+         Orientation,
++        PositionInSet,
++        SizeOfSet,
+     };
+     Q_ENUM(Attribute)
+ 
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+index d9d2935a30..fa9305ed7a 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+@@ -460,6 +460,14 @@ void QWindowsUiaMainProvider::setAriaProperties(QAccessibleInterface *accessible
+             Q_ASSERT(value.canConvert<int>());
+             ariaString += QStringLiteral("level=") + QString::number(value.toInt());
+             break;
++        case QAccessible::Attribute::PositionInSet:
++            Q_ASSERT(value.canConvert<int>());
++            ariaString += QStringLiteral("posinset=") + QString::number(value.toInt());
++            break;
++        case QAccessible::Attribute::SizeOfSet:
++            Q_ASSERT(value.canConvert<int>());
++            ariaString += QStringLiteral("setsize=") + QString::number(value.toInt());
++            break;
+         default:
+             break;
+         }
+@@ -468,6 +476,24 @@ void QWindowsUiaMainProvider::setAriaProperties(QAccessibleInterface *accessible
+     *pRetVal = QComVariant{ ariaString }.release();
+ }
+ 
++void QWindowsUiaMainProvider::setIntAttribute(QAccessibleInterface *accessible,
++                                              QAccessible::Attribute attribute,
++                                              VARIANT *pRetVal)
++{
++    Q_ASSERT(accessible);
++
++    QAccessibleAttributesInterface *attributesIface = accessible->attributesInterface();
++    if (!attributesIface)
++        return;
++
++    const QVariant valueVariant = attributesIface->attributeValue(attribute);
++    if (!valueVariant.isValid())
++        return;
++
++    Q_ASSERT(valueVariant.canConvert<int>());
++    *pRetVal = QComVariant{ long(valueVariant.toInt()) }.release();
++}
++
+ void QWindowsUiaMainProvider::setStyle(QAccessibleInterface *accessible, VARIANT *pRetVal)
+ {
+     Q_ASSERT(accessible);
+@@ -569,6 +595,19 @@ HRESULT QWindowsUiaMainProvider::GetPropertyValue(PROPERTYID idProp, VARIANT *pR
+         *pRetVal = QComVariant{ long(lcid) }.release();
+         break;
+     }
++    case UIA_LevelPropertyId:
++        // Structural depth, e.g. of an item in a tree. Headings convey
++        // their level through the heading text style and the "level"
++        // ARIA property instead.
++        if (accessible->role() != QAccessible::Role::Heading)
++            setIntAttribute(accessible, QAccessible::Attribute::Level, pRetVal);
++        break;
++    case UIA_PositionInSetPropertyId:
++        setIntAttribute(accessible, QAccessible::Attribute::PositionInSet, pRetVal);
++        break;
++    case UIA_SizeOfSetPropertyId:
++        setIntAttribute(accessible, QAccessible::Attribute::SizeOfSet, pRetVal);
++        break;
+     case UIA_DescribedByPropertyId:
+         fillVariantArrayForRelation(accessible, QAccessible::DescriptionFor, pRetVal);
+         break;
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.h b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.h
+index 8f631c7aa6..442f350d18 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.h
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.h
+@@ -64,6 +64,8 @@ private:
+     static void setLabelledBy(QAccessibleInterface *accessible, VARIANT *pRetVal);
+     static void fillVariantArrayForRelation(QAccessibleInterface *accessible, QAccessible::Relation relation, VARIANT *pRetVal);
+     static void setAriaProperties(QAccessibleInterface *accessible, VARIANT *pRetVal);
++    static void setIntAttribute(QAccessibleInterface *accessible,
++                                QAccessible::Attribute attribute, VARIANT *pRetVal);
+     static void setStyle(QAccessibleInterface *accessible, VARIANT *pRetVal);
+     /** Returns the UIA style ID for a heading level from 1 to 9. */
+     static int styleIdForHeadingLevel(int headingLevel);

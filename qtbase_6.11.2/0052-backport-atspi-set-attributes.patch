@@ -1,0 +1,19 @@
+diff --git a/src/gui/accessible/linux/atspiadaptor.cpp b/src/gui/accessible/linux/atspiadaptor.cpp
+index dae83437b8..11f4c78084 100644
+--- a/src/gui/accessible/linux/atspiadaptor.cpp
++++ b/src/gui/accessible/linux/atspiadaptor.cpp
+@@ -2470,6 +2470,14 @@ QSpiAttributeSet AtSpiAdaptor::getAttributes(QAccessibleInterface *interface)
+             Q_ASSERT(value.canConvert<int>());
+             set.insert(QStringLiteral("level"), QString::number(value.toInt()));
+             break;
++        case QAccessible::Attribute::PositionInSet:
++            Q_ASSERT(value.canConvert<int>());
++            set.insert(QStringLiteral("posinset"), QString::number(value.toInt()));
++            break;
++        case QAccessible::Attribute::SizeOfSet:
++            Q_ASSERT(value.canConvert<int>());
++            set.insert(QStringLiteral("setsize"), QString::number(value.toInt()));
++            break;
+         default:
+             break;
+         }
