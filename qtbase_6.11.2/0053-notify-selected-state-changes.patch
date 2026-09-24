@@ -1,0 +1,21 @@
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+@@ -101,6 +101,17 @@ void QWindowsUiaMainProvider::notifyStateChange(QAccessibleStateChangeEvent *event)
+                 }
+             }
+         }
++        if (event->changedStates().selected) {
++            const auto state = accessible->state();
++            if (state.selectable) {
++                if (auto provider = providerForAccessible(accessible)) {
++                    const auto eventId = state.selected
++                            ? UIA_SelectionItem_ElementAddedToSelectionEventId
++                            : UIA_SelectionItem_ElementRemovedFromSelectionEventId;
++                    UiaRaiseAutomationEvent(provider.Get(), eventId);
++                }
++            }
++        }
+         if (event->changedStates().active) {
+             if (accessible->role() == QAccessible::Window) {
+                 // Notifies window opened/closed.
