@@ -1,5 +1,5 @@
 diff --git a/CHANGELOG.md b/CHANGELOG.md
-index 74fbdfd..3bcce29 100644
+index 74fbdfd..51a6c01 100644
 --- a/CHANGELOG.md
 +++ b/CHANGELOG.md
 @@ -8,6 +8,10 @@ This file records user-visible changes to Wallet Engine.
@@ -13,7 +13,7 @@ index 74fbdfd..3bcce29 100644
  
  ### Changed
  
-@@ -17,6 +21,10 @@ This file records user-visible changes to Wallet Engine.
+@@ -17,6 +21,11 @@ This file records user-visible changes to Wallet Engine.
  
  - Wallet rev00 key rotation can be prepared repeatedly. Later rotations are authorized by the current signing half while preserving the anchor half and wallet address.
  - Key rotation no longer interprets Toncenter's failed `seqno` getter stack for an undeployed account. It derives sequence number zero from account state and prepares a deployable rotation BOC with `StateInit`.
@@ -21,6 +21,7 @@ index 74fbdfd..3bcce29 100644
 +- TON Connect `sendTransaction` and `signMessage` messages now use the bounce flag of the destination's user-friendly address, as the TON Connect specification requires, instead of always being non-bounceable.
 +- TON Connect cell `BoC`s deeper than 1024 cells, the TVM's maximum cell depth, are now rejected as invalid before the cell tree is built. A few thousand nested cells in a `signData` cell or a `sendTransaction` payload overflowed a 512 KiB thread stack and aborted the process. An indexed `BoC` whose header claims more index entries than it carries is rejected before its index is allocated.
 +- `ton://transfer` `bin` payloads and every other `Boc` read from text (UniFFI arguments, JSON) now pass the same envelope and depth validation as TON Connect cell `BoC`s before `ton_core` parses them. A 32-character `bin` claiming 2^32-1 cells made `ton_core` request about 1.2 TB and abort the process on Linux and Windows, a reference past the last cell panicked, and a few thousand nested cells overflowed the stack.
++- TON Connect cell `BoC`s and every engine `Boc` now reject exotic cells whose layout TON refuses: a pruned branch whose size, level mask or stored depth does not match its data, and library, Merkle proof or Merkle update cells of the wrong size or reference count. A pruned branch shorter than its level mask made `ton_core` panic when it hashed the cell, which left a `sendTransaction` preview's slot taken, so every later preview on that client failed as already in progress.
  
  ## [0.0.6] - 2026-08-26
  
@@ -49,21 +50,22 @@ index b381b9f..78c014b 100644
  explicitly with `WalletClient.decryptComment`, passing the sender address. For
  received activity the sender is `counterparty`; for sent activity it is the
 diff --git a/README.md b/README.md
-index a70c17f..fa75e23 100644
+index a70c17f..202bd79 100644
 --- a/README.md
 +++ b/README.md
-@@ -236,6 +236,10 @@ The parser validates addresses, decimal values, and single-root BOCs. It does
+@@ -236,6 +236,11 @@ The parser validates addresses, decimal values, and single-root BOCs. It does
  not resolve chain state, check expiration, select bounce behavior, or authorize
  a send. Query parsing follows URI rules, so a literal `+` remains `+`.
  
 +A `bin` BOC must pass the same envelope and depth checks as a TON Connect cell:
 +its header counts must be backed by the input, its references must stay in
-+range, and it may be at most 1024 cells deep.
++range, and it may be at most 1024 cells deep, with every exotic cell laid out
++as TON requires.
 +
  ### Mnemonic word list
  
  Swift, Kotlin, and TypeScript expose `mnemonicWordlist`. Rust and C++ expose
-@@ -940,10 +944,11 @@ caller-built payload cell.
+@@ -940,10 +945,11 @@ caller-built payload cell.
  
  For an encrypted transfer comment, call `createEncryptedComment` before
  preview. The engine uses the optional 32-byte Ed25519 `recipientPublicKey`, or
@@ -79,7 +81,7 @@ index a70c17f..fa75e23 100644
  is rejected before any HTTP request or protected-secret access. It authorizes
  the protected sender mnemonic through the platform host, applies the TON
  Ed25519/X25519, HMAC-SHA512, AES-256-CBC, and snake-cell format, and returns a
-@@ -958,6 +963,21 @@ default ID, and the engine's Wallet rev00 with its default ID in workchain 0.
+@@ -958,6 +964,21 @@ default ID, and the engine's Wallet rev00 with its default ID in workchain 0.
  Custom wallet IDs and unsupported initial parameters are rejected. This local
  verification applies only when `recipientPublicKey` is supplied.
  
@@ -126,10 +128,10 @@ index 9820a02..06b2ec7 100644
  explicitly with `WalletClient.decryptComment`, passing the sender address. For
  received activity the sender is `counterparty`; for sent activity it is the
 diff --git a/TON_CONNECT.md b/TON_CONNECT.md
-index 72292e1..f1f33a2 100644
+index 72292e1..36cb009 100644
 --- a/TON_CONNECT.md
 +++ b/TON_CONNECT.md
-@@ -175,6 +175,58 @@ For a wallet-initiated disconnect, call `disconnect` and deliver its prepared
+@@ -175,6 +175,61 @@ For a wallet-initiated disconnect, call `disconnect` and deliver its prepared
  POST with the same durable sequence. Use `reject_connect` when the user rejects
  the initial connection.
  
@@ -164,7 +166,10 @@ index 72292e1..f1f33a2 100644
 +decodes as `Unsupported` with `BadRequest`. Every cell `BoC` a request carries
 +(`signData` cells, `sendTransaction` payloads and `stateInit`s) is also invalid
 +when it is deeper than 1024 cells, the TVM's own maximum, so a deep chain cannot
-+exhaust the stack of the thread that decodes it. To answer it, sign the request
++exhaust the stack of the thread that decodes it. An exotic cell whose layout TON
++refuses (a pruned branch whose size or level mask does not match its data, or a
++library, Merkle proof or Merkle update cell of the wrong size or reference
++count) is invalid too. To answer it, sign the request
 +with `WalletLifecycle.sign_ton_connect_data` (reason `signTonConnectData`) for the
 +dApp manifest domain the user approved and the signing time, then pass the
 +result to `encrypt_sign_data_success`. `signMessage` still decodes as
@@ -241,7 +246,7 @@ index 07b0a7d..401fcf5 100644
      #[wasm_bindgen(js_name = decryptComment)]
      pub async fn decrypt_comment(&self, request: JsValue) -> Result<JsValue, JsValue> {
 diff --git a/crates/ton-connect-core/src/cell_boc.rs b/crates/ton-connect-core/src/cell_boc.rs
-index e9170e9..a6882cb 100644
+index e9170e9..2db2981 100644
 --- a/crates/ton-connect-core/src/cell_boc.rs
 +++ b/crates/ton-connect-core/src/cell_boc.rs
 @@ -12,6 +12,15 @@ use crate::{Base64Value, ValueError};
@@ -260,13 +265,14 @@ index e9170e9..a6882cb 100644
  /// Base64 wire value known to contain exactly one valid TON cell root.
  #[derive(Clone, Eq, PartialEq)]
  pub struct CellBoc {
-@@ -105,13 +114,22 @@ pub enum CellBocError {
+@@ -105,13 +114,24 @@ pub enum CellBocError {
  /// `ton_core` 0.1.4 assumes root and reference indices are in range and sizes
  /// its allocations from header counters. Checking those invariants here keeps
  /// malformed dApp payloads on the ordinary `Err` path instead of allowing an
 -/// index panic or a header-amplified allocation.
 +/// index panic or a header-amplified allocation. It also rejects cells deeper
-+/// than `MAX_CELL_DEPTH`, whose recursive drop would overflow the stack.
++/// than `MAX_CELL_DEPTH`, whose recursive drop would overflow the stack, and
++/// exotic cells whose layout would make `ton_core` panic when hashing them.
  pub(crate) fn parse_single_root(bytes: &[u8]) -> Result<TonCell, CellBocError> {
      validate_single_root_boc(bytes)?;
      TonCell::from_boc(bytes.to_vec()).map_err(|_| CellBocError::InvalidBoc)
@@ -278,14 +284,15 @@ index e9170e9..a6882cb 100644
 +///
 +/// Linear in the input and never allocates more than the input length: header
 +/// counts must be backed by the input, root and reference indices must be in
-+/// range and point forward, and no cell may be deeper than `MAX_CELL_DEPTH`.
++/// range and point forward, no cell may be deeper than `MAX_CELL_DEPTH`, and
++/// every exotic cell has the layout TON requires.
 +/// It does not build the cell tree; [`CellBoc`] and the wallet engine's own
 +/// `BoC` type run it before they call `TonCell::from_boc`.
 +pub fn validate_single_root_boc(bytes: &[u8]) -> Result<(), CellBocError> {
      let mut reader = BocReader::new(bytes);
      if reader.take(GENERIC_BOC_MAGIC.len()) != Some(GENERIC_BOC_MAGIC.as_slice()) {
          return Err(CellBocError::InvalidBoc);
-@@ -155,6 +173,19 @@ fn validate_single_root_boc(bytes: &[u8]) -> Result<(), CellBocError> {
+@@ -155,6 +175,19 @@ fn validate_single_root_boc(bytes: &[u8]) -> Result<(), CellBocError> {
      }
  
      let expected_offsets = if has_index {
@@ -305,7 +312,7 @@ index e9170e9..a6882cb 100644
          let mut offsets = Vec::with_capacity(cells);
          let mut previous = 0_usize;
          for _ in 0..cells {
-@@ -200,6 +231,12 @@ fn validate_single_root_boc(bytes: &[u8]) -> Result<(), CellBocError> {
+@@ -200,6 +233,12 @@ fn validate_single_root_boc(bytes: &[u8]) -> Result<(), CellBocError> {
      Ok(())
  }
  
@@ -318,7 +325,7 @@ index e9170e9..a6882cb 100644
  fn validate_cells(
      bytes: &[u8],
      cells: usize,
-@@ -207,6 +244,8 @@ fn validate_cells(
+@@ -207,6 +246,8 @@ fn validate_cells(
      expected_offsets: Option<&[usize]>,
  ) -> Result<(), CellBocError> {
      let mut reader = BocReader::new(bytes);
@@ -327,7 +334,7 @@ index e9170e9..a6882cb 100644
      for cell_index in 0..cells {
          let descriptor = reader.byte().ok_or(CellBocError::InvalidBoc)?;
          let bits_descriptor = reader.byte().ok_or(CellBocError::InvalidBoc)?;
-@@ -214,6 +253,10 @@ fn validate_cells(
+@@ -214,6 +255,10 @@ fn validate_cells(
          if references > 4 {
              return Err(CellBocError::InvalidBoc);
          }
@@ -338,7 +345,18 @@ index e9170e9..a6882cb 100644
  
          if descriptor & 0x10 != 0 {
              let hash_count = usize::try_from((descriptor >> 5).count_ones())
-@@ -242,6 +285,12 @@ fn validate_cells(
+@@ -231,7 +276,9 @@ fn validate_cells(
+         if bits_descriptor & 1 != 0 && data.last().is_none_or(|byte| *byte == 0) {
+             return Err(CellBocError::InvalidBoc);
+         }
+-        if descriptor & 0x08 != 0 && !matches!(data.first().copied(), Some(1_u8..=4_u8)) {
++        if descriptor & 0x08 != 0
++            && !exotic_layout_is_valid(descriptor >> 5, bits_descriptor, data, references)
++        {
+             return Err(CellBocError::InvalidBoc);
+         }
+ 
+@@ -242,6 +289,12 @@ fn validate_cells(
              if reference <= cell_index || reference >= cells {
                  return Err(CellBocError::InvalidBoc);
              }
@@ -351,17 +369,104 @@ index e9170e9..a6882cb 100644
          }
  
          if expected_offsets
-@@ -351,6 +400,130 @@ mod tests {
+@@ -257,6 +310,73 @@ fn validate_cells(
+     Ok(())
+ }
+ 
++const PRUNED_BRANCH: u8 = 1;
++const LIBRARY: u8 = 2;
++const MERKLE_PROOF: u8 = 3;
++const MERKLE_UPDATE: u8 = 4;
++
++const TYPE_BYTES: usize = 1;
++const HASH_BYTES: usize = 32;
++const DEPTH_BYTES: usize = 2;
++/// The type byte and the level mask precede a pruned branch's hashes and depths.
++const PRUNED_BRANCH_HEADER_BYTES: usize = TYPE_BYTES + 1;
++const LIBRARY_BYTES: usize = TYPE_BYTES + HASH_BYTES;
++const MERKLE_PROOF_BYTES: usize = TYPE_BYTES + HASH_BYTES + DEPTH_BYTES;
++const MERKLE_UPDATE_BYTES: usize = TYPE_BYTES + 2 * (HASH_BYTES + DEPTH_BYTES);
++
++/// Checks an exotic cell against the layout TON's `DataCell::create` requires.
++///
++/// `ton_core` 0.1.4 hashes parsed exotic cells without validating them and
++/// trusts the descriptor's level mask: a pruned branch shorter than that mask
++/// panics when hashed, and a stored depth near `u16::MAX` overflows the depth
++/// of every cell above it. Library and Merkle cells must match TON's size and
++/// reference count too, so no exotic cell TON refuses reaches `ton_core`.
++fn exotic_layout_is_valid(
++    level_mask: u8,
++    bits_descriptor: u8,
++    data: &[u8],
++    references: usize,
++) -> bool {
++    // Every TON exotic layout is a whole number of bytes.
++    if bits_descriptor & 1 != 0 {
++        return false;
++    }
++    match (data.first().copied(), references) {
++        (Some(PRUNED_BRANCH), 0) => pruned_branch_is_valid(level_mask, data),
++        (Some(LIBRARY), 0) => data.len() == LIBRARY_BYTES,
++        (Some(MERKLE_PROOF), 1) => data.len() == MERKLE_PROOF_BYTES,
++        (Some(MERKLE_UPDATE), 2) => data.len() == MERKLE_UPDATE_BYTES,
++        _ => false,
++    }
++}
++
++/// A pruned branch stores one hash and one depth per level of its mask, and
++/// `ton_core` locates them by the descriptor's level mask, so the two masks
++/// must agree (TON refuses a mismatch as well).
++fn pruned_branch_is_valid(level_mask: u8, data: &[u8]) -> bool {
++    let Some(mask) = data.get(TYPE_BYTES).copied() else {
++        return false;
++    };
++    if mask == 0 || mask != level_mask {
++        return false;
++    }
++    let Ok(levels) = usize::try_from(mask.count_ones()) else {
++        return false;
++    };
++    let Some(depths) = levels
++        .checked_mul(HASH_BYTES)
++        .and_then(|hashes| hashes.checked_add(PRUNED_BRANCH_HEADER_BYTES))
++        .and_then(|start| data.get(start..))
++    else {
++        return false;
++    };
++    levels.checked_mul(DEPTH_BYTES) == Some(depths.len())
++        && depths.chunks_exact(DEPTH_BYTES).all(|depth| {
++            <[u8; DEPTH_BYTES]>::try_from(depth)
++                .is_ok_and(|depth| u16::from_be_bytes(depth) <= MAX_CELL_DEPTH)
++        })
++}
++
+ struct BocReader<'a> {
+     bytes: &'a [u8],
+     position: usize,
+@@ -301,6 +421,7 @@ mod tests {
+     use base64::{Engine as _, engine::general_purpose::STANDARD};
+     use proptest::prelude::*;
+     use ton_core::cell::BoC;
++    use ton_core::cell::{CellType, LevelMask};
+ 
+     use super::*;
+ 
+@@ -351,6 +472,507 @@ mod tests {
          Ok(())
      }
  
-+    /// Serializes data-less cells with the given forward references: 2-byte
-+    /// indices, 4-byte offsets, no index, no checksum, root 0.
-+    fn boc_cells(cells: &[Vec<usize>]) -> Vec<u8> {
++    /// One serialized cell: descriptor without its reference count, bits
++    /// descriptor, data bytes and forward references.
++    type Cell = (u8, u8, Vec<u8>, Vec<usize>);
++
++    /// Serializes cells with the given forward references: 2-byte indices,
++    /// 4-byte offsets, no index, no checksum, root 0.
++    fn boc_with_cells(cells: &[Cell]) -> Vec<u8> {
 +        let mut body = Vec::new();
-+        for references in cells {
-+            body.push(u8::try_from(references.len()).unwrap());
-+            body.push(0);
++        for (descriptor, bits_descriptor, data, references) in cells {
++            body.push(descriptor | u8::try_from(references.len()).unwrap());
++            body.push(*bits_descriptor);
++            body.extend_from_slice(data);
 +            for reference in references {
 +                body.extend_from_slice(&u16::try_from(*reference).unwrap().to_be_bytes());
 +            }
@@ -374,6 +479,15 @@ index e9170e9..a6882cb 100644
 +        bytes.extend_from_slice(&[0x00, 0x00]);
 +        bytes.extend(body);
 +        bytes
++    }
++
++    /// Serializes data-less ordinary cells with the given forward references.
++    fn boc_cells(cells: &[Vec<usize>]) -> Vec<u8> {
++        let cells = cells
++            .iter()
++            .map(|references| (0, 0, Vec::new(), references.clone()))
++            .collect::<Vec<_>>();
++        boc_with_cells(&cells)
 +    }
 +
 +    /// Cells `start..start + length`, each referencing the next one.
@@ -479,9 +593,389 @@ index e9170e9..a6882cb 100644
 +        assert_eq!(validate(&truncated), Err(CellBocError::InvalidBoc));
 +    }
 +
++    /// A pruned branch, level 1 by its descriptor, whose data is only its type
++    /// byte: `ton_core` 0.1.4 panics when it hashes it.
++    const TRUNCATED_PRUNED_BRANCH: [u8; 14] = [
++        0xb5, 0xee, 0x9c, 0x72, 0x01, 0x01, 0x01, 0x01, 0x00, 0x03, 0x00, 0x28, 0x02, 0x01,
++    ];
++
++    /// An exotic cell of whole data bytes.
++    fn exotic(descriptor: u8, data: Vec<u8>, references: Vec<usize>) -> Cell {
++        let bits_descriptor = u8::try_from(data.len().checked_mul(2).unwrap()).unwrap();
++        (descriptor | 0x08, bits_descriptor, data, references)
++    }
++
++    const fn ordinary(references: Vec<usize>) -> Cell {
++        (0, 0, Vec::new(), references)
++    }
++
++    /// The descriptor bits of a cell of the given level mask.
++    fn level(mask: u8) -> u8 {
++        mask.checked_mul(32).unwrap()
++    }
++
++    /// Pruned branch data: type byte, mask, then one hash and one stored
++    /// depth per level of the mask.
++    fn pruned(mask: u8, depths: &[u16]) -> Vec<u8> {
++        assert_eq!(depths.len(), usize::try_from(mask.count_ones()).unwrap());
++        let mut data = vec![PRUNED_BRANCH, mask];
++        for _ in depths {
++            data.extend_from_slice(&[0x11; HASH_BYTES]);
++        }
++        for depth in depths {
++            data.extend_from_slice(&depth.to_be_bytes());
++        }
++        data
++    }
++
++    fn filled(type_byte: u8, length: usize) -> Vec<u8> {
++        let mut data = vec![0x5a; length];
++        if let Some(first) = data.first_mut() {
++            *first = type_byte;
++        }
++        data
++    }
++
++    /// An ordinary level-1 cell over a mask-1 pruned branch, as a Merkle proof
++    /// carries it, and the level-0 hash and depth TON stores for that child.
++    fn merkle_child() -> ([Cell; 2], Vec<u8>, Vec<u8>) {
++        let child = [
++            (level(1), 0, Vec::new(), vec![1]),
++            exotic(level(1), pruned(1, &[5]), Vec::new()),
++        ];
++        let root = TonCell::from_boc(boc_with_cells(&child)).unwrap();
++        let hash = root
++            .hash_for_level(LevelMask::new(0))
++            .unwrap()
++            .as_slice()
++            .to_vec();
++        let depth = root.depth_for_level(LevelMask::new(0)).unwrap();
++        (child, hash, depth.to_be_bytes().to_vec())
++    }
++
++    /// Moves `cells`' references by `by`, for appending them after other cells.
++    fn shifted(cells: [Cell; 2], by: usize) -> impl Iterator<Item = Cell> {
++        cells
++            .into_iter()
++            .map(move |(descriptor, bits, data, references)| {
++                let references = references
++                    .into_iter()
++                    .map(|reference| reference.checked_add(by).unwrap())
++                    .collect();
++                (descriptor, bits, data, references)
++            })
++    }
++
++    fn well_formed_exotic_bocs() -> Vec<(String, Vec<u8>, bool)> {
++        let mut bocs = Vec::new();
++        for mask in 1..=7_u8 {
++            let levels = usize::try_from(mask.count_ones()).unwrap();
++            let depths = vec![MAX_CELL_DEPTH; levels];
++            let cell = exotic(level(mask), pruned(mask, &depths), Vec::new());
++            // `ton_core` reads `level()` hashes, one per level up to the highest,
++            // so it hashes only masks whose levels are contiguous from 1.
++            let hashes = matches!(mask, 1 | 3 | 7);
++            bocs.push((
++                format!("pruned mask {mask}"),
++                boc_with_cells(&[cell]),
++                hashes,
++            ));
++        }
++        let library = exotic(0, filled(LIBRARY, LIBRARY_BYTES), Vec::new());
++        bocs.push(("library".to_owned(), boc_with_cells(&[library]), true));
++
++        let (child, hash, depth) = merkle_child();
++        let proof = exotic(0, [&[MERKLE_PROOF][..], &hash, &depth].concat(), vec![1]);
++        let cells = std::iter::once(proof)
++            .chain(shifted(child.clone(), 1))
++            .collect::<Vec<_>>();
++        bocs.push(("merkle proof".to_owned(), boc_with_cells(&cells), true));
++
++        let update = exotic(
++            0,
++            [&[MERKLE_UPDATE][..], &hash, &hash, &depth, &depth].concat(),
++            vec![1, 3],
++        );
++        let cells = std::iter::once(update)
++            .chain(shifted(child.clone(), 1))
++            .chain(shifted(child, 3))
++            .collect::<Vec<_>>();
++        bocs.push(("merkle update".to_owned(), boc_with_cells(&cells), true));
++        bocs
++    }
++
++    #[test]
++    fn accepts_well_formed_exotic_cells() -> Result<(), Box<dyn std::error::Error>> {
++        for (name, bytes, hashes) in well_formed_exotic_bocs() {
++            let parsed = validate(&bytes).map_err(|error| format!("{name}: {error}"))?;
++            assert_eq!(parsed.as_bytes(), bytes.as_slice(), "{name}");
++            if hashes {
++                let _ = TonCell::from_boc(bytes)?.hash()?;
++            }
++        }
++
++        // Cells `ton_core` builds itself, independent of the fixtures above.
++        for (cell_type, data) in [
++            (CellType::PrunedBranch, pruned(1, &[5])),
++            (CellType::LibraryRef, filled(LIBRARY, LIBRARY_BYTES)),
++        ] {
++            let mut builder = TonCell::builder_extra(cell_type, data.len());
++            builder.write_bits(&data, data.len().checked_mul(8).unwrap())?;
++            let cell = builder.build()?;
++            let bytes = cell.to_boc()?;
++            assert!(validate(&bytes).is_ok(), "{cell_type:?}");
++            assert_eq!(TonCell::from_boc(bytes)?.hash()?, cell.hash()?);
++        }
++        Ok(())
++    }
++
++    fn alone(cell: Cell) -> Vec<u8> {
++        boc_with_cells(&[cell])
++    }
++
++    /// `cell` followed by one ordinary leaf per reference it has.
++    fn over_leaves(cell: Cell) -> Vec<u8> {
++        let leaves = cell.3.len();
++        let mut cells = vec![cell];
++        cells.extend((0..leaves).map(|_| ordinary(Vec::new())));
++        boc_with_cells(&cells)
++    }
++
++    fn malformed_pruned_branches() -> Vec<(&'static str, Vec<u8>)> {
++        let one = pruned(1, &[5]);
++        let mut short = one.clone();
++        let _ = short.pop();
++        let mut long = one.clone();
++        long.push(0);
++        vec![
++            (
++                "the truncated pruned branch",
++                TRUNCATED_PRUNED_BRANCH.to_vec(),
++            ),
++            (
++                "level 1, type byte only",
++                alone(exotic(level(1), vec![PRUNED_BRANCH], Vec::new())),
++            ),
++            (
++                "mask 0",
++                alone(exotic(0, vec![PRUNED_BRANCH, 0], Vec::new())),
++            ),
++            (
++                "level 0 over mask 1",
++                alone(exotic(0, one.clone(), Vec::new())),
++            ),
++            (
++                "level 1 over mask 3",
++                alone(exotic(level(1), pruned(3, &[5, 5]), Vec::new())),
++            ),
++            ("one byte short", alone(exotic(level(1), short, Vec::new()))),
++            ("one byte long", alone(exotic(level(1), long, Vec::new()))),
++            (
++                "with a reference",
++                over_leaves(exotic(level(1), one, vec![1])),
++            ),
++            (
++                "stored depth 1025",
++                alone(exotic(level(1), pruned(1, &[1025]), Vec::new())),
++            ),
++            (
++                "second stored depth 1025",
++                alone(exotic(level(3), pruned(3, &[5, 1025]), Vec::new())),
++            ),
++            // The mask-1 layout (stored depth 0x0080) read as 35 whole bytes and
++            // a completion-tagged last byte: not byte-aligned.
++            (
++                "not byte-aligned",
++                alone((level(1) | 0x08, 71, pruned(1, &[0x80]), Vec::new())),
++            ),
++        ]
++    }
++
++    fn malformed_library_and_merkle_cells() -> Vec<(&'static str, Vec<u8>)> {
++        vec![
++            (
++                "library, 32 bytes",
++                alone(exotic(0, filled(LIBRARY, 32), Vec::new())),
++            ),
++            (
++                "library, 34 bytes",
++                alone(exotic(0, filled(LIBRARY, 34), Vec::new())),
++            ),
++            (
++                "library with a reference",
++                over_leaves(exotic(0, filled(LIBRARY, 33), vec![1])),
++            ),
++            (
++                "merkle proof, 34 bytes",
++                over_leaves(exotic(0, filled(MERKLE_PROOF, 34), vec![1])),
++            ),
++            (
++                "merkle proof, 36 bytes",
++                over_leaves(exotic(0, filled(MERKLE_PROOF, 36), vec![1])),
++            ),
++            (
++                "merkle proof without a reference",
++                alone(exotic(0, filled(MERKLE_PROOF, 35), Vec::new())),
++            ),
++            (
++                "merkle proof with two references",
++                over_leaves(exotic(0, filled(MERKLE_PROOF, 35), vec![1, 2])),
++            ),
++            (
++                "merkle update, 68 bytes",
++                over_leaves(exotic(0, filled(MERKLE_UPDATE, 68), vec![1, 2])),
++            ),
++            (
++                "merkle update, 70 bytes",
++                over_leaves(exotic(0, filled(MERKLE_UPDATE, 70), vec![1, 2])),
++            ),
++            (
++                "merkle update with one reference",
++                over_leaves(exotic(0, filled(MERKLE_UPDATE, 69), vec![1])),
++            ),
++            (
++                "merkle update with three references",
++                over_leaves(exotic(0, filled(MERKLE_UPDATE, 69), vec![1, 2, 3])),
++            ),
++            ("no type byte", alone(exotic(0, Vec::new(), Vec::new()))),
++            ("type byte 0", alone(exotic(0, filled(0, 33), Vec::new()))),
++            ("type byte 5", alone(exotic(0, filled(5, 33), Vec::new()))),
++        ]
++    }
++
++    #[test]
++    fn rejects_malformed_exotic_layouts() {
++        let pruned = malformed_pruned_branches();
++        for (name, bytes) in pruned
++            .into_iter()
++            .chain(malformed_library_and_merkle_cells())
++        {
++            assert_eq!(validate(&bytes), Err(CellBocError::InvalidBoc), "{name}");
++        }
++    }
++
++    /// What `exotic_heavy_boc` draws for one cell.
++    #[derive(Clone, Debug)]
++    struct CellDraw {
++        exotic: bool,
++        level: u8,
++        length: usize,
++        /// Replaces the first data byte when set.
++        type_byte: Option<u8>,
++        /// Replaces the second data byte when set; `None` uses `level`.
++        mask: Option<u8>,
++        depths: Vec<u16>,
++        bytes: Vec<u8>,
++        references: Vec<prop::sample::Index>,
++    }
++
++    prop_compose! {
++        fn exotic_heavy_cell()(
++            exotic in prop::bool::weighted(0.75),
++            level in prop_oneof![
++                2 => Just(0_u8), 2 => Just(1), 1 => Just(2), 1 => Just(3), 1 => Just(7),
++                1 => 0..8_u8,
++            ],
++            length in prop_oneof![
++                Just(0_usize), Just(1), Just(2), Just(3), Just(33), Just(35), Just(36),
++                Just(69), Just(70), Just(104), 0..128_usize,
++            ],
++            type_byte in prop_oneof![
++                2 => Just(Some(1_u8)), 1 => Just(Some(2)), 1 => Just(Some(3)),
++                1 => Just(Some(4)), 1 => Just(None),
++            ],
++            mask in prop_oneof![
++                Just(Some(1_u8)), Just(Some(3)), Just(Some(7)), Just(None),
++                (0..9_u8).prop_map(Some),
++            ],
++            depths in prop::collection::vec(
++                prop::sample::select(&[0_u16, 5, 1024, 1025, u16::MAX][..]),
++                3,
++            ),
++            bytes in prop::collection::vec(any::<u8>(), 128),
++            references in prop::collection::vec(any::<prop::sample::Index>(), 0..=4),
++        ) -> CellDraw {
++            CellDraw { exotic, level, length, type_byte, mask, depths, bytes, references }
++        }
++    }
++
++    /// Lays out cell `index` of `count`: stored depths go where a pruned
++    /// branch of the drawn mask keeps them, references point to later cells.
++    fn drawn_cell(index: usize, count: usize, draw: CellDraw) -> Cell {
++        let mut data = draw.bytes;
++        data.truncate(draw.length);
++        if let (Some(first), Some(type_byte)) = (data.first_mut(), draw.type_byte) {
++            *first = type_byte;
++        }
++        if let Some(mask) = data.get_mut(1) {
++            *mask = draw.mask.unwrap_or(draw.level);
++        }
++        let levels = data
++            .get(1)
++            .map_or(0, |mask| usize::try_from(mask.count_ones()).unwrap());
++        let mut start = levels
++            .checked_mul(HASH_BYTES)
++            .and_then(|hashes| hashes.checked_add(PRUNED_BRANCH_HEADER_BYTES))
++            .unwrap();
++        for depth in draw.depths.iter().take(levels) {
++            let end = start.checked_add(DEPTH_BYTES).unwrap();
++            if let Some(slot) = data.get_mut(start..end) {
++                slot.copy_from_slice(&depth.to_be_bytes());
++            }
++            start = end;
++        }
++        let first_later = index.checked_add(1).unwrap();
++        let later = count.checked_sub(first_later).unwrap();
++        let references = draw
++            .references
++            .iter()
++            .take(later)
++            .map(|reference| first_later.checked_add(reference.index(later)).unwrap())
++            .collect::<Vec<_>>();
++        let bits_descriptor = u8::try_from(data.len().checked_mul(2).unwrap()).unwrap();
++        let exotic = if draw.exotic { 0x08 } else { 0 };
++        (
++            level(draw.level) | exotic,
++            bits_descriptor,
++            data,
++            references,
++        )
++    }
++
++    /// One to four cells with exotic-heavy descriptors, lengths, masks and
++    /// stored depths.
++    fn exotic_heavy_boc() -> impl Strategy<Value = Vec<u8>> {
++        prop::collection::vec(exotic_heavy_cell(), 1..=4).prop_map(|draws| {
++            let count = draws.len();
++            let cells = draws
++                .into_iter()
++                .enumerate()
++                .map(|(index, draw)| drawn_cell(index, count, draw))
++                .collect::<Vec<_>>();
++            boc_with_cells(&cells)
++        })
++    }
++
      proptest! {
          #[test]
          fn arbitrary_generic_boc_bytes_never_escape_as_a_panic(
+@@ -362,5 +984,16 @@ mod tests {
+             let outcome = std::panic::catch_unwind(|| CellBoc::try_from(encoded));
+             prop_assert!(outcome.is_ok());
+         }
++
++        #[test]
++        fn accepted_exotic_bocs_hash_without_panicking(bytes in exotic_heavy_boc()) {
++            if validate_single_root_boc(&bytes).is_ok() {
++                // A typed `ton_core` error is fine; a panic is what the validation prevents.
++                let outcome = std::panic::catch_unwind(|| {
++                    TonCell::from_boc(bytes.clone()).and_then(|cell| cell.hash().map(|_| ()))
++                });
++                prop_assert!(outcome.is_ok(), "{bytes:02x?}");
++            }
++        }
+     }
+ }
 diff --git a/crates/ton-connect-core/src/lib.rs b/crates/ton-connect-core/src/lib.rs
 index 93b699e..168cd96 100644
 --- a/crates/ton-connect-core/src/lib.rs
@@ -1446,6 +1940,200 @@ index 96eb0ea..f3911ae 100644
 +        }
 +    }
  }
+diff --git a/src/engine/preview.rs b/src/engine/preview.rs
+index 4a91f8a..ff53e18 100644
+--- a/src/engine/preview.rs
++++ b/src/engine/preview.rs
+@@ -588,3 +588,189 @@ impl WalletClient {
+         Ok(())
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use std::panic::{AssertUnwindSafe, catch_unwind};
++    use std::sync::{Arc, Mutex};
++
++    use futures::executor::block_on;
++
++    use super::*;
++    use crate::wallet::crypto::derive_wallet;
++    use crate::{
++        HttpHostError, HttpResponse, JournalCompareExchange, JournalCompareExchangeResult,
++        JournalHostError, JournalKey, JournalRecord, Network, NonEmptyString,
++        ProtectedSecretHostError, ProtectedSecretRead, ProtectedSecretRef, ProtectedSecretStore,
++        ProviderConfig, SendAmount, SendExpiration, SendIntent, SendMessage, SendMessageBody,
++        UnsignedDecimalString, WalletHttpHost, WalletPlatformHost,
++    };
++
++    const MNEMONIC: &str = "notice tortoise soup strong gun divide offer process salon siren general carry clump left year void clutch tool case burden fix income champion lounge";
++    const DESTINATION: &str = "0:2222222222222222222222222222222222222222222222222222222222222222";
++
++    /// Answers the account read with an uninitialized wallet holding 1 TON and
++    /// every other request with HTTP 500, recording each URL.
++    struct ProviderHost {
++        urls: Mutex<Vec<String>>,
++    }
++
++    impl ProviderHost {
++        fn urls(&self) -> Vec<String> {
++            self.urls.lock().expect("URL lock").clone()
++        }
++    }
++
++    #[async_trait::async_trait]
++    impl WalletHttpHost for ProviderHost {
++        async fn execute_http(&self, request: HttpRequest) -> Result<HttpResponse, HttpHostError> {
++            self.urls
++                .lock()
++                .expect("URL lock")
++                .push(request.url.clone());
++            let (status, body) = if request.url.contains("getAddressInformation") {
++                let account = serde_json::json!({
++                    "ok": true,
++                    "result": { "balance": "1000000000", "state": "uninitialized", "sync_utime": 1 }
++                });
++                (200, serde_json::to_vec(&account).expect("account JSON"))
++            } else {
++                (500, b"{}".to_vec())
++            };
++            Ok(HttpResponse {
++                status,
++                headers: Vec::new(),
++                body,
++                final_url: request.url,
++            })
++        }
++
++        async fn cancel_http(&self, _request_id: HttpRequestId) {}
++    }
++
++    struct NoPlatform;
++
++    #[async_trait::async_trait]
++    impl WalletPlatformHost for NoPlatform {
++        async fn read_protected_secret(
++            &self,
++            _request: ProtectedSecretRead,
++        ) -> Result<Vec<u8>, ProtectedSecretHostError> {
++            panic!("not used by previews")
++        }
++
++        async fn store_protected_secret(
++            &self,
++            _request: ProtectedSecretStore,
++        ) -> Result<(), ProtectedSecretHostError> {
++            panic!("not used by previews")
++        }
++
++        async fn delete_protected_secret(
++            &self,
++            _secret_ref: ProtectedSecretRef,
++        ) -> Result<(), ProtectedSecretHostError> {
++            panic!("not used by previews")
++        }
++
++        async fn load_journal(
++            &self,
++            _key: JournalKey,
++        ) -> Result<Option<JournalRecord>, JournalHostError> {
++            panic!("not used by previews")
++        }
++
++        async fn compare_exchange_journal(
++            &self,
++            _mutation: JournalCompareExchange,
++        ) -> Result<JournalCompareExchangeResult, JournalHostError> {
++            panic!("not used by previews")
++        }
++    }
++
++    fn config() -> WalletClientConfig {
++        let wallet = derive_wallet(MNEMONIC, Network::Testnet).expect("wallet derives");
++        WalletClientConfig {
++            record_id: NonEmptyString::try_from("preview-test").expect("record ID"),
++            address: TonAddressString::from_address(&wallet.address, Network::Testnet),
++            public_key: wallet.key_pair.public_key.to_vec(),
++            local_secret_ref: None,
++            network: Network::Testnet,
++            send_validity_seconds: 300,
++            resolution_margin_seconds: 60,
++            providers: ProviderConfig {
++                toncenter_base_url: "https://provider.example".to_owned(),
++                dns_root_address: None,
++                request_timeout_ms: 15_000,
++            },
++        }
++    }
++
++    fn message(body: SendMessageBody) -> SendMessage {
++        SendMessage {
++            destination: TonAddressString::try_from(DESTINATION).expect("destination"),
++            amount: SendAmount::Exact {
++                nanograms: UnsignedDecimalString::try_from("1000000".to_owned()).expect("amount"),
++            },
++            body,
++            bounce: false,
++            state_init: None,
++        }
++    }
++
++    // `preview_send` takes the slot before it hashes the payload and releases it
++    // only on a returned result, so a hashing panic would keep it taken. The fix
++    // refuses the payload when its `Boc` is built; an unwind guard on the slot
++    // was not added because nothing that reaches the slot panics any more.
++    #[test]
++    fn a_malformed_ton_connect_payload_does_not_leave_the_preview_slot_taken() {
++        let http = Arc::new(ProviderHost {
++            urls: Mutex::new(Vec::new()),
++        });
++        let client =
++            WalletClient::new(config(), http.clone(), Arc::new(NoPlatform)).expect("client");
++
++        // Telegram hands over the request it decrypted; building its `Boc` runs
++        // the validation of the UniFFI lift.
++        match Boc::try_from(Boc::TRUNCATED_PRUNED_BRANCH.to_vec()) {
++            Err(error) => {
++                assert!(error.rejected_before_ton_core(), "{error:?}");
++                assert_eq!(http.urls(), Vec::<String>::new());
++            }
++            Ok(boc) => {
++                let request = SendRequest {
++                    operation_id: NonEmptyString::try_from("ton-connect").expect("ID"),
++                    force: false,
++                    intent: SendIntent {
++                        expiration: SendExpiration::EngineDefault,
++                        messages: vec![message(SendMessageBody::RawPayload { boc })],
++                    },
++                };
++                let first = catch_unwind(AssertUnwindSafe(|| {
++                    block_on(client.preview_ton_connect(request))
++                }));
++                eprintln!("first preview panicked: {}", first.is_err());
++            }
++        }
++
++        let before = http.urls().len();
++        let second = block_on(client.preview_send(SendPreviewRequest {
++            intent: SendIntent {
++                expiration: SendExpiration::EngineDefault,
++                messages: vec![message(SendMessageBody::Empty)],
++            },
++        }));
++        eprintln!("second preview: {second:?}");
++        assert!(
++            !matches!(second, Err(WalletClientError::SendPreviewAlreadyInProgress)),
++            "{second:?}"
++        );
++        let urls = http.urls();
++        assert!(
++            urls[before..]
++                .iter()
++                .any(|url| url.contains("emulateTrace")),
++            "{urls:?}"
++        );
++    }
++}
 diff --git a/src/engine/send_http.rs b/src/engine/send_http.rs
 index 5ba17f5..e2407c3 100644
 --- a/src/engine/send_http.rs
@@ -1741,10 +2429,10 @@ index bc38d0f..5ace0c8 100644
      }
 diff --git a/src/ton_connect_derived.rs b/src/ton_connect_derived.rs
 new file mode 100644
-index 0000000..8f1a2d4
+index 0000000..85d710d
 --- /dev/null
 +++ b/src/ton_connect_derived.rs
-@@ -0,0 +1,2171 @@
+@@ -0,0 +1,2271 @@
 +//! `MTProto`-relayed TON Connect sessions with server-nonce-derived keys.
 +//!
 +//! The server relays opaque `nonce || box` ciphertext between a dApp and every
@@ -3774,6 +4462,106 @@ index 0000000..8f1a2d4
 +                .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
 +            let root = TonCell::from_boc(STANDARD.decode(&short)?)?;
 +            assert_eq!(TonCell::from_boc(bytes)?.hash()?, root.refs()[0].hash()?);
++            Ok(())
++        })
++    }
++
++    /// Decrypts `request`, which carries a malformed exotic cell, and checks it
++    /// is a bad request. Should it decode instead, runs what the engine does
++    /// next with it (`next_step` hashes the cell) and fails.
++    fn assert_exotic_bad_request(
++        dapp: &SessionCrypto,
++        session: &TonConnectDerivedSession,
++        request: &AppRequest,
++        next_step: impl FnOnce(TonConnectIncomingRequest) -> TestResult,
++    ) -> TestResult {
++        let decoded =
++            session.decrypt_request(encrypt_for(dapp, session, request)?, 1_800_000_000)?;
++        match decoded.request {
++            TonConnectIncomingRequest::Unsupported {
++                id,
++                method,
++                error_code,
++                ..
++            } => {
++                assert_eq!(id, request.id);
++                assert_eq!(method, request.method);
++                assert_eq!(error_code, TonConnectRpcErrorCode::BadRequest);
++                Ok(())
++            }
++            accepted @ (TonConnectIncomingRequest::SendTransaction { .. }
++            | TonConnectIncomingRequest::SignData { .. }) => {
++                next_step(accepted)?;
++                Err("a malformed exotic cell must be a bad request".into())
++            }
++            unexpected @ (TonConnectIncomingRequest::SignMessage { .. }
++            | TonConnectIncomingRequest::Disconnect { .. }) => {
++                Err(format!("unexpected request: {unexpected:?}").into())
++            }
++        }
++    }
++
++    /// Signs an accepted `sendTransaction` as the engine's send and preview do.
++    fn prepare_accepted_send(accepted: TonConnectIncomingRequest) -> TestResult {
++        if let TonConnectIncomingRequest::SendTransaction { request, .. } = accepted {
++            let _ = signed_internal_messages(&request)?;
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn malformed_exotic_send_transaction_payloads_are_bad_requests() -> TestResult {
++        let dapp = SessionCrypto::generate()?;
++        let session = session(&dapp);
++        let (info, _, _) = account();
++        let payload = STANDARD.encode(crate::Boc::TRUNCATED_PRUNED_BRANCH);
++        let message = json!({"address": DESTINATION, "amount": "1000000", "payload": payload});
++        let request = request_with_messages("70", &info.address, vec![message]);
++        assert_exotic_bad_request(&dapp, &session, &request, prepare_accepted_send)
++    }
++
++    #[test]
++    fn malformed_exotic_state_inits_are_bad_requests() -> TestResult {
++        let dapp = SessionCrypto::generate()?;
++        let session = session(&dapp);
++        let (info, _, _) = account();
++        // The cell under the `StateInit` root is what the send hashes; a bare
++        // root is re-serialized from its fields, so it is refused but never hashed.
++        for (id, state_init) in [
++            ("71", &crate::Boc::STATE_INIT_WITH_TRUNCATED_PRUNED_CODE[..]),
++            ("72", &crate::Boc::TRUNCATED_PRUNED_BRANCH[..]),
++        ] {
++            let message = json!({
++                "address": DESTINATION,
++                "amount": "1000000",
++                "payload": DEMO_PAYLOAD,
++                "stateInit": STANDARD.encode(state_init),
++            });
++            let request = request_with_messages(id, &info.address, vec![message]);
++            assert_exotic_bad_request(&dapp, &session, &request, prepare_accepted_send)?;
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn malformed_exotic_sign_data_cells_are_bad_requests() -> TestResult {
++        let dapp = SessionCrypto::generate()?;
++        let session = session(&dapp);
++        let cell = STANDARD.encode(crate::Boc::TRUNCATED_PRUNED_BRANCH);
++        let payload = json!({"type": "cell", "schema": SIGN_DATA_SCHEMA, "cell": cell});
++        let request = sign_data_app_request("73", &payload);
++        assert_exotic_bad_request(&dapp, &session, &request, |accepted| {
++            if let TonConnectIncomingRequest::SignData { request, .. } = accepted {
++                // The digest `sign_ton_connect_data` signs at approval.
++                let (_, address, _) = account();
++                let _ = unsigned_sign_data_result(
++                    address,
++                    SIGN_DATA_DOMAIN.to_owned(),
++                    SIGN_DATA_TIMESTAMP,
++                    sign_data_payload(&request)?,
++                )
++                .signing_hash()?;
++            }
 +            Ok(())
 +        })
 +    }
@@ -6541,7 +7329,7 @@ index 0000000..477fd32
 +    }
 +}
 diff --git a/src/types/boc.rs b/src/types/boc.rs
-index e7eb1d9..7470553 100644
+index e7eb1d9..7693c3a 100644
 --- a/src/types/boc.rs
 +++ b/src/types/boc.rs
 @@ -6,6 +6,7 @@ use serde::{Deserializer, Serialize, Serializer, de::Error as _};
@@ -6552,7 +7340,30 @@ index e7eb1d9..7470553 100644
  
  #[derive(Debug, Clone, PartialEq, Eq)]
  pub struct Boc(Vec<u8>);
-@@ -45,6 +46,10 @@ impl TryFrom<Vec<u8>> for Boc {
+@@ -20,6 +21,22 @@ impl Boc {
+     pub fn to_base64(&self) -> String {
+         STANDARD.encode(self.as_bytes())
+     }
++
++    /// One pruned branch whose descriptor (`0x28`) claims level 1 while its
++    /// data (bits descriptor `0x02`) is only the type byte `01`; `ton_core`
++    /// 0.1.4 panics when it hashes it.
++    #[cfg(test)]
++    pub(crate) const TRUNCATED_PRUNED_BRANCH: [u8; 14] = [
++        0xb5, 0xee, 0x9c, 0x72, 0x01, 0x01, 0x01, 0x01, 0x00, 0x03, 0x00, 0x28, 0x02, 0x01,
++    ];
++
++    /// A `StateInit` whose `code` is `TRUNCATED_PRUNED_BRANCH`'s cell, so
++    /// hashing the `StateInit` hashes that cell.
++    #[cfg(test)]
++    pub(crate) const STATE_INIT_WITH_TRUNCATED_PRUNED_CODE: [u8; 18] = [
++        0xb5, 0xee, 0x9c, 0x72, 0x01, 0x01, 0x02, 0x01, 0x00, 0x07, 0x00, 0x21, 0x01, 0x24, 0x01,
++        0x28, 0x02, 0x01,
++    ];
+ }
+ 
+ impl TryFrom<String> for Boc {
+@@ -45,6 +62,10 @@ impl TryFrom<Vec<u8>> for Boc {
      type Error = BocError;
  
      fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
@@ -6563,7 +7374,7 @@ index e7eb1d9..7470553 100644
          let _ =
              TonCell::from_boc(bytes.clone()).map_err(|error| BocError(BocErrorKind::Ton(error)))?;
          Ok(Self(bytes))
-@@ -80,10 +85,20 @@ impl From<Boc> for String {
+@@ -80,10 +101,20 @@ impl From<Boc> for String {
  #[error("invalid single-root BOC")]
  pub struct BocError(#[source] BocErrorKind);
  
@@ -6584,7 +7395,16 @@ index e7eb1d9..7470553 100644
      #[error("invalid BOC")]
      Ton(#[source] TonCoreError),
  }
-@@ -112,6 +127,37 @@ mod tests {
+@@ -92,6 +123,8 @@ uniffi::custom_type!(Boc, String);
+ 
+ #[cfg(test)]
+ mod tests {
++    use ton::ton_core::cell::LevelMask;
++
+     use super::*;
+ 
+     #[test]
+@@ -112,6 +145,129 @@ mod tests {
          assert!(serde_json::from_str::<Boc>(&encoded).is_err());
      }
  
@@ -6617,6 +7437,98 @@ index e7eb1d9..7470553 100644
 +            let lowered = <String as Lower<crate::UniFfiTag>>::lower(encoded);
 +            assert!(<Boc as Lift<crate::UniFfiTag>>::try_lift(lowered).is_err());
 +        }
++    }
++
++    #[test]
++    fn malformed_exotic_cells_are_refused_before_ton_core_hashes_them() {
++        use uniffi::{Lift, Lower};
++
++        for bytes in [
++            &Boc::TRUNCATED_PRUNED_BRANCH[..],
++            &Boc::STATE_INIT_WITH_TRUNCATED_PRUNED_CODE[..],
++        ] {
++            let encoded = STANDARD.encode(bytes);
++
++            match Boc::try_from(encoded.clone()) {
++                Err(error) => assert!(error.rejected_before_ton_core(), "{error:?}"),
++                Ok(_) => {
++                    // What an accepted value meets next: something hashes it.
++                    let hash = TonCell::from_boc(bytes.to_vec()).map(|cell| cell.hash().cloned());
++                    panic!("a malformed exotic cell must be refused, it hashed to {hash:?}");
++                }
++            }
++
++            let json = serde_json::to_string(&encoded).expect("string serialization must work");
++            let error = serde_json::from_str::<Boc>(&json).expect_err("a malformed BOC must fail");
++            assert!(
++                error.to_string().contains("invalid single-root BOC"),
++                "{error}"
++            );
++
++            let lowered = <String as Lower<crate::UniFfiTag>>::lower(encoded);
++            assert!(<Boc as Lift<crate::UniFfiTag>>::try_lift(lowered).is_err());
++        }
++    }
++
++    #[test]
++    fn well_formed_exotic_cells_are_valid_bocs() {
++        let hash = [0x11; 32];
++        // Pruned branch of mask 1 (stored depth 5), library, and a Merkle proof
++        // over an ordinary cell that holds that pruned branch.
++        let pruned: Vec<u8> = [&[0x28, 0x48, 0x01, 0x01][..], &hash, &[0x00, 0x05]].concat();
++        let library: Vec<u8> = [&[0x08, 0x42, 0x02][..], &hash].concat();
++        // Level 1, one reference: to the next cell, which is the pruned branch.
++        let child = |reference: u8| [&[0x21, 0x00, reference][..], &pruned].concat();
++        let child_cell = TonCell::from_boc(boc_of(&child(1))).expect("the proof child must parse");
++        let child_hash = child_cell
++            .hash_for_level(LevelMask::new(0))
++            .expect("the proof child must hash");
++        let child_depth = child_cell
++            .depth_for_level(LevelMask::new(0))
++            .expect("the proof child must have a depth");
++        let proof: Vec<u8> = [
++            &[0x09, 0x46, 0x03][..],
++            child_hash.as_slice(),
++            &child_depth.to_be_bytes(),
++            &[0x01],
++            &child(2),
++        ]
++        .concat();
++
++        for cells in [pruned, library, proof] {
++            let bytes = boc_of(&cells);
++            let boc =
++                Boc::try_from(bytes.clone()).expect("a well-formed exotic cell must be valid");
++            assert_eq!(boc.as_bytes(), bytes.as_slice());
++            let cell = TonCell::from_boc(bytes).expect("a valid BOC must parse");
++            assert!(cell.hash().is_ok());
++        }
++    }
++
++    /// A plain `BoC` around serialized cells whose references are one byte:
++    /// no index, no checksum, one-byte offsets, root 0.
++    fn boc_of(cells: &[u8]) -> Vec<u8> {
++        let count = cells_in(cells);
++        let size = u8::try_from(cells.len()).expect("the fixtures are small");
++        [
++            &[
++                0xb5, 0xee, 0x9c, 0x72, 0x01, 0x01, count, 0x01, 0x00, size, 0x00,
++            ][..],
++            cells,
++        ]
++        .concat()
++    }
++
++    /// Counts the cells of a serialization with one-byte references.
++    fn cells_in(mut cells: &[u8]) -> u8 {
++        let mut count = 0;
++        while let [descriptor, bits_descriptor, rest @ ..] = cells {
++            let data = usize::from(bits_descriptor / 2 + bits_descriptor % 2);
++            let references = usize::from(descriptor & 0x07);
++            cells = &rest[data + references..];
++            count += 1;
++        }
++        count
 +    }
 +
      #[test]
