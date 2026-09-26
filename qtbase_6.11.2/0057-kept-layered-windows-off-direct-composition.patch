@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Sat, 26 Sep 2026 12:00:00
+Subject: [PATCH] kept layered windows off direct composition surfaces
+
+A layered HWND never composites through a DirectComposition swap chain: the
+target and visual are created, but nothing reaches the screen. A translucent
+Direct3D top-level takes its alpha from the swap chain, so it must not be
+layered. The gate matches what that swap chain needs, so raster, legacy
+OpenGL and Windows 7 keep WS_EX_LAYERED.
+
+diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
+index ce1d07b..94ae967 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.cpp
++++ b/src/plugins/platforms/windows/qwindowswindow.cpp
+@@ -451,6 +451,16 @@ static inline bool windowIsAccelerated(const QWindow *w)
+     }
+ }
+ 
++// WHY: a layered window never composites through a DirectComposition swap
++// chain, so a translucent D3D surface takes its alpha from the swap chain.
++static inline bool presentsThroughDirectComposition(const QWindow *w)
++{
++    return w->surfaceType() == QSurface::Direct3DSurface
++        && w->format().hasAlpha()
++        && !qEnvironmentVariableIntValue("QT_D3D_NO_FLIP")
++        && QOperatingSystemVersion::current() >= QOperatingSystemVersion::Windows8;
++}
++
+ static bool applyBlurBehindWindow(HWND hwnd)
+ {
+     DWM_BLURBEHIND blurBehind = {0, 0, nullptr, 0};
+@@ -488,12 +498,12 @@ bool QWindowsWindow::hasNoNativeFrame(HWND hwnd, Qt::WindowFlags flags)
+ // Set the WS_EX_LAYERED flag on a HWND if required. This is required for
+ // translucent backgrounds, not fully opaque windows and for
+ // Qt::WindowTransparentForInput (in combination with WS_EX_TRANSPARENT).
+-bool QWindowsWindow::setWindowLayered(HWND hwnd, Qt::WindowFlags flags, bool hasAlpha, qreal opacity)
++bool QWindowsWindow::setWindowLayered(HWND hwnd, Qt::WindowFlags flags, bool hasAlpha, qreal opacity, bool dcompAlpha)
+ {
+     const LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+     // Native children are frameless by nature, so check for that as well.
+     const bool needsLayered = (flags & Qt::WindowTransparentForInput)
+-        || (hasAlpha && hasNoNativeFrame(hwnd, flags)) || opacity < 1.0;
++        || (hasAlpha && !dcompAlpha && hasNoNativeFrame(hwnd, flags)) || opacity < 1.0;
+     const bool isLayered = (exStyle & WS_EX_LAYERED);
+     if (needsLayered != isLayered) {
+         if (needsLayered) {
+@@ -505,9 +517,9 @@ bool QWindowsWindow::hasNoNativeFrame(HWND hwnd, Qt::WindowFlags flags)
+     return needsLayered;
+ }
+ 
+-static void setWindowOpacity(HWND hwnd, Qt::WindowFlags flags, bool hasAlpha, bool accelerated, qreal level)
++static void setWindowOpacity(HWND hwnd, Qt::WindowFlags flags, bool hasAlpha, bool accelerated, bool dcompAlpha, qreal level)
+ {
+-    if (QWindowsWindow::setWindowLayered(hwnd, flags, hasAlpha, level)) {
++    if (QWindowsWindow::setWindowLayered(hwnd, flags, hasAlpha, level, dcompAlpha)) {
+         const BYTE alpha = BYTE(qRound(255.0 * level));
+         if (hasAlpha && !accelerated && QWindowsWindow::hasNoNativeFrame(hwnd, flags)) {
+             // Non-GL windows with alpha: Use blend function to update.
+@@ -1062,7 +1074,7 @@ void WindowCreationData::initialize(const QWindow *w, HWND hwnd, bool frameChang
+     const bool hasAlpha = w->format().hasAlpha();
+     if (isAccelerated && hasAlpha)
+         applyBlurBehindWindow(hwnd);
+-    setWindowOpacity(hwnd, flags, hasAlpha, isAccelerated, opacityLevel);
++    setWindowOpacity(hwnd, flags, hasAlpha, isAccelerated, presentsThroughDirectComposition(w), opacityLevel);
+ }
+ 
+ 
+@@ -3104,6 +3116,7 @@ void QWindowsWindow::setOpacity(qreal level)
+         if (m_data.hwnd)
+             setWindowOpacity(m_data.hwnd, m_data.flags,
+                              window()->format().hasAlpha(), testFlag(OpenGLSurface) || testFlag(VulkanSurface) || testFlag(Direct3DSurface),
++                             presentsThroughDirectComposition(window()),
+                              level);
+     }
+ }
+diff --git a/src/plugins/platforms/windows/qwindowswindow.h b/src/plugins/platforms/windows/qwindowswindow.h
+index b3af69b..ab70501 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.h
++++ b/src/plugins/platforms/windows/qwindowswindow.h
+@@ -312,7 +312,7 @@ public:
+     static inline void setUserDataOf(HWND hwnd, void *ud);
+ 
+     static bool hasNoNativeFrame(HWND hwnd, Qt::WindowFlags flags);
+-    static bool setWindowLayered(HWND hwnd, Qt::WindowFlags flags, bool hasAlpha, qreal opacity);
++    static bool setWindowLayered(HWND hwnd, Qt::WindowFlags flags, bool hasAlpha, qreal opacity, bool dcompAlpha);
+     bool isLayered() const;
+ 
+     HDC getDC();
