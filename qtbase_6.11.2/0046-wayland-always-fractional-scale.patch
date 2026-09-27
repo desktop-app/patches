@@ -92,7 +92,7 @@ index 15cb8c0a16b..51d337e83e0 100644
      int mRefreshRate = 60000;
      int mSubpixel = -1;
 diff --git a/src/plugins/platforms/wayland/qwaylandwindow.cpp b/src/plugins/platforms/wayland/qwaylandwindow.cpp
-index 7a83eb2d58e..22a3a7fa6ca 100644
+index 7a83eb2d58e..ade91663084 100644
 --- a/src/plugins/platforms/wayland/qwaylandwindow.cpp
 +++ b/src/plugins/platforms/wayland/qwaylandwindow.cpp
 @@ -236,7 +236,7 @@ void QWaylandWindow::initializeWlSurface(bool colorSpace)
@@ -113,7 +113,15 @@ index 7a83eb2d58e..22a3a7fa6ca 100644
      setScale(scale);
  }
  
-@@ -1653,7 +1653,7 @@ qreal QWaylandWindow::scale() const
+@@ -1555,6 +1555,7 @@ void QWaylandWindow::setScale(qreal newScale)
+     ensureSize();
+ 
+     QWindowSystemInterface::handleWindowDevicePixelRatioChanged<QWindowSystemInterface::SynchronousDelivery>(window());
++    QWindowSystemInterface::handleGeometryChange<QWindowSystemInterface::SynchronousDelivery>(window(), geometry());
+     if (isExposed()) {
+         // redraw at the new DPR
+         window()->requestUpdate();
+@@ -1653,7 +1654,7 @@ qreal QWaylandWindow::scale() const
  
  qreal QWaylandWindow::devicePixelRatio() const
  {
