@@ -92,10 +92,18 @@ index 15cb8c0a16b..51d337e83e0 100644
      int mRefreshRate = 60000;
      int mSubpixel = -1;
 diff --git a/src/plugins/platforms/wayland/qwaylandwindow.cpp b/src/plugins/platforms/wayland/qwaylandwindow.cpp
-index 7a83eb2d58e..ade91663084 100644
+index 7a83eb2d58e..99e4d05abde 100644
 --- a/src/plugins/platforms/wayland/qwaylandwindow.cpp
 +++ b/src/plugins/platforms/wayland/qwaylandwindow.cpp
-@@ -236,7 +236,7 @@ void QWaylandWindow::initializeWlSurface(bool colorSpace)
+@@ -31,6 +31,7 @@
+ #include <QGuiApplication>
+ #include <qpa/qwindowsysteminterface.h>
+ #include <QtGui/private/qguiapplication_p.h>
++#include <QtGui/private/qhighdpiscaling_p.h>
+ #include <QtGui/private/qwindow_p.h>
+ 
+ #include <QtCore/QDebug>
+@@ -236,7 +237,7 @@ void QWaylandWindow::initializeWlSurface(bool colorSpace)
      }
      emit wlSurfaceCreated();
  
@@ -104,7 +112,29 @@ index 7a83eb2d58e..ade91663084 100644
          mFractionalScale.reset(new QWaylandFractionalScale(mDisplay->fractionalScaleManager()->get_fractional_scale(mSurface->object())));
  
          connect(mFractionalScale.data(), &QWaylandFractionalScale::preferredScaleChanged,
-@@ -1536,7 +1536,7 @@ void QWaylandWindow::updateScale()
+@@ -915,10 +916,11 @@ QMargins QWaylandWindow::clientSideMargins() const
+ }
+ 
+ void QWaylandWindow::setCustomMargins(const QMargins &margins) {
++    const auto factor = QHighDpiScaling::factor(window());
+     const QMargins oldMargins = mCustomMargins;
+     mCustomMargins = margins;
+     propagateSizeHints();
+-    setGeometry(geometry().marginsRemoved(oldMargins).marginsAdded(margins));
++    setGeometry(geometry().marginsRemoved(oldMargins * factor).marginsAdded(margins * factor));
+ }
+ 
+ /*!
+@@ -937,7 +939,7 @@ QMargins QWaylandWindow::windowContentMargins() const
+         shadowMargins = mWindowDecoration->margins(QWaylandAbstractDecoration::ShadowsOnly);
+ 
+     if (!mCustomMargins.isNull())
+-        shadowMargins += mCustomMargins;
++        shadowMargins += mCustomMargins * QHighDpiScaling::factor(window());
+ 
+     return shadowMargins;
+ }
+@@ -1536,7 +1538,7 @@ void QWaylandWindow::updateScale()
          return;
      }
  
@@ -113,15 +143,36 @@ index 7a83eb2d58e..ade91663084 100644
      setScale(scale);
  }
  
-@@ -1555,6 +1555,7 @@ void QWaylandWindow::setScale(qreal newScale)
+@@ -1544,7 +1546,9 @@ void QWaylandWindow::setScale(qreal newScale)
+ {
+     if (mScale.has_value() && qFuzzyCompare(mScale.value(), newScale))
+         return;
++    const auto oldFactor = QHighDpiScaling::factor(window());
+     mScale = newScale;
++    const auto factor = QHighDpiScaling::factor(window());
+ 
+     if (mSurface) {
+         if (mViewport)
+@@ -1555,11 +1559,18 @@ void QWaylandWindow::setScale(qreal newScale)
      ensureSize();
  
      QWindowSystemInterface::handleWindowDevicePixelRatioChanged<QWindowSystemInterface::SynchronousDelivery>(window());
-+    QWindowSystemInterface::handleGeometryChange<QWindowSystemInterface::SynchronousDelivery>(window(), geometry());
++    propagateSizeHints();
++    setGeometry(geometry().marginsRemoved(mCustomMargins * oldFactor).marginsAdded(mCustomMargins * factor));
      if (isExposed()) {
          // redraw at the new DPR
          window()->requestUpdate();
-@@ -1653,7 +1654,7 @@ qreal QWaylandWindow::scale() const
+         sendExposeEvent(QRect(QPoint(), geometry().size()));
+     }
++
++    for (const auto &popup : std::as_const(mChildPopups)) {
++        if (popup && popup->mShellSurface && popup->mExposed)
++            popup->mShellSurface->setWindowPosition(QHighDpi::toNativeGlobalPosition(popup->window()->position(), popup->window()));
++    }
+ }
+ 
+ #if QT_CONFIG(cursor)
+@@ -1653,7 +1664,7 @@ qreal QWaylandWindow::scale() const
  
  qreal QWaylandWindow::devicePixelRatio() const
  {
@@ -130,3 +181,19 @@ index 7a83eb2d58e..ade91663084 100644
  }
  
  bool QWaylandWindow::setMouseGrabEnabled(bool grab)
+@@ -1970,13 +1981,13 @@ QNativeInterface::Private::QWaylandWindow::WindowType QWaylandWindow::extendedWi
+ void QWaylandWindow::setParentControlGeometry(const QRect &parentControlGeometry) {
+     m_popupInfo.parentControlGeometry = parentControlGeometry;
+     if (mExposed) {
+-        mShellSurface->setWindowPosition(window()->position());
++        mShellSurface->setWindowPosition(QHighDpi::toNativeGlobalPosition(window()->position(), window()));
+     }
+ }
+ 
+ QRect QWaylandWindow::parentControlGeometry() const
+ {
+-    return m_popupInfo.parentControlGeometry;
++    return QHighDpi::scale(m_popupInfo.parentControlGeometry, QHighDpiScaling::factor(transientParent()->window()));
+ }
+ 
+ }
