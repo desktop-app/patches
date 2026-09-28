@@ -12,7 +12,7 @@ index 6936b246ff8..d20ae664b54 100644
      }
  
 diff --git a/src/plugins/platforms/wayland/qwaylandscreen.cpp b/src/plugins/platforms/wayland/qwaylandscreen.cpp
-index a005812e5ea..afd7aec04e4 100644
+index a005812e5ea..1fbd9c72af5 100644
 --- a/src/plugins/platforms/wayland/qwaylandscreen.cpp
 +++ b/src/plugins/platforms/wayland/qwaylandscreen.cpp
 @@ -184,14 +184,16 @@ Qt::ScreenOrientation QWaylandScreen::orientation() const
@@ -62,7 +62,7 @@ index a005812e5ea..afd7aec04e4 100644
 +            + qreal(mGeometry.height()) / qreal(mXdgGeometry.width())
 +        : qreal(mGeometry.width()) / qreal(mXdgGeometry.width())
 +            + qreal(mGeometry.height()) / qreal(mXdgGeometry.height()))
-+        * qreal(0.5) * qreal(100)) / qreal(100)
++        * qreal(0.5) * qreal(120)) / qreal(120)
 +        : qreal(1);
 +    const QDpi dpi = logicalDpi();
      QWindowSystemInterface::handleScreenGeometryChange(screen(), geometry(), availableGeometry());
