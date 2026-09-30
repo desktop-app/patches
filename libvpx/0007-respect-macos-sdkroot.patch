@@ -1,0 +1,12 @@
+diff --git a/build/make/configure.sh b/build/make/configure.sh
+--- a/build/make/configure.sh
++++ b/build/make/configure.sh
+@@ -928,7 +928,7 @@
+       fi
+       ;;
+     *-darwin*)
+-      osx_sdk_dir="$(show_darwin_sdk_path macosx)"
++      osx_sdk_dir="${SDKROOT:-$(show_darwin_sdk_path macosx)}"
+       if [ -d "${osx_sdk_dir}" ]; then
+         add_cflags  "-isysroot ${osx_sdk_dir}"
+         add_ldflags "-isysroot ${osx_sdk_dir}"
