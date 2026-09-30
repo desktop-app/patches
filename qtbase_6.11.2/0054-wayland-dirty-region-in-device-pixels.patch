@@ -1,0 +1,86 @@
+diff --git a/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp b/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp
+index 0a02cb41787..2cab9b6da0a 100644
+--- a/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp
++++ b/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp
+@@ -62,7 +62,7 @@ static int alignTo(int input, int alignment)
+ 
+ QWaylandShmBuffer::QWaylandShmBuffer(QWaylandDisplay *display,
+                                      const QSize &size, QImage::Format format, qreal scale, wl_event_queue *customEventQueue)
+-    : mDirtyRegion(QRect(QPoint(0, 0), size / scale))
++    : mDirtyRegion(QRect(QPoint(0, 0), size))
+ {
+     // This alignment of stride and size is done to improve performance of
+     // buffer accesses on the compositor side.
+@@ -220,8 +220,9 @@ void QWaylandShmBackingStore::beginPaint(const QRegion &region, qreal factor)
+     mPainting = true;
+     waylandWindow()->setBackingStore(this);
+ 
+-    const QMargins margins = windowDecorationMargins();
+-    const QRegion regionTranslated = QHighDpi::scale(region, factor).translated(margins.left(), margins.top());
++    const qreal scale = waylandWindow()->scale();
++    const QMargins margins = windowDecorationMargins() * scale;
++    const QRegion regionTranslated = QHighDpi::scale(region, factor * scale).translated(margins.left(), margins.top());
+     const bool bufferWasRecreated = recreateBackBufferIfNeeded();
+     updateDirtyStates(regionTranslated);
+ 
+@@ -263,34 +264,22 @@ bool QWaylandShmBackingStore::scroll(const QRegion &region, int dx, int dy)
+     if (!mFrontBuffer)
+         return false;
+ 
+-    const QPoint scrollDelta(dx, dy);
+-    const QMargins margins = windowDecorationMargins();
+-    const QRegion adjustedRegion = region.translated(margins.left(), margins.top());
++    const QPoint scrollDelta = QPoint(dx, dy) * devicePixelRatio;
++    const QMargins margins = windowDecorationMargins() * devicePixelRatio;
++    const QRegion adjustedRegion = QHighDpi::scale(region, devicePixelRatio).translated(margins.left(), margins.top());
+ 
+     const QRegion inPlaceRegion = adjustedRegion - mBackBuffer->dirtyRegion();
+     const QRegion frontBufferRegion = adjustedRegion - inPlaceRegion;
+ 
+-    if (!inPlaceRegion.isEmpty()) {
+-        const QRect inPlaceBoundingRect = inPlaceRegion.boundingRect();
+-        const QPoint devicePixelDelta = scrollDelta * devicePixelRatio;
+-
+-        qt_scrollRectInImage(*mBackBuffer->image(),
+-                             QRect(inPlaceBoundingRect.topLeft() * devicePixelRatio,
+-                                   inPlaceBoundingRect.size() * devicePixelRatio),
+-                             devicePixelDelta);
+-    }
++    if (!inPlaceRegion.isEmpty())
++        qt_scrollRectInImage(*mBackBuffer->image(), inPlaceRegion.boundingRect(), scrollDelta);
+ 
+     if (!frontBufferRegion.isEmpty()) {
+         QPainter painter(mBackBuffer->image());
+         painter.setCompositionMode(QPainter::CompositionMode_Source);
+         painter.scale(qreal(1) / devicePixelRatio, qreal(1) / devicePixelRatio);
+-        for (const QRect &rect : frontBufferRegion) {
+-            QRect sourceRect(rect.topLeft() * devicePixelRatio,
+-                             rect.size() * devicePixelRatio);
+-            QRect destinationRect((rect.topLeft() + scrollDelta) * devicePixelRatio,
+-                                   rect.size() * devicePixelRatio);
+-            painter.drawImage(destinationRect, *mFrontBuffer->image(), sourceRect);
+-        }
++        for (const QRect &rect : frontBufferRegion)
++            painter.drawImage(rect.translated(scrollDelta), *mFrontBuffer->image(), rect);
+     }
+ 
+     // We do not mark the source region as dirty, even though it technically has "moved".
+@@ -473,8 +462,8 @@ void QWaylandShmBackingStore::finalizeBackBuffer()
+     for (const QRect &clipRect : clipRects) { // Iterate clip rects, because complicated clip region causes higher CPU usage
+         if (clipRects.size() > 1)
+             painter.save();
+-        painter.setClipRect(clipRect);
+         painter.scale(qreal(1) / targetDevicePixelRatio, qreal(1) / targetDevicePixelRatio);
++        painter.setClipRect(clipRect);
+         painter.drawImage(QRectF(QPointF(), targetImage->size()), *sourceImage, sourceImage->rect());
+         if (clipRects.size() > 1)
+             painter.restore();
+@@ -535,7 +524,7 @@ void QWaylandShmBackingStore::updateDecorations()
+     decorationPainter.drawImage(target, sourceImage, sourceMatrix.mapRect(target));
+     dirtyRegion += target;
+ 
+-    updateDirtyStates(dirtyRegion);
++    updateDirtyStates(QHighDpi::scale(dirtyRegion, entireSurface()->devicePixelRatio()));
+ }
+ 
+ QWaylandAbstractDecoration *QWaylandShmBackingStore::windowDecoration() const
