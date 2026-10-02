@@ -1,0 +1,85 @@
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiaexpandcollapseprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiaexpandcollapseprovider.cpp
+index 6ac8de2..0545d91 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiaexpandcollapseprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiaexpandcollapseprovider.cpp
+@@ -52,6 +52,14 @@ QT_BEGIN_NAMESPACE
+ 
+ using namespace QWindowsUiAutomation;
+ 
++static bool isExpanded(QAccessibleInterface *accessible)
++{
++    Q_ASSERT(accessible);
++    if (accessible->role() == QAccessible::MenuItem)
++        return accessible->childCount() > 0 && !accessible->child(0)->state().invisible;
++    else
++        return accessible->state().expandable && accessible->state().expanded;
++}
+ 
+ QWindowsUiaExpandCollapseProvider::QWindowsUiaExpandCollapseProvider(QAccessible::Id id) :
+     QWindowsUiaBaseProvider(id)
+@@ -72,7 +80,7 @@ HRESULT STDMETHODCALLTYPE QWindowsUiaExpandCollapseProvider::Expand()
+     if (!actionInterface)
+         return UIA_E_ELEMENTNOTAVAILABLE;
+ 
+-    if (accessible->childCount() > 0 && accessible->child(0)->state().invisible)
++    if (!isExpanded(accessible))
+         actionInterface->doAction(QAccessibleActionInterface::showMenuAction());
+ 
+     return S_OK;
+@@ -90,7 +98,7 @@ HRESULT STDMETHODCALLTYPE QWindowsUiaExpandCollapseProvider::Collapse()
+     if (!actionInterface)
+         return UIA_E_ELEMENTNOTAVAILABLE;
+ 
+-    if (accessible->childCount() > 0 && !accessible->child(0)->state().invisible)
++    if (isExpanded(accessible))
+         actionInterface->doAction(QAccessibleActionInterface::showMenuAction());
+ 
+     return S_OK;
+@@ -108,9 +116,7 @@ HRESULT STDMETHODCALLTYPE QWindowsUiaExpandCollapseProvider::get_ExpandCollapseS
+     if (!accessible)
+         return UIA_E_ELEMENTNOTAVAILABLE;
+ 
+-    if (accessible->childCount() > 0)
+-        *pRetVal = accessible->child(0)->state().invisible ?
+-                ExpandCollapseState_Collapsed : ExpandCollapseState_Expanded;
++    *pRetVal = isExpanded(accessible) ? ExpandCollapseState_Expanded : ExpandCollapseState_Collapsed;
+ 
+     return S_OK;
+ }
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+index 1139410..187cac4 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+@@ -140,6 +140,18 @@ void QWindowsUiaMainProvider::notifyStateChange(QAccessibleStateChangeEvent *eve
+                 }
+             }
+         }
++        if (event->changedStates().expanded) {
++            if (accessible->state().expandable) {
++                if (QWindowsUiaMainProvider *provider = providerForAccessible(accessible)) {
++                    VARIANT oldVal, newVal;
++                    clearVariant(&oldVal);
++                    int expandedState = accessible->state().expanded ? ExpandCollapseState_Expanded : ExpandCollapseState_Collapsed;
++                    setVariantI4(expandedState, &newVal);
++                    QWindowsUiaWrapper::instance()->raiseAutomationPropertyChangedEvent(provider, UIA_ExpandCollapseExpandCollapseStatePropertyId, oldVal, newVal);
++                    provider->Release();
++                }
++            }
++        }
+         if (event->changedStates().selected) {
+             // Notifies selection changes on selectable items, so that
+             // screen readers can announce "selected"/"not selected" for
+@@ -399,9 +411,11 @@ HRESULT QWindowsUiaMainProvider::GetPatternProvider(PATTERNID idPattern, IUnknow
+         break;
+     case UIA_ExpandCollapsePatternId:
+         // Menu items with submenus.
+-        if (accessible->role() == QAccessible::MenuItem
++        if ((accessible->role() == QAccessible::MenuItem
+                 && accessible->childCount() > 0
+-                && accessible->child(0)->role() == QAccessible::PopupMenu) {
++                && accessible->child(0)->role() == QAccessible::PopupMenu)
++            || accessible->role() == QAccessible::ComboBox
++            || accessible->state().expandable) {
+             *pRetVal = new QWindowsUiaExpandCollapseProvider(id());
+         }
+         break;
