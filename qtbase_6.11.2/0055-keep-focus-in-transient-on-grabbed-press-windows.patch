@@ -1,0 +1,18 @@
+diff --git a/src/plugins/platforms/windows/qwindowspointerhandler.cpp b/src/plugins/platforms/windows/qwindowspointerhandler.cpp
+index 6adf3c95924..7cd7598f9c7 100644
+--- a/src/plugins/platforms/windows/qwindowspointerhandler.cpp
++++ b/src/plugins/platforms/windows/qwindowspointerhandler.cpp
+@@ -428,8 +428,11 @@ void QWindowsPointerHandler::handleWindowActivation(QWindow *window,
+         // Windows does not send WM_MOUSEACTIVATE to an already-active top-level,
+         // so if focus currently sits in an embedded descendant (e.g. a native
+         // child window hosted via WindowContainer) we have to activate the
+-        // top-level ourselves on mouse press.
+-        if (focusWindow && window->isAncestorOf(focusWindow))
++        // top-level ourselves on mouse press. Transient children are top-levels
++        // on their own: while one has focus this top-level is inactive and gets
++        // WM_MOUSEACTIVATE on a direct click, and a press grabbed from a
++        // transient popup (e.g. a submenu) must not take the focus away from it.
++        if (focusWindow && window->isAncestorOf(focusWindow, QWindow::ExcludeTransients))
+             window->requestActivate();
+     } else if (!window->inherits("QWidgetWindow") && focusWindow != window) {
+         // "Click to focus" for native child windows. Skip QWidgetWindow, which
