@@ -1,0 +1,37 @@
+Backport Qt 474f268a8e04a4d2d66aa7e36b3b72cc1c1ef769 (CVE-2026-19248).
+Use qExchange for the Qt 5 C++11 baseline.
+
+diff --git a/src/xml/dom/qdom.cpp b/src/xml/dom/qdom.cpp
+--- a/src/xml/dom/qdom.cpp
++++ b/src/xml/dom/qdom.cpp
+@@ -992,16 +992,20 @@
+ 
+ QDomNodePrivate::~QDomNodePrivate()
+ {
+-    QDomNodePrivate* p = first;
+-    QDomNodePrivate* n;
+-
+-    while (p) {
+-        n = p->next;
+-        if (!p->ref.deref())
+-            delete p;
+-        else
+-            p->setNoParent();
+-        p = n;
++    QDomNodePrivate *p = this;
++
++    while (true) {
++        if (QDomNodePrivate *c = p->first) {
++            p->first = c->next;
++            if (c->ref.deref())
++                c->setNoParent();
++            else
++                p = c;
++        } else {
++            if (p == this)
++                break;
++            delete qExchange(p, p->parent());
++        }
+     }
+     first = nullptr;
+     last = nullptr;

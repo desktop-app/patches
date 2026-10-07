@@ -1,0 +1,44 @@
+Backport Qt f91c48650443262db9be37d5239ebe0db18e9555 (CVE-2026-78253).
+Retain Qt 5 text insertion.
+
+diff --git a/src/corelib/serialization/qxmlstream.cpp b/src/corelib/serialization/qxmlstream.cpp
+--- a/src/corelib/serialization/qxmlstream.cpp
++++ b/src/corelib/serialization/qxmlstream.cpp
+@@ -2206,14 +2206,16 @@
+     Q_D(QXmlStreamReader);
+     if (isStartElement()) {
+         QString result;
+-        forever {
++        qsizetype nestingLevel = 1;
++        do {
+             switch (readNext()) {
+             case Characters:
+             case EntityReference:
+                 result.insert(result.size(), d->text.unicode(), d->text.size());
+                 break;
+             case EndElement:
+-                return result;
++                --nestingLevel;
++                break;
+             case ProcessingInstruction:
+             case Comment:
+                 break;
+@@ -2222,7 +2224,7 @@
+                     skipCurrentElement();
+                     break;
+                 } else if (behaviour == IncludeChildElements) {
+-                    result += readElementText(behaviour);
++                    ++nestingLevel;
+                     break;
+                 }
+                 Q_FALLTHROUGH();
+@@ -2233,7 +2235,8 @@
+                     return result;
+                 }
+             }
+-        }
++        } while (nestingLevel);
++        return result;
+     }
+     return QString();
+ }
