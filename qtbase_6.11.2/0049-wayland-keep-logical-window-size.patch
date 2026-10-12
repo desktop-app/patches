@@ -1,5 +1,17 @@
+diff --git a/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp b/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp
+index 79106a944e7..0b02bc8050c 100644
+--- a/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp
++++ b/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp
+@@ -435,6 +435,7 @@ bool QWaylandShmBackingStore::recreateBackBufferIfNeeded()
+     qsizetype newSizeInBytes = buffer->image()->sizeInBytes();
+ 
+     mBackBuffer = buffer;
++    mBackBuffer->image()->setDevicePixelRatio(scale);
+ 
+     for (QWaylandShmBuffer *buffer : std::as_const(mBuffers)) {
+         if (mBackBuffer == buffer) {
 diff --git a/src/plugins/platforms/wayland/qwaylandwindow.cpp b/src/plugins/platforms/wayland/qwaylandwindow.cpp
-index 99e4d05abde..b3f854d07ff 100644
+index 99e4d05abde..8f999b26f44 100644
 --- a/src/plugins/platforms/wayland/qwaylandwindow.cpp
 +++ b/src/plugins/platforms/wayland/qwaylandwindow.cpp
 @@ -59,6 +59,7 @@ QWaylandWindow::QWaylandWindow(QWindow *window, QWaylandDisplay *display)
@@ -10,7 +22,23 @@ index 99e4d05abde..b3f854d07ff 100644
      , mSurfaceFormat(window->requestedFormat())
  {
      {
-@@ -461,14 +462,29 @@ void QWaylandWindow::setWindowIcon(const QIcon &icon)
+@@ -101,6 +102,7 @@ void QWaylandWindow::ensureSize()
+ {
+     if (mBackingStore) {
+         setBackingStore(mBackingStore);
++        mBackingStore->resize(windowGeometry().size(), {});
+         mBackingStore->recreateBackBufferIfNeeded();
+     }
+ }
+@@ -341,6 +343,7 @@ void QWaylandWindow::reset()
+ 
+ 
+     mScale = std::nullopt;
++    mScaleUpdatePending = false;
+     mOpaqueArea = QRegion();
+     mMask = QRegion();
+ 
+@@ -461,14 +464,29 @@ void QWaylandWindow::setWindowIcon(const QIcon &icon)
          mShellSurface->setIcon(icon);
  }
  
@@ -40,34 +68,42 @@ index 99e4d05abde..b3f854d07ff 100644
      if (mViewport)
          updateViewport();
  
-@@ -1504,6 +1520,10 @@ void QWaylandWindow::handleScreensChanged()
+@@ -1504,6 +1522,11 @@ void QWaylandWindow::handleScreensChanged()
  {
      QPlatformScreen *newScreen = calculateScreenFromSurfaceEvents();
  
 +    const auto scaleGuard = qScopeGuard([&] {
-+        updateScale();
++        if (mScaleUpdatePending)
++            updateScale();
 +    });
 +
      if (!newScreen || newScreen->screen() == window()->screen())
          return;
  
-@@ -1517,12 +1537,14 @@ void QWaylandWindow::handleScreensChanged()
-         setGeometry(geometry);
-     }
- 
--    updateScale();
-     updateBufferTransform();
- }
+@@ -1523,6 +1546,10 @@ void QWaylandWindow::handleScreensChanged()
  
  void QWaylandWindow::updateScale()
  {
-+    if (QHighDpiScaling::isActive() && mSurface && mSurface->m_screens.size() > 1)
++    mScaleUpdatePending = QHighDpiScaling::isActive() && mSurface && mSurface->m_screens.size() > 1;
++    if (mScaleUpdatePending)
 +        return;
 +
      if (mFractionalScale) {
          qreal preferredScale = mFractionalScale->preferredScale().value_or(1.0);
          preferredScale = std::max<qreal>(1.0, preferredScale);
-@@ -1560,7 +1582,9 @@ void QWaylandWindow::setScale(qreal newScale)
+@@ -1550,17 +1577,14 @@ void QWaylandWindow::setScale(qreal newScale)
+     mScale = newScale;
+     const auto factor = QHighDpiScaling::factor(window());
+ 
+-    if (mSurface) {
+-        if (mViewport)
+-            updateViewport();
+-        else if (mSurface->version() >= 3)
+-            mSurface->set_buffer_scale(std::ceil(newScale));
+-    }
+-    ensureSize();
++    if (!mViewport && mSurface && mSurface->version() >= 3)
++        mSurface->set_buffer_scale(std::ceil(newScale));
  
      QWindowSystemInterface::handleWindowDevicePixelRatioChanged<QWindowSystemInterface::SynchronousDelivery>(window());
      propagateSizeHints();
@@ -79,7 +115,7 @@ index 99e4d05abde..b3f854d07ff 100644
          // redraw at the new DPR
          window()->requestUpdate();
 diff --git a/src/plugins/platforms/wayland/qwaylandwindow_p.h b/src/plugins/platforms/wayland/qwaylandwindow_p.h
-index 670a7cba6d4..898cd0d79e4 100644
+index 670a7cba6d4..02841647741 100644
 --- a/src/plugins/platforms/wayland/qwaylandwindow_p.h
 +++ b/src/plugins/platforms/wayland/qwaylandwindow_p.h
 @@ -102,6 +102,7 @@ public:
@@ -90,16 +126,18 @@ index 670a7cba6d4..898cd0d79e4 100644
      void setGeometry(const QRect &rect) override;
  
      bool allowsIndependentThreadedRendering() const override;
-@@ -336,6 +337,8 @@ protected:
+@@ -336,7 +337,10 @@ protected:
      QVariantMap m_properties;
  
      QPoint mOffset;
 +    QRect mGeometry;
 +    qreal mGeometryScale = 0;
      std::optional<qreal> mScale = std::nullopt;
++    bool mScaleUpdatePending = false;
  
      QString mWindowTitle;
-@@ -384,6 +387,7 @@ private:
+     QIcon mWindowIcon;
+@@ -384,6 +388,7 @@ private:
      void updateInputRegion();
      void updateViewport();
      bool calculateExposure() const;
