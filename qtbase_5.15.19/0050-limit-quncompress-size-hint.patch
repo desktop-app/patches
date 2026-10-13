@@ -1,0 +1,67 @@
+Backport Qt 9a606aa62b2b636c678b172438711950f4dfaef3 (QTBUG-151147).
+Adapt the initial allocation cap to Qt 5 int input sizes and ulong output sizes.
+
+diff --git a/src/corelib/text/qbytearray.cpp b/src/corelib/text/qbytearray.cpp
+--- a/src/corelib/text/qbytearray.cpp
++++ b/src/corelib/text/qbytearray.cpp
+@@ -747,6 +747,11 @@
+     }
+     ulong expectedSize = uint((data[0] << 24) | (data[1] << 16) |
+                               (data[2] <<  8) | (data[3]      ));
++    constexpr quint64 MaxCompressionRatio = 1032;
++    constexpr quint64 Slack = 1024;
++    // Widen the positive int before multiplication to avoid 32-bit overflow.
++    const auto maxPlausibleSize = quint64(nbytes - 4) * MaxCompressionRatio + Slack;
++    expectedSize = ulong(qMin(quint64(expectedSize), maxPlausibleSize));
+     ulong len = qMax(expectedSize, 1ul);
+     const ulong maxPossibleSize = MaxAllocSize - sizeof(QByteArray::Data);
+     if (Q_UNLIKELY(len >= maxPossibleSize)) {
+diff --git a/tests/auto/corelib/text/qbytearray/tst_qbytearray.cpp b/tests/auto/corelib/text/qbytearray/tst_qbytearray.cpp
+--- a/tests/auto/corelib/text/qbytearray/tst_qbytearray.cpp
++++ b/tests/auto/corelib/text/qbytearray/tst_qbytearray.cpp
+@@ -30,6 +30,7 @@
+ #include <QtTest/QtTest>
+ 
+ #include <qbytearray.h>
++#include <qendian.h>
+ #include <qfile.h>
+ #include <qhash.h>
+ #include <limits.h>
+@@ -50,6 +51,8 @@
+     void qCompress();
+     void qUncompressCorruptedData_data();
+     void qUncompressCorruptedData();
++    void qUncompressSizeHint_data();
++    void qUncompressSizeHint();
+     void qCompressionZeroTermination();
+ #endif
+     void constByteArray();
+@@ -345,6 +348,28 @@
+ #endif
+ }
+ 
++void tst_QByteArray::qUncompressSizeHint_data()
++{
++    QTest::addColumn<quint32>("hint");
++
++    QTest::newRow("zero") << quint32(0);
++    QTest::newRow("too-small") << quint32(1);
++    QTest::newRow("exact") << quint32(4096);
++    QTest::newRow("above-ratio") << quint32(0x00100000);
++    QTest::newRow("large-accepted-hint") << quint32(0x3fffffff);
++    QTest::newRow("max") << quint32(0xffffffff);
++}
++
++void tst_QByteArray::qUncompressSizeHint()
++{
++    QFETCH(quint32, hint);
++
++    const QByteArray original(4096, 'x');
++    QByteArray compressed = ::qCompress(original);
++    qToBigEndian(hint, compressed.data());
++    QCOMPARE(::qUncompress(compressed), original);
++}
++
+ void tst_QByteArray::qCompressionZeroTermination()
+ {
+     QString s = "Hello, I'm a string.";
