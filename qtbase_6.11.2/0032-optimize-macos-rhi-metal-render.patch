@@ -134,16 +134,28 @@ index f2a056732b7..9be1a25f51d 100644
              cb->setShaderResources(m_widgetQuadData.srb);
              cb->draw(6);
          }
-@@ -680,6 +699,9 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+@@ -665,18 +684,21 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+                     if (buffer == QRhiSwapChain::RightBuffer && m_textureQuadData[i].srbExtra)
+                         srb = m_textureQuadData[i].srbExtra;
+ 
+                     cb->setShaderResources(srb);
+                     cb->draw(6);
+                 }
+             }
+         }
+ 
+         cb->endPass();
+     };
+ 
+     if (swapchain->window()->format().stereo()) {
+         render(QRhiSwapChain::LeftBuffer);
+         render(QRhiSwapChain::RightBuffer);
      } else
          render();
- 
++
 +    if (gotNativeTexture)
 +        backingStore->nativeTextureWasComposited(backingStoreTextureUsed ? cb : nullptr);
-+
-     rhi->endFrame(swapchain);
  
-     return QPlatformBackingStore::FlushSuccess;
 diff --git a/src/gui/painting/qbackingstoredefaultcompositor_p.h b/src/gui/painting/qbackingstoredefaultcompositor_p.h
 index cdc9d098099..04271b34cbf 100644
 --- a/src/gui/painting/qbackingstoredefaultcompositor_p.h

@@ -18,9 +18,7 @@ index c25132dc734..f49d4c86e4e 100644
  
      QOpenGLContextPrivate::setCurrentContext(this);
  #ifndef QT_NO_DEBUG
-@@ -801,6 +807,12 @@ void QOpenGLContext::swapBuffers(QSurface *surface)
-     if (surface->format().swapBehavior() == QSurfaceFormat::SingleBuffer)
-         functions()->glFlush();
+@@ -803,4 +809,10 @@ void QOpenGLContext::swapBuffers(QSurface *surface)
      d->platformGLContext->swapBuffers(surfaceHandle);
 +
 +    // The swapBuffers call could switch the context from isValid to !isValid.
