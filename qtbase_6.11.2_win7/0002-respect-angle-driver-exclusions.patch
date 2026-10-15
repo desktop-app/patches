@@ -1,0 +1,70 @@
+Subject: [PATCH] Respect driver exclusions when selecting ANGLE
+
+Preserve the supported-renderer filtering used by the Qt 5 Windows
+integration and qtbase_5.15.19/0012-env-select-static-angle-backend.patch. Automatic ANGLE
+selection tries only permitted D3D11/D3D9 backends; explicit selections
+also honor the driver bug list. Do not retry with an unconstrained EGL
+display when the permitted backends fail to initialize.
+
+diff --git a/src/plugins/platforms/windows/qwindowsintegration.cpp b/src/plugins/platforms/windows/qwindowsintegration.cpp
+--- a/src/plugins/platforms/windows/qwindowsintegration.cpp
++++ b/src/plugins/platforms/windows/qwindowsintegration.cpp
+@@ -381,15 +381,26 @@
+         qCWarning(lcQpaGl, "System OpenGL failed. Falling back to Software OpenGL.");
+         return QOpenGLStaticContext::create(true);
+ #if QT_CONFIG(egl)
+-    // If ANGLE is requested, use it, don't try anything else.
+     case QWindowsOpenGLTester::AngleRendererD3d9:
+     case QWindowsOpenGLTester::AngleRendererD3d11:
+     case QWindowsOpenGLTester::AngleRendererD3d11On12:
+     case QWindowsOpenGLTester::AngleRendererD3d11Warp:
+     case QWindowsOpenGLTester::AngleRendererOpenGL:
+-        return QWindowsEGLStaticContext::create(requestedRenderer);
+-    case QWindowsOpenGLTester::Gles:
+-        return QWindowsEGLStaticContext::create(requestedRenderer);
++    case QWindowsOpenGLTester::Gles: {
++        const auto supported = QWindowsOpenGLTester::supportedRenderers(requestedRenderer);
++        if (supported.testFlag(QWindowsOpenGLTester::DisableProgramCacheFlag))
++            QCoreApplication::setAttribute(Qt::AA_DisableShaderDiskCache);
++        const auto requested = requestedRenderer == QWindowsOpenGLTester::Gles
++            ? QWindowsOpenGLTester::Renderers(QWindowsOpenGLTester::AngleRendererD3d11
++                                            | QWindowsOpenGLTester::AngleRendererD3d9)
++            : QWindowsOpenGLTester::Renderers(requestedRenderer);
++        const auto allowed = requested & supported;
++        if (!allowed) {
++            qCWarning(lcQpaGl, "Requested ANGLE renderers are disabled by the driver bug list.");
++            return nullptr;
++        }
++        return QWindowsEGLStaticContext::create(allowed);
++    }
+ #endif
+     case QWindowsOpenGLTester::SoftwareRasterizer:
+         if (QWindowsStaticOpenGLContext *swCtx = QOpenGLStaticContext::create(true))
+diff --git a/src/plugins/platforms/windows/qwindowseglcontext.cpp b/src/plugins/platforms/windows/qwindowseglcontext.cpp
+--- a/src/plugins/platforms/windows/qwindowseglcontext.cpp
++++ b/src/plugins/platforms/windows/qwindowseglcontext.cpp
+@@ -446,16 +446,15 @@
+ 
+     QWindowsOpenGLTester::Renderer resultRenderer = QWindowsOpenGLTester::InvalidRenderer;
+ 
+-    if (!initializeAngle(preferredType, dc, &display, &major, &minor, &resultRenderer)
+-        && (preferredType & QWindowsOpenGLTester::AngleRendererD3d11)) {
++    bool initialized = initializeAngle(preferredType, dc, &display, &major, &minor, &resultRenderer);
++    if (!initialized && (preferredType & QWindowsOpenGLTester::AngleRendererD3d11)) {
+         preferredType &= ~QWindowsOpenGLTester::AngleRendererD3d11;
+-        initializeAngle(preferredType, dc, &display, &major, &minor, &resultRenderer);
+-    }
+-
+-    if (display == EGL_NO_DISPLAY)
+-        display = libEGL.eglGetDisplay(dc);
+-    if (!display) {
+-        qWarning("%s: Could not obtain EGL display", __FUNCTION__);
++        if (preferredType & QWindowsOpenGLTester::AngleBackendMask)
++            initialized = initializeAngle(preferredType, dc, &display, &major, &minor, &resultRenderer);
++    }
++
++    if (!initialized || display == EGL_NO_DISPLAY) {
++        qWarning("%s: Could not initialize the allowed ANGLE renderers", __FUNCTION__);
+         return nullptr;
+     }
+ 
