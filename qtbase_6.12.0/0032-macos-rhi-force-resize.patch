@@ -1,17 +1,17 @@
 diff --git a/src/gui/rhi/qrhimetal.mm b/src/gui/rhi/qrhimetal.mm
-index a96520ee86d..9727ce5c6ca 100644
+index f9ba46f06ed..9909f38f2e6 100644
 --- a/src/gui/rhi/qrhimetal.mm
 +++ b/src/gui/rhi/qrhimetal.mm
-@@ -234,7 +234,7 @@ void destroy() {
+@@ -237,7 +237,7 @@ struct QRhiMetalData
                  id<MTLComputePipelineState> pipelineState;
              } computePipeline;
              struct {
 -                id<MTLRasterizationRateMap> rateMap;
 +                id rateMap;
              } shadingRateMap;
-         };
-     };
-@@ -319,7 +319,7 @@ void destroy() {
+             struct {
+                 id<MTLIndirectCommandBuffer> icb;
+@@ -335,7 +335,7 @@ struct QMetalSamplerData
  
  struct QMetalShadingRateMapData
  {
@@ -20,9 +20,9 @@ index a96520ee86d..9727ce5c6ca 100644
  };
  
  struct QMetalShaderResourceBindingsData {
-@@ -689,8 +689,10 @@ inline Int aligned(Int v, Int byteAlign)
-     [d->captureScope release];
-     d->captureScope = nil;
+@@ -727,8 +727,10 @@ void QRhiMetal::destroy()
+ 
+     d->icbCapacity = 0;
  
 -    [d->binArch release];
 -    d->binArch = nil;
@@ -33,7 +33,7 @@ index a96520ee86d..9727ce5c6ca 100644
  
      [d->cmdQueue release];
      if (!importedCmdQueue)
-@@ -2537,6 +2540,11 @@ static void endTessellationComputeEncoding(QMetalCommandBuffer *cbD)
+@@ -2899,6 +2901,11 @@ QRhi::FrameOpResult QRhiMetal::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
                  [commandBuffer commit];
                  // Keep strong reference to Metal layer
                  auto *metalLayer = swapChainD->d->layer;
@@ -45,7 +45,7 @@ index a96520ee86d..9727ce5c6ca 100644
                  auto presentWithTransaction = ^{
                      [commandBuffer waitUntilScheduled];
                      // If the layer has been resized while we waited to be scheduled we bail out,
-@@ -2545,7 +2553,9 @@ static void endTessellationComputeEncoding(QMetalCommandBuffer *cbD)
+@@ -2907,7 +2914,9 @@ QRhi::FrameOpResult QRhiMetal::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
                      // means we can access the layer directly. We also know that the layer is valid,
                      // since the block keeps a strong reference to it, compared to the QRhiSwapChain
                      // that can go away under our feet by the time we're scheduled.
@@ -56,7 +56,7 @@ index a96520ee86d..9727ce5c6ca 100644
                      const auto textureSize = QSizeF(drawable.texture.width, drawable.texture.height);
                      if (textureSize == surfaceSize) {
                          [drawable present];
-@@ -3554,6 +3564,15 @@ static inline MTLPixelFormat toMetalTextureFormat(QRhiTexture::Format format, QR
+@@ -3956,6 +3965,15 @@ static inline MTLPixelFormat toMetalTextureFormat(QRhiTexture::Format format, QR
  #endif
  
      const bool srgb = flags.testFlag(QRhiTexture::sRGB);
@@ -72,7 +72,7 @@ index a96520ee86d..9727ce5c6ca 100644
      switch (format) {
      case QRhiTexture::RGBA8:
          return srgb ? MTLPixelFormatRGBA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm;
-@@ -3693,88 +3712,71 @@ static inline MTLPixelFormat toMetalTextureFormat(QRhiTexture::Format format, QR
+@@ -4095,88 +4113,71 @@ static inline MTLPixelFormat toMetalTextureFormat(QRhiTexture::Format format, QR
          return srgb ? MTLPixelFormatASTC_12x12_sRGB : MTLPixelFormatASTC_12x12_LDR;
  #else
      case QRhiTexture::ETC2_RGB8:
@@ -178,7 +178,7 @@ index a96520ee86d..9727ce5c6ca 100644
          qWarning("QRhiMetal: ASTC compression not supported on this platform");
          return MTLPixelFormatInvalid;
  #endif
-@@ -3783,6 +3785,9 @@ static inline MTLPixelFormat toMetalTextureFormat(QRhiTexture::Format format, QR
+@@ -4185,6 +4186,9 @@ static inline MTLPixelFormat toMetalTextureFormat(QRhiTexture::Format format, QR
          Q_UNREACHABLE();
          return MTLPixelFormatInvalid;
      }
@@ -188,7 +188,7 @@ index a96520ee86d..9727ce5c6ca 100644
  }
  
  QMetalRenderBuffer::QMetalRenderBuffer(QRhiImplementation *rhi, Type type, const QSize &pixelSize,
-@@ -4268,9 +4273,13 @@ static inline MTLCompareFunction toMetalTextureCompareFunction(QRhiSampler::Comp
+@@ -4664,9 +4668,13 @@ bool QMetalShadingRateMap::createFrom(NativeShadingRateMap src)
      if (d->rateMap)
          destroy();
  
@@ -204,7 +204,7 @@ index a96520ee86d..9727ce5c6ca 100644
  
      [d->rateMap retain];
  
-@@ -6433,6 +6442,31 @@ static inline bool matches(const QShaderDescription::InOutVariable &a, const QSh
+@@ -6825,6 +6833,31 @@ static inline CAMetalLayer *layerForWindow(QWindow *window)
      return static_cast<CAMetalLayer *>(layer);
  }
  
@@ -236,7 +236,7 @@ index a96520ee86d..9727ce5c6ca 100644
  // If someone calls this, it is hopefully from the main thread, and they will
  // then set the returned data on the QRhiSwapChain, so it won't need to query
  // the layer on its own later on.
-@@ -6451,11 +6485,7 @@ static inline bool matches(const QShaderDescription::InOutVariable &a, const QSh
+@@ -6843,11 +6876,7 @@ QSize QMetalSwapChain::surfacePixelSize()
          layer = qrhi_objectFromProxyData<CAMetalLayer>(&m_proxyData, m_window, QRhi::Metal, 0);
  
      Q_ASSERT(layer);
@@ -249,22 +249,27 @@ index a96520ee86d..9727ce5c6ca 100644
  }
  
  bool QMetalSwapChain::isFormatSupported(Format f)
-@@ -6568,12 +6598,12 @@ static inline bool matches(const QShaderDescription::InOutVariable &a, const QSh
-             d->layer.wantsExtendedDynamicRangeContent = YES;
-         }
+@@ -6952,11 +6981,15 @@ bool QMetalSwapChain::createOrResize()
+         d->layer.colorspace = CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB);
+         d->layer.wantsExtendedDynamicRangeContent = YES;
      } else if (m_format == HDR10) {
--        if (@available(iOS 16.0, *)) {
+-        d->layer.colorspace = CGColorSpaceCreateWithName(kCGColorSpaceITUR_2100_PQ);
+-        d->layer.wantsExtendedDynamicRangeContent = YES;
 +        if (@available(macOS 11.0, iOS 16.0, *)) {
-             d->layer.colorspace = CGColorSpaceCreateWithName(kCGColorSpaceITUR_2100_PQ);
-             d->layer.wantsExtendedDynamicRangeContent = YES;
-         }
++            d->layer.colorspace = CGColorSpaceCreateWithName(kCGColorSpaceITUR_2100_PQ);
++            d->layer.wantsExtendedDynamicRangeContent = YES;
++        }
      } else if (m_format == HDRExtendedDisplayP3Linear) {
--        if (@available(iOS 16.0, *)) {
+-        d->layer.colorspace = CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearDisplayP3);
+-        d->layer.wantsExtendedDynamicRangeContent = YES;
 +        if (@available(macOS 10.14.3, iOS 16.0, *)) {
-             d->layer.colorspace = CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearDisplayP3);
-             d->layer.wantsExtendedDynamicRangeContent = YES;
-         }
-@@ -6602,15 +6632,14 @@ static inline bool matches(const QShaderDescription::InOutVariable &a, const QSh
++            d->layer.colorspace = CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearDisplayP3);
++            d->layer.wantsExtendedDynamicRangeContent = YES;
++        }
+     }
+ 
+     if (m_flags.testFlag(UsedAsTransferSource))
+@@ -6982,15 +7015,14 @@ bool QMetalSwapChain::createOrResize()
      // Now set the layer's drawableSize which will stay set to the same value
      // until the next createOrResize(), thus ensuring atomicity with regards to
      // the drawable size in frames.
@@ -287,7 +292,7 @@ index a96520ee86d..9727ce5c6ca 100644
  
      [d->layer setDevice: rhiD->d->dev];
 diff --git a/src/plugins/platforms/cocoa/qcocoabackingstore.mm b/src/plugins/platforms/cocoa/qcocoabackingstore.mm
-index 61fe966668f..f783ee59f83 100644
+index f448891854f..4b73d740b76 100644
 --- a/src/plugins/platforms/cocoa/qcocoabackingstore.mm
 +++ b/src/plugins/platforms/cocoa/qcocoabackingstore.mm
 @@ -12,6 +12,9 @@
@@ -300,7 +305,7 @@ index 61fe966668f..f783ee59f83 100644
  #include <rhi/qrhi.h>
  #if QT_CONFIG(metal)
  #include <rhi/qrhi_platform.h>
-@@ -473,9 +476,34 @@
+@@ -490,9 +493,34 @@ QPlatformBackingStore::FlushResult QCALayerBackingStore::rhiFlush(QWindow *windo
      }
  
      finalizeBackBuffer();
@@ -337,10 +342,10 @@ index 61fe966668f..f783ee59f83 100644
  
  QImage QCALayerBackingStore::toImage() const
 diff --git a/src/plugins/platforms/cocoa/qcocoawindow.h b/src/plugins/platforms/cocoa/qcocoawindow.h
-index 63f0bf2d0f3..e75551910ab 100644
+index 5fe4d6c26cf..86c09be93fe 100644
 --- a/src/plugins/platforms/cocoa/qcocoawindow.h
 +++ b/src/plugins/platforms/cocoa/qcocoawindow.h
-@@ -229,6 +229,7 @@ public: // for QNSView
+@@ -226,6 +226,7 @@ public: // for QNSView
      static void removePopupMonitor();
      void markTemporarilyActivatedByRightClick();
  
@@ -349,11 +354,11 @@ index 63f0bf2d0f3..e75551910ab 100644
  
      void manageVisualEffectArea(quintptr identifier, const QRect &rect,
 diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms/cocoa/qcocoawindow.mm
-index 6e54de9d4bb..82b99cd8cd3 100644
+index 8e20eac06a6..86bbd179507 100644
 --- a/src/plugins/platforms/cocoa/qcocoawindow.mm
 +++ b/src/plugins/platforms/cocoa/qcocoawindow.mm
-@@ -2292,8 +2292,28 @@ Posted whenever an NSView object that has attached surfaces (that is,
-     m_frameStrutEventsEnabled = enabled;
+@@ -2408,8 +2408,28 @@ QRectF QCocoaWindow::mapFromNative(CGRect rect, NSView *referenceView)
+         return qt_mac_flip(QRectF::fromCGRect(rect), QRectF::fromCGRect(referenceView.bounds));
  }
  
 +void QCocoaWindow::syncContentLayerGeometry() const
@@ -382,10 +387,10 @@ index 6e54de9d4bb..82b99cd8cd3 100644
      if (auto *containerLayer = qt_objc_cast<QContainerLayer*>(layer))
          layer = containerLayer.contentLayer;
 diff --git a/src/plugins/platforms/cocoa/qnsview_drawing.mm b/src/plugins/platforms/cocoa/qnsview_drawing.mm
-index 877169f2ef6..61071e6fdcd 100644
+index 9903a9fb7ad..caa4bcdb0de 100644
 --- a/src/plugins/platforms/cocoa/qnsview_drawing.mm
 +++ b/src/plugins/platforms/cocoa/qnsview_drawing.mm
-@@ -27,7 +27,10 @@ - (void)layoutSublayers
+@@ -27,7 +27,10 @@
      // of kCALayerWidthSizable | kCALayerHeightSizable has been seen to
      // drift out of sync, resulting in a content layer larger than its
      // container layer.

@@ -83,10 +83,10 @@ index 00000000000..fd32d9a783d
 +
 +mark_as_advanced(LCMS2_INCLUDE_DIR LCMS2_LIBRARIES LCMS2_VERSION)
 diff --git a/src/gui/CMakeLists.txt b/src/gui/CMakeLists.txt
-index 57991122a68..70848efa291 100644
+index 6324c99b1b7..b76251ca0eb 100644
 --- a/src/gui/CMakeLists.txt
 +++ b/src/gui/CMakeLists.txt
-@@ -621,6 +621,11 @@ qt_internal_extend_target(Gui CONDITION QT_FEATURE_movie
+@@ -665,6 +665,11 @@ qt_internal_extend_target(Gui CONDITION QT_FEATURE_movie
          image/qmovie.cpp image/qmovie.h
  )
  
@@ -99,10 +99,10 @@ index 57991122a68..70848efa291 100644
      SOURCES
          image/qpnghandler.cpp image/qpnghandler_p.h
 diff --git a/src/gui/configure.cmake b/src/gui/configure.cmake
-index e34f4d8b30a..0f3774112f0 100644
+index 3218c669b95..ec13f4543e1 100644
 --- a/src/gui/configure.cmake
 +++ b/src/gui/configure.cmake
-@@ -100,6 +100,7 @@ qt_find_package(GLESv2 MODULE
+@@ -109,6 +109,7 @@ endif()
  qt_find_package(Tslib MODULE PROVIDED_TARGETS PkgConfig::Tslib MODULE_NAME gui QMAKE_LIB tslib)
  qt_find_package(WrapVulkanHeaders MODULE PROVIDED_TARGETS WrapVulkanHeaders::WrapVulkanHeaders
      MODULE_NAME gui QMAKE_LIB vulkan MARK_OPTIONAL)
@@ -110,8 +110,8 @@ index e34f4d8b30a..0f3774112f0 100644
  if(LINUX OR FREEBSD OR QT_FIND_ALL_PACKAGES_ALWAYS)
      qt_find_package(Wayland MODULE PROVIDED_TARGETS Wayland::Server
                      MODULE_NAME gui QMAKE_LIB wayland_server)
-@@ -975,6 +976,12 @@ qt_feature("fontconfig" PUBLIC PRIVATE
-     CONDITION NOT APPLE AND NOT WIN32 AND QT_FEATURE_system_freetype AND Fontconfig_FOUND
+@@ -984,6 +985,12 @@ qt_feature("fontconfig" PUBLIC PRIVATE
+     CONDITION NOT APPLE AND NOT WIN32 AND QT_FEATURE_freetype AND WrapFontconfig_FOUND
  )
  qt_feature_definition("fontconfig" "QT_NO_FONTCONFIG" NEGATE VALUE "1")
 +qt_feature("lcms2" PUBLIC
@@ -123,7 +123,7 @@ index e34f4d8b30a..0f3774112f0 100644
  qt_feature("gbm"
      LABEL "GBM"
      CONDITION gbm_FOUND
-@@ -1630,6 +1637,7 @@ qt_configure_add_summary_entry(ARGS "system-freetype")
+@@ -1643,6 +1650,7 @@ qt_configure_add_summary_entry(ARGS "system-freetype")
  qt_configure_add_summary_entry(ARGS "harfbuzz")
  qt_configure_add_summary_entry(ARGS "system-harfbuzz")
  qt_configure_add_summary_entry(ARGS "fontconfig")
@@ -132,7 +132,7 @@ index e34f4d8b30a..0f3774112f0 100644
  qt_configure_add_summary_entry(ARGS "gif")
  qt_configure_add_summary_entry(ARGS "ico")
 diff --git a/src/gui/image/qimage.cpp b/src/gui/image/qimage.cpp
-index d20400cb98e..d524815b474 100644
+index fe1c1916444..0bd971c9eff 100644
 --- a/src/gui/image/qimage.cpp
 +++ b/src/gui/image/qimage.cpp
 @@ -47,6 +47,10 @@
@@ -146,7 +146,7 @@ index d20400cb98e..d524815b474 100644
  #define QT_XFORM_TYPE_MSBFIRST 0
  #define QT_XFORM_TYPE_LSBFIRST 1
  
-@@ -5100,6 +5104,46 @@ void QImage::setColorSpace(const QColorSpace &colorSpace)
+@@ -5101,6 +5105,46 @@ void QImage::setColorSpace(const QColorSpace &colorSpace)
          d->colorSpace = colorSpace;
  }
  
@@ -193,7 +193,7 @@ index d20400cb98e..d524815b474 100644
  /*!
      \since 5.14
  
-@@ -5114,7 +5158,37 @@ void QImage::setColorSpace(const QColorSpace &colorSpace)
+@@ -5115,7 +5159,37 @@ void QImage::setColorSpace(const QColorSpace &colorSpace)
  */
  void QImage::convertToColorSpace(const QColorSpace &colorSpace)
  {

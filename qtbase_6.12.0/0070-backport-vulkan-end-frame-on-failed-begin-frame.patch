@@ -1,0 +1,24 @@
+Backport Qt c68e1fc11dd8b2da8f5598034f60a0145405ba84 (QTBUG-150279).
+
+diff --git a/src/gui/rhi/qrhivulkan.cpp b/src/gui/rhi/qrhivulkan.cpp
+index b1da62cdca6..d894c0f26dd 100644
+--- a/src/gui/rhi/qrhivulkan.cpp
++++ b/src/gui/rhi/qrhivulkan.cpp
+@@ -2699,6 +2699,9 @@ QRhi::FrameOpResult QRhiVulkan::beginFrame(QRhiSwapChain *swapChain, QRhi::Begin
+     QVkSwapChain::FrameResources &frame(swapChainD->frameRes[frameResIndex]);
+ 
+     inst->handle()->beginFrame(swapChainD->window);
++    auto instEndFrameOnErrorGuard = qScopeGuard([this, swapChainD] {
++        inst->handle()->endFrame(swapChainD->window);
++    });
+ 
+     // Make sure the previous commands for the same frame slot have finished.
+     //
+@@ -2798,6 +2801,7 @@ QRhi::FrameOpResult QRhiVulkan::beginFrame(QRhiSwapChain *swapChain, QRhi::Begin
+         }
+     }
+ 
++    instEndFrameOnErrorGuard.dismiss();
+     return QRhi::FrameOpSuccess;
+ }
+ 
