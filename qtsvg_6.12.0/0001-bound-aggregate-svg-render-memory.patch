@@ -15,10 +15,10 @@ on. A denied allocation takes the existing "too big, ignoring" fallback, and
 AssumeTrustedSource documents stay exempt as from the nesting limit.
 
 diff --git a/src/svg/qsvgdocument.cpp b/src/svg/qsvgdocument.cpp
-index e9ece8d..0583d93 100644
+index 69a14f3d..a6ec9bf1 100644
 --- a/src/svg/qsvgdocument.cpp
 +++ b/src/svg/qsvgdocument.cpp
-@@ -31,6 +31,8 @@ QSvgDocument::QSvgDocument(QtSvg::Options options, QtSvg::AnimatorType type)
+@@ -32,6 +32,8 @@ QSvgDocument::QSvgDocument(QtSvg::Options options, QtSvg::AnimatorType type)
      , m_options(options)
  {
      m_states.trustedSource = m_options.testFlag(QtSvg::AssumeTrustedSource);
@@ -27,7 +27,7 @@ index e9ece8d..0583d93 100644
      bool animationEnabled = !m_options.testFlag(QtSvg::DisableAnimations);
      switch (type) {
          case QtSvg::AnimatorType::Automatic:
-@@ -262,6 +264,7 @@ void QSvgDocument::draw(QPainter *p, const QRectF &bounds)
+@@ -258,6 +260,7 @@ void QSvgDocument::draw(QPainter *p, const QRectF &bounds)
      if (displayMode() == QSvgNode::NoneMode)
          return;
  
@@ -35,19 +35,19 @@ index e9ece8d..0583d93 100644
      p->save();
      //sets default style on the painter
      //### not the most optimal way
-@@ -290,6 +293,7 @@ void QSvgDocument::draw(QPainter *p, const QString &id,
+@@ -286,6 +289,7 @@ void QSvgDocument::draw(QPainter *p, const QString &id,
      if (node->displayMode() == QSvgNode::NoneMode)
          return;
  
 +    m_renderBudget.raiseAllowance(p->device());
      p->save();
  
-     const QRectF elementBounds = node->bounds();
+     const QRectF elementBounds = node->bounds(this);
 diff --git a/src/svg/qsvgdocument_p.h b/src/svg/qsvgdocument_p.h
-index ef6a008..3594ef9 100644
+index ee064bbc..3b207652 100644
 --- a/src/svg/qsvgdocument_p.h
 +++ b/src/svg/qsvgdocument_p.h
-@@ -99,6 +99,8 @@ public:
+@@ -100,6 +100,8 @@ public:
  
      QSharedPointer<QSvgAbstractAnimator> animator() const;
  
@@ -56,7 +56,7 @@ index ef6a008..3594ef9 100644
  private:
      void mapSourceToTarget(QPainter *p, const QRectF &targetRect, const QRectF &sourceRect = QRectF());
  private:
-@@ -118,6 +120,7 @@ private:
+@@ -119,6 +121,7 @@ private:
      bool  m_animated;
      int   m_fps;
  
@@ -65,10 +65,10 @@ index ef6a008..3594ef9 100644
  
      const QtSvg::Options m_options;
 diff --git a/src/svg/qsvgnode.cpp b/src/svg/qsvgnode.cpp
-index 7720552..0443c58 100644
+index d24efaf0..79f812dc 100644
 --- a/src/svg/qsvgnode.cpp
 +++ b/src/svg/qsvgnode.cpp
-@@ -68,7 +68,7 @@ void QSvgNode::draw(QPainter *p, QSvgExtraStates &states)
+@@ -72,7 +72,7 @@ void QSvgNode::draw(QPainter *p, QSvgExtraStates &states)
              p->setTransform(xf);
              QRectF boundsRect = xf.mapRect(filterNode->filterRegion(localRect));
              QImage proxy = drawIntoBuffer(p, states, boundsRect.toRect());
@@ -77,7 +77,7 @@ index 7720552..0443c58 100644
              if (maskNode && maskNode->type() == QSvgNode::Mask) {
                  boundsRect = QRectF(proxy.offset(), proxy.size());
                  localRect = p->transform().inverted().mapRect(boundsRect);
-@@ -153,7 +153,8 @@ void QSvgNode::drawWithMask(QPainter *p, QSvgExtraStates &states, const QImage &
+@@ -157,7 +157,8 @@ void QSvgNode::drawWithMask(QPainter *p, QSvgExtraStates &states, const QImage &
  QImage QSvgNode::drawIntoBuffer(QPainter *p, QSvgExtraStates &states, const QRect &boundsRect)
  {
      QImage proxy;
@@ -87,17 +87,16 @@ index 7720552..0443c58 100644
          qCWarning(lcSvgDraw) << "The requested buffer size is too big, ignoring";
          return proxy;
      }
-@@ -395,6 +396,8 @@ QRectF QSvgNode::bounds() const
+@@ -295,6 +296,7 @@ QRectF QSvgNode::bounds(const QSvgDocument *doc) const
      QPainter p(&dummy);
      initPainter(&p);
-     QSvgExtraStates states;
-+    if (const QSvgDocument *doc = document())
-+        states.renderBudget = doc->renderBudget();
+     QSvgExtraStates states(doc);
++    states.renderBudget = doc->renderBudget();
  
      if (parent())
          parent()->applyStyleRecursive(&p, states);
 diff --git a/src/svg/qsvgstructure.cpp b/src/svg/qsvgstructure.cpp
-index 4f148ef..c6d4822 100644
+index 1439d3a2..ee63acb3 100644
 --- a/src/svg/qsvgstructure.cpp
 +++ b/src/svg/qsvgstructure.cpp
 @@ -19,8 +19,11 @@
@@ -112,7 +111,7 @@ index 4f148ef..c6d4822 100644
  #include <QtCore/qstringview.h>
  #include <QtCore/private/qoffsetstringarray_p.h>
  
-@@ -478,7 +481,64 @@ void QSvgMarker::drawHelper(const QSvgNode *node, QPainter *p,
+@@ -476,7 +479,64 @@ void QSvgMarker::drawHelper(const QSvgNode *node, QPainter *p,
      }
  }
  
@@ -178,7 +177,7 @@ index 4f148ef..c6d4822 100644
  {
      QRectF localFilterRegion = m_rect.resolveRelativeLengths(bounds, m_filterUnits);
      QRect globalFilterRegion = p->transform().mapRect(localFilterRegion).toRect();
-@@ -488,14 +548,21 @@ QImage QSvgFilterContainer::applyFilter(const QImage &buffer, QPainter *p, const
+@@ -486,14 +546,21 @@ QImage QSvgFilterContainer::applyFilter(const QImage &buffer, QPainter *p, const
          return buffer;
  
      QImage proxy;
@@ -207,7 +206,7 @@ index 4f148ef..c6d4822 100644
  
      QMap<QString, QImage> buffers;
      buffers[QStringLiteral("")] = proxy;
-@@ -512,19 +579,40 @@ QImage QSvgFilterContainer::applyFilter(const QImage &buffer, QPainter *p, const
+@@ -510,19 +577,40 @@ QImage QSvgFilterContainer::applyFilter(const QImage &buffer, QPainter *p, const
      }
  
      if (requiresSourceAlpha) {
@@ -249,7 +248,7 @@ index 4f148ef..c6d4822 100644
                  buffers[QStringLiteral("")] = result;
                  buffers[filter->result()] = result;
              }
-@@ -790,7 +878,7 @@ QImage QSvgMask::createMask(QPainter *p, QSvgExtraStates &states, const QRectF &
+@@ -788,7 +876,7 @@ QImage QSvgMask::createMask(QPainter *p, QSvgExtraStates &states, const QRectF &
      *globalRect = imageBound.toRectF();
  
      QImage mask;
@@ -258,23 +257,23 @@ index 4f148ef..c6d4822 100644
          qCWarning(lcSvgDraw) << "The requested mask size is too big, ignoring";
          return mask;
      }
-@@ -822,6 +910,7 @@ QImage QSvgMask::createMask(QPainter *p, QSvgExtraStates &states, const QRectF &
-     QSvgExtraStates maskNodeStates;
+@@ -820,6 +908,7 @@ QImage QSvgMask::createMask(QPainter *p, QSvgExtraStates &states, const QRectF &
+     QSvgExtraStates maskNodeStates(states.doc());
      maskNodeStates.trustedSource = states.trustedSource;
      maskNodeStates.remainingNestedNodes = states.remainingNestedNodes;
 +    maskNodeStates.renderBudget = states.renderBudget;
      applyStyleRecursive(&painter, maskNodeStates);
  
      // The transformation of the mask node is not relevant. What matters are the contentUnits
-@@ -948,10 +1037,15 @@ QImage QSvgPattern::patternImage(QPainter *p, QSvgExtraStates &states, const QSv
+@@ -946,10 +1035,15 @@ QImage QSvgPattern::patternImage(QPainter *p, QSvgExtraStates &states, const QSv
          return QImage(); // Avoid division by zero in calculateAppliedTransform()
  
      calculateAppliedTransform(t, peBoundingBox, imageSize);
--    if (document()->isCalculatingImplicitViewBox())
+-    if (states.doc()->isCalculatingImplicitViewBox())
 -        return QImage(imageSize, QImage::Format_ARGB32); // dummy image to avoid endless recursion
 -    else
 -        return renderPattern(imageSize, std::make_pair(contentScaleFactorX, contentScaleFactorY), states);
-+    if (document()->isCalculatingImplicitViewBox()) {
++    if (states.doc()->isCalculatingImplicitViewBox()) {
 +        QImage dummy; // dummy image to avoid endless recursion
 +        if (!QSvgRenderBudget::allocateImage(states, imageSize, QImage::Format_ARGB32, &dummy)) {
 +            qCWarning(lcSvgDraw) << "The requested pattern size is too big, ignoring";
@@ -286,7 +285,7 @@ index 4f148ef..c6d4822 100644
  }
  
  QSvgNode::Type QSvgPattern::type() const
-@@ -966,7 +1060,7 @@ QImage QSvgPattern::renderPattern(QSize size, std::pair<qreal, qreal> scale, con
+@@ -964,7 +1058,7 @@ QImage QSvgPattern::renderPattern(QSize size, std::pair<qreal, qreal> scale, con
  
      // Allocate a QImage to draw the pattern in with the calculated size.
      QImage pattern;
@@ -295,8 +294,8 @@ index 4f148ef..c6d4822 100644
          qCWarning(lcSvgDraw) << "The requested pattern size is too big, ignoring";
          return defaultPattern();
      }
-@@ -984,6 +1078,7 @@ QImage QSvgPattern::renderPattern(QSize size, std::pair<qreal, qreal> scale, con
-     QSvgExtraStates patternStates;
+@@ -982,6 +1076,7 @@ QImage QSvgPattern::renderPattern(QSize size, std::pair<qreal, qreal> scale, con
+     QSvgExtraStates patternStates(states.doc());
      patternStates.trustedSource = states.trustedSource;
      patternStates.remainingNestedNodes = states.remainingNestedNodes;
 +    patternStates.renderBudget = states.renderBudget;
@@ -304,10 +303,10 @@ index 4f148ef..c6d4822 100644
      applyStyleRecursive(&patternPainter, patternStates);
      patternPainter.resetTransform();
 diff --git a/src/svg/qsvgstructure_p.h b/src/svg/qsvgstructure_p.h
-index 75f8d7c..8f62cfc 100644
+index c5c3fbaa..71dc575a 100644
 --- a/src/svg/qsvgstructure_p.h
 +++ b/src/svg/qsvgstructure_p.h
-@@ -218,7 +218,8 @@ public:
+@@ -214,7 +214,8 @@ public:
      void drawCommand(QPainter *, QSvgExtraStates &) override {};
      bool shouldDrawNode(QPainter *, QSvgExtraStates &) const override;
      Type type() const override;
@@ -318,21 +317,21 @@ index 75f8d7c..8f62cfc 100644
      bool supported() const;
      QRectF filterRegion(const QRectF &itemBounds) const;
 diff --git a/src/svg/qsvgstyle.cpp b/src/svg/qsvgstyle.cpp
-index 489ae6b..2a262e5 100644
+index ff3b8be2..2f737f80 100644
 --- a/src/svg/qsvgstyle.cpp
 +++ b/src/svg/qsvgstyle.cpp
-@@ -14,6 +14,9 @@
+@@ -12,6 +12,9 @@
+ #include "qpainter.h"
  #include "qcolor.h"
- #include "qdebug.h"
  
 +#include <QtGui/qimageiohandler.h>
 +#include <QtGui/private/qimage_p.h>
 +
  QT_BEGIN_NAMESPACE
  
- QSvgRefCounted::~QSvgRefCounted()
-@@ -32,6 +35,142 @@ QSvgExtraStates::QSvgExtraStates()
- {
+ QSvgExtraStates::QSvgExtraStates()
+@@ -33,6 +36,142 @@ QSvgExtraStates::QSvgExtraStates(const QSvgDocument *doc) : QSvgExtraStates()
+     m_doc = doc;
  }
  
 +class QSvgRenderBudgetData : public QSharedData
@@ -475,7 +474,7 @@ index 489ae6b..2a262e5 100644
      = default;
  
 diff --git a/src/svg/qsvgstyle_p.h b/src/svg/qsvgstyle_p.h
-index 69a64cc..2ac8c33 100644
+index dbcb8543..577daa06 100644
 --- a/src/svg/qsvgstyle_p.h
 +++ b/src/svg/qsvgstyle_p.h
 @@ -17,7 +17,9 @@
@@ -488,7 +487,7 @@ index 69a64cc..2ac8c33 100644
  #include "QtGui/qpainter.h"
  #include "QtGui/qpainterpath.h"
  #include "QtGui/qpen.h"
-@@ -31,10 +33,13 @@
+@@ -33,9 +35,12 @@
  QT_BEGIN_NAMESPACE
  
  class QPainter;
@@ -496,13 +495,12 @@ index 69a64cc..2ac8c33 100644
  class QSvgNode;
  class QSvgFont;
  class QSvgDocument;
- class QSvgPattern;
 +class QSvgRenderBudget;
 +class QSvgRenderBudgetData;
  
- template <class T> class QSvgRefCounter
+ struct Q_SVG_EXPORT QSvgExtraStates
  {
-@@ -129,11 +134,51 @@ struct Q_SVG_EXPORT QSvgExtraStates
+@@ -55,6 +60,7 @@ struct Q_SVG_EXPORT QSvgExtraStates
      int nestedUseCount = 0;
      bool trustedSource = false;
      quint8 remainingNestedNodes = QtSvg::renderingMaxNestedNodes;
@@ -510,6 +508,8 @@ index 69a64cc..2ac8c33 100644
      bool vectorEffect; // true if pen is cosmetic
      qint8 imageRendering; // QSvgQualityStyle::ImageRendering
      bool inUse = false; // true if currently in QSvgUseNode
+@@ -63,6 +69,45 @@ private:
+     const QSvgDocument *m_doc = nullptr;
  };
  
 +class Q_SVG_EXPORT QSvgRenderBudget
@@ -551,11 +551,11 @@ index 69a64cc..2ac8c33 100644
 +    qint64 m_reserved = 0;
 +};
 +
- class Q_SVG_EXPORT QSvgStyleProperty : public QSvgRefCounted
+ class Q_SVG_EXPORT QSvgStyleProperty
  {
  public:
 diff --git a/src/svg/qtsvgglobal_p.h b/src/svg/qtsvgglobal_p.h
-index 4981e47..c4f3c4d 100644
+index 4981e473..c4f3c4d5 100644
 --- a/src/svg/qtsvgglobal_p.h
 +++ b/src/svg/qtsvgglobal_p.h
 @@ -44,6 +44,11 @@ enum class OffsetRotateType : quint32 {
