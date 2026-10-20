@@ -1,0 +1,21 @@
+Backport Qt ddf0f49dc949beab8485b3bfb8e88616e4bd8076 (QTBUG-150280).
+
+diff --git a/src/plugins/platforms/wayland/qwaylandinputdevice.cpp b/src/plugins/platforms/wayland/qwaylandinputdevice.cpp
+index 30da040e508..ca4666dbcc8 100644
+--- a/src/plugins/platforms/wayland/qwaylandinputdevice.cpp
++++ b/src/plugins/platforms/wayland/qwaylandinputdevice.cpp
+@@ -414,13 +414,10 @@ void QWaylandInputDevice::seat_capabilities(uint32_t caps)
+ 
+         auto *pointerGestures = mQDisplay->pointerGestures();
+         if (pointerGestures) {
+-              QInputDevice::Capabilities  pointerCapabilities = QInputDevice::Capability::Position
+-                                                             | QInputDevice::Capability::PixelScroll
+-                                                             | QInputDevice::Capability::Scroll;
+             // NOTE: The name of the device and its system ID are not exposed on Wayland.
+             mTouchPadDevice = new QPointingDevice(
+                     QLatin1StringView("touchpad"), 0, QInputDevice::DeviceType::TouchPad,
+-                    QPointingDevice::PointerType::Finger, pointerCapabilities,
++                    QPointingDevice::PointerType::Finger, QInputDevice::Capability::Position,
+                     MaxTouchPoints, 0, mSeatName, QPointingDeviceUniqueId(), this);
+             QWindowSystemInterface::registerInputDevice(mTouchPadDevice);
+             mPointerGesturePinch.reset(pointerGestures->createPointerGesturePinch(this));

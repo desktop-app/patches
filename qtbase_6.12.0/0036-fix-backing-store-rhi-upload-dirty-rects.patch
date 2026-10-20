@@ -1,9 +1,9 @@
 diff --git a/src/gui/painting/qbackingstoredefaultcompositor.cpp b/src/gui/painting/qbackingstoredefaultcompositor.cpp
-index 3130a8aea98..5d1d97f506a 100644
+index b08efb3ca1a..3c86c9f6aa0 100644
 --- a/src/gui/painting/qbackingstoredefaultcompositor.cpp
 +++ b/src/gui/painting/qbackingstoredefaultcompositor.cpp
-@@ -110,13 +110,25 @@ QRhiTexture *QBackingStoreDefaultCompositor::toTexture(const QImage &sourceImage
-         m_texture->create();
+@@ -116,13 +116,25 @@ QRhiTexture *QBackingStoreDefaultCompositor::toTexture(const QImage &sourceImage
+         }
          resourceUpdates->uploadTexture(m_texture.get(), image);
      } else {
 -        QRect imageRect = image.rect();

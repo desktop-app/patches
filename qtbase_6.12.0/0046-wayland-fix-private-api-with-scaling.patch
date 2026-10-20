@@ -1,5 +1,5 @@
 diff --git a/src/plugins/platforms/wayland/qwaylandwindow.cpp b/src/plugins/platforms/wayland/qwaylandwindow.cpp
-index ade91663084..99e4d05abde 100644
+index 5b997f3a9ce..f838c129a7e 100644
 --- a/src/plugins/platforms/wayland/qwaylandwindow.cpp
 +++ b/src/plugins/platforms/wayland/qwaylandwindow.cpp
 @@ -31,6 +31,7 @@
@@ -10,7 +10,7 @@ index ade91663084..99e4d05abde 100644
  #include <QtGui/private/qwindow_p.h>
  
  #include <QtCore/QDebug>
-@@ -915,10 +916,11 @@ QMargins QWaylandWindow::clientSideMargins() const
+@@ -917,10 +918,11 @@ QMargins QWaylandWindow::clientSideMargins() const
  }
  
  void QWaylandWindow::setCustomMargins(const QMargins &margins) {
@@ -23,7 +23,7 @@ index ade91663084..99e4d05abde 100644
  }
  
  /*!
-@@ -937,7 +939,7 @@ QMargins QWaylandWindow::windowContentMargins() const
+@@ -939,7 +941,7 @@ QMargins QWaylandWindow::windowContentMargins() const
          shadowMargins = mWindowDecoration->margins(QWaylandAbstractDecoration::ShadowsOnly);
  
      if (!mCustomMargins.isNull())
@@ -32,7 +32,7 @@ index ade91663084..99e4d05abde 100644
  
      return shadowMargins;
  }
-@@ -1544,7 +1546,9 @@ void QWaylandWindow::setScale(qreal newScale)
+@@ -1546,7 +1548,9 @@ void QWaylandWindow::setScale(qreal newScale)
  {
      if (mScale.has_value() && qFuzzyCompare(mScale.value(), newScale))
          return;
@@ -42,7 +42,7 @@ index ade91663084..99e4d05abde 100644
  
      if (mSurface) {
          if (mViewport)
-@@ -1555,12 +1559,18 @@ void QWaylandWindow::setScale(qreal newScale)
+@@ -1557,12 +1561,18 @@ void QWaylandWindow::setScale(qreal newScale)
      ensureSize();
  
      QWindowSystemInterface::handleWindowDevicePixelRatioChanged<QWindowSystemInterface::SynchronousDelivery>(window());
@@ -62,7 +62,7 @@ index ade91663084..99e4d05abde 100644
  }
  
  #if QT_CONFIG(cursor)
-@@ -1971,13 +1981,13 @@ QNativeInterface::Private::QWaylandWindow::WindowType QWaylandWindow::extendedWi
+@@ -1972,13 +1982,13 @@ QNativeInterface::Private::QWaylandWindow::WindowType QWaylandWindow::extendedWi
  void QWaylandWindow::setParentControlGeometry(const QRect &parentControlGeometry) {
      m_popupInfo.parentControlGeometry = parentControlGeometry;
      if (mExposed) {
@@ -77,4 +77,4 @@ index ade91663084..99e4d05abde 100644
 +    return QHighDpi::scale(m_popupInfo.parentControlGeometry, QHighDpiScaling::factor(transientParent()->window()));
  }
  
- }
+ void QWaylandWindow::handleMousePressActivation()
