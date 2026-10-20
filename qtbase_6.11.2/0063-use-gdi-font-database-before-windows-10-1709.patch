@@ -1,0 +1,30 @@
+From 61a85af058fe4fab903143240077a96cade8af2f Mon Sep 17 00:00:00 2001
+From: 23rd <23rd@vivaldi.net>
+Date: Tue, 20 Oct 2026 12:16:00 +0000
+Subject: [PATCH] Fixed empty font database on Windows 10 builds before 1709.
+
+---
+ src/plugins/platforms/windows/qwindowsintegration.cpp | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/plugins/platforms/windows/qwindowsintegration.cpp b/src/plugins/platforms/windows/qwindowsintegration.cpp
+index 6d1f093..921bf72 100644
+--- a/src/plugins/platforms/windows/qwindowsintegration.cpp
++++ b/src/plugins/platforms/windows/qwindowsintegration.cpp
+@@ -481,7 +481,12 @@ QPlatformFontDatabase *QWindowsIntegration::fontDatabase() const
+         else
+ #endif // QT_NO_FREETYPE
+ #if QT_CONFIG(directwrite3)
+-        if (!(d->m_options & (QWindowsIntegration::FontDatabaseGDI | QWindowsIntegration::DontUseDirectWriteFonts)))
++        /* QWindowsDirectWriteFontDatabase::populateFontDatabase() needs IDWriteFactory6, which only exists
++        starting with Windows 10 1709 (build 16299), and returns early leaving the database empty on older
++        builds, so fall back to the GDI-populated database below that threshold.
++        IDWriteFactory6: https://learn.microsoft.com/en-us/windows/win32/api/dwrite_3/nn-dwrite_3-idwritefactory6 */
++        if (QOperatingSystemVersion::current() >= QOperatingSystemVersionBase(QOperatingSystemVersionBase::Windows, 10, 0, 16299) &&
++            !(d->m_options & (QWindowsIntegration::FontDatabaseGDI | QWindowsIntegration::DontUseDirectWriteFonts)))
+             d->m_fontDatabase = new QWindowsDirectWriteFontDatabase;
+         else
+ #endif
+-- 
+2.54.0 (Apple Git-157)
+
