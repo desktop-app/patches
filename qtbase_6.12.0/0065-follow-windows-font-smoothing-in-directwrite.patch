@@ -19,7 +19,7 @@ lays it out in logical pixels and the scale would stretch the rounded
 advances. Color glyphs stay antialiased.
 
 diff --git a/src/gui/text/windows/qwindowsfontdatabase.cpp b/src/gui/text/windows/qwindowsfontdatabase.cpp
-index 0c6d9a3..c878d66 100644
+index 3a1f9557574..c2d4107f8ca 100644
 --- a/src/gui/text/windows/qwindowsfontdatabase.cpp
 +++ b/src/gui/text/windows/qwindowsfontdatabase.cpp
 @@ -74,6 +74,9 @@ QWindowsFontEngineData::QWindowsFontEngineData()
@@ -33,7 +33,7 @@ index 0c6d9a3..c878d66 100644
      const qreal gray_gamma = 2.31;
      for (int i=0; i<256; ++i)
 diff --git a/src/gui/text/windows/qwindowsfontdatabasebase_p.h b/src/gui/text/windows/qwindowsfontdatabasebase_p.h
-index 2c5f8f6..489d3f3 100644
+index 2c5f8f63c8b..489d3f30775 100644
 --- a/src/gui/text/windows/qwindowsfontdatabasebase_p.h
 +++ b/src/gui/text/windows/qwindowsfontdatabasebase_p.h
 @@ -43,6 +43,7 @@ public:
@@ -45,11 +45,11 @@ index 2c5f8f6..489d3f3 100644
      HDC hdc = 0;
  #if QT_CONFIG(directwrite)
 diff --git a/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp b/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
-index 830b765..448b14a 100644
+index 2ee1d6e96b1..ab62c6b6f3e 100644
 --- a/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
 +++ b/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
-@@ -182,9 +182,17 @@ static QFont::HintingPreference determineHinting(const QFontDef &fontDef)
-     return hintingPreference;
+@@ -228,9 +228,17 @@ bool QWindowsFontEngineDirectWrite::useSymmetricAntialiasing() const
+     return m_useSymmetricAntialiasing;
  }
  
 +bool QWindowsFontEngineDirectWrite::fontSmoothingDisabled() const
@@ -67,7 +67,7 @@ index 830b765..448b14a 100644
          return DWRITE_RENDERING_MODE_ALIASED;
  
      QFont::HintingPreference hintingPreference = determineHinting(fontDef);
-@@ -784,7 +792,9 @@ QImage QWindowsFontEngineDirectWrite::alphaMapForGlyph(glyph_t glyph,
+@@ -831,7 +839,9 @@ QImage QWindowsFontEngineDirectWrite::alphaMapForGlyph(glyph_t glyph,
  bool QWindowsFontEngineDirectWrite::supportsHorizontalSubPixelPositions() const
  {
      QFont::HintingPreference hinting = determineHinting(fontDef);
@@ -79,7 +79,7 @@ index 830b765..448b14a 100644
  
  QFontEngine::Properties QWindowsFontEngineDirectWrite::properties() const
 diff --git a/src/gui/text/windows/qwindowsfontenginedirectwrite_p.h b/src/gui/text/windows/qwindowsfontenginedirectwrite_p.h
-index d03d932..90a76e3 100644
+index c9f05fecd51..75dfb2fd58d 100644
 --- a/src/gui/text/windows/qwindowsfontenginedirectwrite_p.h
 +++ b/src/gui/text/windows/qwindowsfontenginedirectwrite_p.h
 @@ -163,6 +163,7 @@ private:
