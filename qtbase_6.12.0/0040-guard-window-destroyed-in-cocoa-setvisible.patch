@@ -23,7 +23,7 @@ with them, and everything after that reads m_view off a freed
 QCocoaWindow.
 
 diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms/cocoa/qcocoawindow.mm
-index dd0d070499f..a5eefcfbf7a 100644
+index d07dc2b412c..f0a31e415fa 100644
 --- a/src/plugins/platforms/cocoa/qcocoawindow.mm
 +++ b/src/plugins/platforms/cocoa/qcocoawindow.mm
 @@ -18,6 +18,7 @@
@@ -34,7 +34,7 @@ index dd0d070499f..a5eefcfbf7a 100644
  #include <QtCore/private/qcore_mac_p.h>
  #include <qwindow.h>
  #include <private/qwindow_p.h>
-@@ -411,7 +412,22 @@ a normal (not maximized or full screen) top-level window.
+@@ -495,7 +496,22 @@ void QCocoaWindow::setVisible(bool visible)
          return;
      }
  
@@ -58,9 +58,9 @@ index dd0d070499f..a5eefcfbf7a 100644
  
      QMacAutoReleasePool pool;
      QCocoaWindow *parentCocoaWindow = nullptr;
-@@ -425,17 +441,23 @@ a normal (not maximized or full screen) top-level window.
+@@ -509,17 +525,23 @@ void QCocoaWindow::setVisible(bool visible)
      if (visible) {
-         // We need to recreate if the modality has changed as the style mask will need updating
+         // The flags may have changed, in which case we may need to switch window type
          recreateWindowIfNeeded();
 +        if (!guard)
 +            return;
@@ -82,7 +82,7 @@ index dd0d070499f..a5eefcfbf7a 100644
  
              if (window()->type() == Qt::Popup) {
                  // QTBUG-30266: a window should not be resizable while a transient popup is open
-@@ -454,10 +476,14 @@ a normal (not maximized or full screen) top-level window.
+@@ -538,10 +560,14 @@ void QCocoaWindow::setVisible(bool visible)
  
          if (isContentView()) {
              QWindowSystemInterface::flushWindowSystemEvents(QEventLoop::ExcludeUserInputEvents);
@@ -97,7 +97,7 @@ index dd0d070499f..a5eefcfbf7a 100644
  
              if (window()->windowState() != Qt::WindowMinimized) {
                  if (parentCocoaWindow && (window()->modality() == Qt::WindowModal || window()->type() == Qt::Sheet)) {
-@@ -497,6 +523,9 @@ a normal (not maximized or full screen) top-level window.
+@@ -581,6 +607,9 @@ void QCocoaWindow::setVisible(bool visible)
              else if ([m_view.window isSheet])
                  [m_view.window.sheetParent endSheet:m_view.window];
  
@@ -107,7 +107,7 @@ index dd0d070499f..a5eefcfbf7a 100644
              // Note: We do not guard the order out by checking NSWindow.visible, as AppKit will
              // in some cases, such as when hiding the application, order out and make a window
              // invisible, but keep it in a list of "hidden windows", that it then restores again
-@@ -504,6 +533,11 @@ a normal (not maximized or full screen) top-level window.
+@@ -588,6 +617,11 @@ void QCocoaWindow::setVisible(bool visible)
              // the window out of this "hidden list".
              [m_view.window orderOut:nil];
  
