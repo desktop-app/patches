@@ -1,0 +1,603 @@
+Subject: [PATCH] Detect D3D11 loss before frames and guard failed resources
+
+Query native removal before onscreen and offscreen frames, classify resource
+failures without treating ordinary allocation errors as device loss, and keep
+failed dynamic buffers and native resources out of upload/copy operations.
+Complete failed readbacks and release their update batches.
+
+Based on Qt 6.11.2 with upstream backports 0064 through 0066.
+
+diff --git a/src/gui/rhi/qrhid3d11.cpp b/src/gui/rhi/qrhid3d11.cpp
+index cb2d12f..e42f011 100644
+--- a/src/gui/rhi/qrhid3d11.cpp
++++ b/src/gui/rhi/qrhid3d11.cpp
+@@ -791,6 +791,19 @@ bool QRhiD3D11::isDeviceLost() const
+     return deviceLost;
+ }
+ 
++bool QRhiD3D11::checkDeviceLost(HRESULT result)
++{
++    if (!deviceLost) {
++        const auto reason = dev ? dev->GetDeviceRemovedReason() : S_OK;
++        deviceLost = FAILED(reason)
++                || result == DXGI_ERROR_DEVICE_REMOVED
++                || result == DXGI_ERROR_DEVICE_RESET;
++        if (deviceLost)
++            qWarning("D3D11 device lost: %s", qPrintable(QSystemError::windowsComString(FAILED(reason) ? reason : result)));
++    }
++    return deviceLost;
++}
++
+ struct QD3D11PipelineCacheDataHeader
+ {
+     quint32 rhiId;
+@@ -1444,7 +1457,7 @@ QRhi::FrameOpResult QRhiD3D11::beginFrame(QRhiSwapChain *swapChain, QRhi::BeginF
+ {
+     Q_UNUSED(flags);
+ 
+-    if (deviceLost)
++    if (checkDeviceLost())
+         return QRhi::FrameOpDeviceLost;
+ 
+     QD3D11SwapChain *swapChainD = QRHI_RES(QD3D11SwapChain, swapChain);
+@@ -1467,6 +1480,10 @@ QRhi::FrameOpResult QRhiD3D11::beginFrame(QRhiSwapChain *swapChain, QRhi::BeginF
+     swapChainD->rt.d.dsv = swapChainD->ds ? swapChainD->ds->dsv : nullptr;
+ 
+     finishActiveReadbacks();
++    if (deviceLost) {
++        contextState.currentSwapChain = nullptr;
++        return QRhi::FrameOpDeviceLost;
++    }
+ 
+     if (swapChainD->timestamps.active[swapChainD->currentTimestampPairIndex]) {
+         double elapsedSec = 0;
+@@ -1492,7 +1509,12 @@ QRhi::FrameOpResult QRhiD3D11::beginFrame(QRhiSwapChain *swapChain, QRhi::BeginF
+ QRhi::FrameOpResult QRhiD3D11::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrameFlags flags)
+ {
+     QD3D11SwapChain *swapChainD = QRHI_RES(QD3D11SwapChain, swapChain);
+-    Q_ASSERT(contextState.currentSwapChain = swapChainD);
++    Q_ASSERT(contextState.currentSwapChain == swapChainD);
++    contextState.currentSwapChain = nullptr;
++    if (checkDeviceLost()) {
++        finishActiveReadbacks();
++        return QRhi::FrameOpDeviceLost;
++    }
+     const int currentFrameSlot = swapChainD->currentFrameSlot;
+ 
+     QD3D11CommandBuffer::Command &cmd(swapChainD->cb.commands.get());
+@@ -1502,6 +1524,10 @@ QRhi::FrameOpResult QRhiD3D11::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
+ 
+     // send all commands to the context
+     executeCommandBuffer(&swapChainD->cb);
++    if (checkDeviceLost()) {
++        finishActiveReadbacks();
++        return QRhi::FrameOpDeviceLost;
++    }
+ 
+     if (swapChainD->sampleDesc.Count > 1) {
+         context->ResolveSubresource(swapChainD->backBufferTex, 0,
+@@ -1547,18 +1573,17 @@ QRhi::FrameOpResult QRhiD3D11::endFrame(QRhiSwapChain *swapChain, QRhi::EndFrame
+     }
+ 
+     swapChainD->frameCount += 1;
+-    contextState.currentSwapChain = nullptr;
+-
+     return QRhi::FrameOpSuccess;
+ }
+ 
+ QRhi::FrameOpResult QRhiD3D11::beginOffscreenFrame(QRhiCommandBuffer **cb, QRhi::BeginFrameFlags flags)
+ {
+     Q_UNUSED(flags);
+-    ofr.active = true;
++    *cb = nullptr;
++    if (checkDeviceLost())
++        return QRhi::FrameOpDeviceLost;
+ 
+     ofr.cbWrapper.resetState();
+-    *cb = &ofr.cbWrapper;
+ 
+     if (rhiFlags.testFlag(QRhi::EnableTimestamps)) {
+         D3D11_QUERY_DESC queryDesc = {};
+@@ -1568,7 +1593,7 @@ QRhi::FrameOpResult QRhiD3D11::beginOffscreenFrame(QRhiCommandBuffer **cb, QRhi:
+             if (FAILED(hr)) {
+                 qWarning("Failed to create timestamp disjoint query: %s",
+                          qPrintable(QSystemError::windowsComString(hr)));
+-                return QRhi::FrameOpError;
++                return checkDeviceLost(hr) ? QRhi::FrameOpDeviceLost : QRhi::FrameOpError;
+             }
+         }
+         queryDesc.Query = D3D11_QUERY_TIMESTAMP;
+@@ -1578,7 +1603,7 @@ QRhi::FrameOpResult QRhiD3D11::beginOffscreenFrame(QRhiCommandBuffer **cb, QRhi:
+                 if (FAILED(hr)) {
+                     qWarning("Failed to create timestamp query: %s",
+                              qPrintable(QSystemError::windowsComString(hr)));
+-                    return QRhi::FrameOpError;
++                    return checkDeviceLost(hr) ? QRhi::FrameOpDeviceLost : QRhi::FrameOpError;
+                 }
+             }
+         }
+@@ -1590,6 +1615,8 @@ QRhi::FrameOpResult QRhiD3D11::beginOffscreenFrame(QRhiCommandBuffer **cb, QRhi:
+     cmd.args.beginFrame.tsDisjointQuery = ofr.tsDisjointQuery ? ofr.tsDisjointQuery : nullptr;
+     cmd.args.beginFrame.swapchainData = nullptr;
+ 
++    ofr.active = true;
++    *cb = &ofr.cbWrapper;
+     return QRhi::FrameOpSuccess;
+ }
+ 
+@@ -1597,6 +1624,10 @@ QRhi::FrameOpResult QRhiD3D11::endOffscreenFrame(QRhi::EndFrameFlags flags)
+ {
+     Q_UNUSED(flags);
+     ofr.active = false;
++    if (checkDeviceLost()) {
++        finishActiveReadbacks();
++        return QRhi::FrameOpDeviceLost;
++    }
+ 
+     QD3D11CommandBuffer::Command &cmd(ofr.cbWrapper.commands.get());
+     cmd.cmd = QD3D11CommandBuffer::Command::EndFrame;
+@@ -1604,9 +1635,15 @@ QRhi::FrameOpResult QRhiD3D11::endOffscreenFrame(QRhi::EndFrameFlags flags)
+     cmd.args.endFrame.tsDisjointQuery = ofr.tsDisjointQuery ? ofr.tsDisjointQuery : nullptr;
+ 
+     executeCommandBuffer(&ofr.cbWrapper);
++    if (checkDeviceLost()) {
++        finishActiveReadbacks();
++        return QRhi::FrameOpDeviceLost;
++    }
+     context->Flush();
+ 
+     finishActiveReadbacks();
++    if (deviceLost)
++        return QRhi::FrameOpDeviceLost;
+ 
+     if (ofr.tsQueries[0]) {
+         quint64 timestamps[2];
+@@ -1633,7 +1670,7 @@ QRhi::FrameOpResult QRhiD3D11::endOffscreenFrame(QRhi::EndFrameFlags flags)
+         }
+     }
+ 
+-    return QRhi::FrameOpSuccess;
++    return checkDeviceLost() ? QRhi::FrameOpDeviceLost : QRhi::FrameOpSuccess;
+ }
+ 
+ static inline DXGI_FORMAT toD3DTextureFormat(QRhiTexture::Format format, QRhiTexture::Flags flags)
+@@ -1895,6 +1932,8 @@ void QRhiD3D11::enqueueResourceUpdates(QRhiCommandBuffer *cb, QRhiResourceUpdate
+         if (u.type == QRhiResourceUpdateBatchPrivate::BufferOp::DynamicUpdate) {
+             QD3D11Buffer *bufD = QRHI_RES(QD3D11Buffer, u.buf);
+             Q_ASSERT(bufD->m_type == QRhiBuffer::Dynamic);
++            if (!bufD->dynBuf || !bufD->buffer)
++                continue;
+             memcpy(bufD->dynBuf + u.offset, u.data.constData(), size_t(u.data.size()));
+             bufD->hasPendingDynamicUpdates = true;
+         } else if (u.type == QRhiResourceUpdateBatchPrivate::BufferOp::StaticUpload) {
+@@ -1920,8 +1959,16 @@ void QRhiD3D11::enqueueResourceUpdates(QRhiCommandBuffer *cb, QRhiResourceUpdate
+         } else if (u.type == QRhiResourceUpdateBatchPrivate::BufferOp::Read) {
+             QD3D11Buffer *bufD = QRHI_RES(QD3D11Buffer, u.buf);
+             if (bufD->m_type == QRhiBuffer::Dynamic) {
+-                u.result->data.resize(u.readSize);
+-                memcpy(u.result->data.data(), bufD->dynBuf + u.offset, size_t(u.readSize));
++                if (bufD->dynBuf && bufD->buffer) {
++                    u.result->data.resize(u.readSize);
++                    memcpy(u.result->data.data(), bufD->dynBuf + u.offset, size_t(u.readSize));
++                } else {
++                    u.result->data.clear();
++                }
++                if (u.result->completed)
++                    u.result->completed();
++            } else if (!bufD->buffer) {
++                u.result->data.clear();
+                 if (u.result->completed)
+                     u.result->completed();
+             } else {
+@@ -1935,8 +1982,12 @@ void QRhiD3D11::enqueueResourceUpdates(QRhiCommandBuffer *cb, QRhiResourceUpdate
+                 desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                 HRESULT hr = dev->CreateBuffer(&desc, nullptr, &readback.stagingBuf);
+                 if (FAILED(hr)) {
++                    checkDeviceLost(hr);
+                     qWarning("Failed to create buffer: %s",
+                         qPrintable(QSystemError::windowsComString(hr)));
++                    u.result->data.clear();
++                    if (u.result->completed)
++                        u.result->completed();
+                     continue;
+                 }
+ 
+@@ -2054,6 +2105,12 @@ void QRhiD3D11::enqueueResourceUpdates(QRhiCommandBuffer *cb, QRhiResourceUpdate
+                 if (format == QRhiTexture::UnknownFormat)
+                     continue;
+             }
++            if (!src) {
++                u.result->data.clear();
++                if (u.result->completed)
++                    u.result->completed();
++                continue;
++            }
+             quint32 byteSize = 0;
+             quint32 bpl = 0;
+             textureFormatInfo(format, rect.size(), &bpl, &byteSize, nullptr);
+@@ -2070,9 +2127,13 @@ void QRhiD3D11::enqueueResourceUpdates(QRhiCommandBuffer *cb, QRhiResourceUpdate
+             ID3D11Texture2D *stagingTex;
+             HRESULT hr = dev->CreateTexture2D(&desc, nullptr, &stagingTex);
+             if (FAILED(hr)) {
++                checkDeviceLost(hr);
+                 qWarning("Failed to create readback staging texture: %s",
+                     qPrintable(QSystemError::windowsComString(hr)));
+-                return;
++                u.result->data.clear();
++                if (u.result->completed)
++                    u.result->completed();
++                continue;
+             }
+ 
+             QD3D11CommandBuffer::Command &cmd(cbD->commands.get());
+@@ -2124,7 +2185,8 @@ void QRhiD3D11::finishActiveReadbacks()
+         readback.result->pixelSize = readback.pixelSize;
+ 
+         D3D11_MAPPED_SUBRESOURCE mp;
+-        HRESULT hr = context->Map(readback.stagingTex, 0, D3D11_MAP_READ, 0, &mp);
++        HRESULT hr = deviceLost ? DXGI_ERROR_DEVICE_REMOVED
++                                : context->Map(readback.stagingTex, 0, D3D11_MAP_READ, 0, &mp);
+         if (SUCCEEDED(hr)) {
+             readback.result->data.resize(int(readback.byteSize));
+             // nothing says the rows are tightly packed in the texture, must take
+@@ -2138,6 +2200,8 @@ void QRhiD3D11::finishActiveReadbacks()
+             }
+             context->Unmap(readback.stagingTex, 0);
+         } else {
++            checkDeviceLost(hr);
++            readback.result->data.clear();
+             qWarning("Failed to map readback staging texture: %s",
+                 qPrintable(QSystemError::windowsComString(hr)));
+         }
+@@ -2154,12 +2218,15 @@ void QRhiD3D11::finishActiveReadbacks()
+         const QRhiD3D11::BufferReadback &readback(activeBufferReadbacks[i]);
+ 
+         D3D11_MAPPED_SUBRESOURCE mp;
+-        HRESULT hr = context->Map(readback.stagingBuf, 0, D3D11_MAP_READ, 0, &mp);
++        HRESULT hr = deviceLost ? DXGI_ERROR_DEVICE_REMOVED
++                                : context->Map(readback.stagingBuf, 0, D3D11_MAP_READ, 0, &mp);
+         if (SUCCEEDED(hr)) {
+             readback.result->data.resize(int(readback.byteSize));
+             memcpy(readback.result->data.data(), mp.pData, readback.byteSize);
+             context->Unmap(readback.stagingBuf, 0);
+         } else {
++            checkDeviceLost(hr);
++            readback.result->data.clear();
+             qWarning("Failed to map readback staging texture: %s",
+                 qPrintable(QSystemError::windowsComString(hr)));
+         }
+@@ -2664,7 +2731,7 @@ void QRhiD3D11::updateShaderResourceBindings(QD3D11ShaderResourceBindings *srbD,
+ 
+ void QRhiD3D11::executeBufferHostWrites(QD3D11Buffer *bufD)
+ {
+-    if (!bufD->hasPendingDynamicUpdates || bufD->m_size < 1)
++    if (!bufD->hasPendingDynamicUpdates || bufD->m_size < 1 || !bufD->buffer || !bufD->dynBuf)
+         return;
+ 
+     Q_ASSERT(bufD->m_type == QRhiBuffer::Dynamic);
+@@ -2675,6 +2742,7 @@ void QRhiD3D11::executeBufferHostWrites(QD3D11Buffer *bufD)
+         memcpy(mp.pData, bufD->dynBuf, bufD->m_size);
+         context->Unmap(bufD->buffer, 0);
+     } else {
++        checkDeviceLost(hr);
+         qWarning("Failed to map buffer: %s",
+             qPrintable(QSystemError::windowsComString(hr)));
+     }
+@@ -2925,7 +2993,7 @@ void QRhiD3D11::executeCommandBuffer(QD3D11CommandBuffer *cbD)
+     // Prevents multiple identical OMSetRenderTargetsAndUnorderedAccessViews calls.
+     RenderTargetUavUpdateState rtUavState;
+ 
+-    for (auto it = cbD->commands.cbegin(), end = cbD->commands.cend(); it != end; ++it) {
++    for (auto it = cbD->commands.cbegin(), end = cbD->commands.cend(); it != end && !deviceLost; ++it) {
+         const QD3D11CommandBuffer::Command &cmd(*it);
+         switch (cmd.cmd) {
+         case QD3D11CommandBuffer::Command::BeginFrame:
+@@ -2967,14 +3035,15 @@ void QRhiD3D11::executeCommandBuffer(QD3D11CommandBuffer *cbD)
+             QD3D11RenderTargetData *rtD = rtData(cmd.args.clear.rt);
+             if (cmd.args.clear.mask & QD3D11CommandBuffer::Command::Color) {
+                 for (int i = 0; i < rtD->colorAttCount; ++i)
+-                    context->ClearRenderTargetView(rtD->rtv[i], cmd.args.clear.c);
++                    if (rtD->rtv[i])
++                        context->ClearRenderTargetView(rtD->rtv[i], cmd.args.clear.c);
+             }
+             uint ds = 0;
+             if (cmd.args.clear.mask & QD3D11CommandBuffer::Command::Depth)
+                 ds |= D3D11_CLEAR_DEPTH;
+             if (cmd.args.clear.mask & QD3D11CommandBuffer::Command::Stencil)
+                 ds |= D3D11_CLEAR_STENCIL;
+-            if (ds)
++            if (ds && rtD->dsv)
+                 context->ClearDepthStencilView(rtD->dsv, ds, cmd.args.clear.d, UINT8(cmd.args.clear.s));
+         }
+             break;
+@@ -3081,18 +3150,23 @@ void QRhiD3D11::executeCommandBuffer(QD3D11CommandBuffer *cbD)
+             }
+             break;
+         case QD3D11CommandBuffer::Command::CopySubRes:
++            if (!cmd.args.copySubRes.dst || !cmd.args.copySubRes.src)
++                break;
+             context->CopySubresourceRegion(cmd.args.copySubRes.dst, cmd.args.copySubRes.dstSubRes,
+                                            cmd.args.copySubRes.dstX, cmd.args.copySubRes.dstY, cmd.args.copySubRes.dstZ,
+                                            cmd.args.copySubRes.src, cmd.args.copySubRes.srcSubRes,
+                                            cmd.args.copySubRes.hasSrcBox ? &cmd.args.copySubRes.srcBox : nullptr);
+             break;
+         case QD3D11CommandBuffer::Command::ResolveSubRes:
++            if (!cmd.args.resolveSubRes.dst || !cmd.args.resolveSubRes.src)
++                break;
+             context->ResolveSubresource(cmd.args.resolveSubRes.dst, cmd.args.resolveSubRes.dstSubRes,
+                                         cmd.args.resolveSubRes.src, cmd.args.resolveSubRes.srcSubRes,
+                                         cmd.args.resolveSubRes.format);
+             break;
+         case QD3D11CommandBuffer::Command::GenMip:
+-            context->GenerateMips(cmd.args.genMip.srv);
++            if (cmd.args.genMip.srv)
++                context->GenerateMips(cmd.args.genMip.srv);
+             break;
+         case QD3D11CommandBuffer::Command::DebugMarkBegin:
+             annotations->BeginEvent(reinterpret_cast<LPCWSTR>(QString::fromLatin1(cmd.args.debugMark.s).utf16()));
+@@ -3187,6 +3261,7 @@ bool QD3D11Buffer::create()
+     QRHI_RES_RHI(QRhiD3D11);
+     HRESULT hr = rhiD->dev->CreateBuffer(&desc, nullptr, &buffer);
+     if (FAILED(hr)) {
++        rhiD->checkDeviceLost(hr);
+         qWarning("Failed to create buffer: %s",
+             qPrintable(QSystemError::windowsComString(hr)));
+         return false;
+@@ -3225,8 +3300,11 @@ char *QD3D11Buffer::beginFullDynamicBufferUpdateForCurrentFrame()
+     Q_ASSERT(m_type == Dynamic);
+     D3D11_MAPPED_SUBRESOURCE mp;
+     QRHI_RES_RHI(QRhiD3D11);
++    if (!buffer || rhiD->deviceLost)
++        return nullptr;
+     HRESULT hr = rhiD->context->Map(buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mp);
+     if (FAILED(hr)) {
++        rhiD->checkDeviceLost(hr);
+         qWarning("Failed to map buffer: %s",
+             qPrintable(QSystemError::windowsComString(hr)));
+         return nullptr;
+@@ -3237,7 +3315,8 @@ char *QD3D11Buffer::beginFullDynamicBufferUpdateForCurrentFrame()
+ void QD3D11Buffer::endFullDynamicBufferUpdateForCurrentFrame()
+ {
+     QRHI_RES_RHI(QRhiD3D11);
+-    rhiD->context->Unmap(buffer, 0);
++    if (buffer)
++        rhiD->context->Unmap(buffer, 0);
+ }
+ 
+ ID3D11UnorderedAccessView *QD3D11Buffer::unorderedAccessView(quint32 offset)
+@@ -3258,6 +3337,7 @@ ID3D11UnorderedAccessView *QD3D11Buffer::unorderedAccessView(quint32 offset)
+     ID3D11UnorderedAccessView *uav = nullptr;
+     HRESULT hr = rhiD->dev->CreateUnorderedAccessView(buffer, &desc, &uav);
+     if (FAILED(hr)) {
++        rhiD->checkDeviceLost(hr);
+         qWarning("Failed to create UAV: %s",
+             qPrintable(QSystemError::windowsComString(hr)));
+         return nullptr;
+@@ -3328,6 +3408,7 @@ bool QD3D11RenderBuffer::create()
+         desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+         HRESULT hr = rhiD->dev->CreateTexture2D(&desc, nullptr, &tex);
+         if (FAILED(hr)) {
++            rhiD->checkDeviceLost(hr);
+             qWarning("Failed to create color renderbuffer: %s",
+                 qPrintable(QSystemError::windowsComString(hr)));
+             return false;
+@@ -3338,6 +3419,7 @@ bool QD3D11RenderBuffer::create()
+                                                           : D3D11_RTV_DIMENSION_TEXTURE2D;
+         hr = rhiD->dev->CreateRenderTargetView(tex, &rtvDesc, &rtv);
+         if (FAILED(hr)) {
++            rhiD->checkDeviceLost(hr);
+             qWarning("Failed to create rtv: %s",
+                 qPrintable(QSystemError::windowsComString(hr)));
+             return false;
+@@ -3348,6 +3430,7 @@ bool QD3D11RenderBuffer::create()
+         desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+         HRESULT hr = rhiD->dev->CreateTexture2D(&desc, nullptr, &tex);
+         if (FAILED(hr)) {
++            rhiD->checkDeviceLost(hr);
+             qWarning("Failed to create depth-stencil buffer: %s",
+                 qPrintable(QSystemError::windowsComString(hr)));
+             return false;
+@@ -3358,6 +3441,7 @@ bool QD3D11RenderBuffer::create()
+                                                           : D3D11_DSV_DIMENSION_TEXTURE2D;
+         hr = rhiD->dev->CreateDepthStencilView(tex, &dsvDesc, &dsv);
+         if (FAILED(hr)) {
++            rhiD->checkDeviceLost(hr);
+             qWarning("Failed to create dsv: %s",
+                 qPrintable(QSystemError::windowsComString(hr)));
+             return false;
+@@ -3609,6 +3693,7 @@ bool QD3D11Texture::finishCreate()
+ 
+     HRESULT hr = rhiD->dev->CreateShaderResourceView(textureResource(), &srvDesc, &srv);
+     if (FAILED(hr)) {
++        rhiD->checkDeviceLost(hr);
+         qWarning("Failed to create srv: %s",
+             qPrintable(QSystemError::windowsComString(hr)));
+         return false;
+@@ -3662,6 +3747,7 @@ bool QD3D11Texture::create()
+ 
+         HRESULT hr = rhiD->dev->CreateTexture1D(&desc, nullptr, &tex1D);
+         if (FAILED(hr)) {
++            rhiD->checkDeviceLost(hr);
+             qWarning("Failed to create 1D texture: %s",
+                 qPrintable(QSystemError::windowsComString(hr)));
+             return false;
+@@ -3683,10 +3769,9 @@ bool QD3D11Texture::create()
+ 
+         HRESULT hr = rhiD->dev->CreateTexture2D(&desc, nullptr, &tex);
+         if (FAILED(hr)) {
++            rhiD->checkDeviceLost(hr);
+             qWarning("Failed to create 2D texture: %s",
+                 qPrintable(QSystemError::windowsComString(hr)));
+-            if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+-                rhiD->deviceLost = true;
+             return false;
+         }
+         if (!m_objectName.isEmpty())
+@@ -3704,10 +3789,9 @@ bool QD3D11Texture::create()
+ 
+         HRESULT hr = rhiD->dev->CreateTexture3D(&desc, nullptr, &tex3D);
+         if (FAILED(hr)) {
++            rhiD->checkDeviceLost(hr);
+             qWarning("Failed to create 3D texture: %s",
+                 qPrintable(QSystemError::windowsComString(hr)));
+-            if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+-                rhiD->deviceLost = true;
+             return false;
+         }
+         if (!m_objectName.isEmpty())
+@@ -3784,6 +3868,7 @@ ID3D11UnorderedAccessView *QD3D11Texture::unorderedAccessViewForLevel(int level)
+     ID3D11UnorderedAccessView *uav = nullptr;
+     HRESULT hr = rhiD->dev->CreateUnorderedAccessView(textureResource(), &desc, &uav);
+     if (FAILED(hr)) {
++        rhiD->checkDeviceLost(hr);
+         qWarning("Failed to create UAV: %s",
+             qPrintable(QSystemError::windowsComString(hr)));
+         return nullptr;
+@@ -3908,6 +3993,7 @@ bool QD3D11Sampler::create()
+     QRHI_RES_RHI(QRhiD3D11);
+     HRESULT hr = rhiD->dev->CreateSamplerState(&desc, &samplerState);
+     if (FAILED(hr)) {
++        rhiD->checkDeviceLost(hr);
+         qWarning("Failed to create sampler state: %s",
+             qPrintable(QSystemError::windowsComString(hr)));
+         return false;
+@@ -4099,6 +4185,7 @@ bool QD3D11TextureRenderTarget::create()
+             }
+             HRESULT hr = rhiD->dev->CreateRenderTargetView(texD->textureResource(), &rtvDesc, &rtv[attIndex]);
+             if (FAILED(hr)) {
++                rhiD->checkDeviceLost(hr);
+                 qWarning("Failed to create rtv: %s",
+                     qPrintable(QSystemError::windowsComString(hr)));
+                 return false;
+@@ -4151,6 +4238,7 @@ bool QD3D11TextureRenderTarget::create()
+             }
+             HRESULT hr = rhiD->dev->CreateDepthStencilView(depthTexD->tex, &dsvDesc, &dsv);
+             if (FAILED(hr)) {
++                rhiD->checkDeviceLost(hr);
+                 qWarning("Failed to create dsv: %s",
+                     qPrintable(QSystemError::windowsComString(hr)));
+                 return false;
+@@ -4689,6 +4777,7 @@ bool QD3D11GraphicsPipeline::create()
+     rastDesc.MultisampleEnable = rhiD->effectiveSampleDesc(m_sampleCount).Count > 1;
+     HRESULT hr = rhiD->dev->CreateRasterizerState(&rastDesc, &rastState);
+     if (FAILED(hr)) {
++        rhiD->checkDeviceLost(hr);
+         qWarning("Failed to create rasterizer state: %s",
+             qPrintable(QSystemError::windowsComString(hr)));
+         return false;
+@@ -4713,6 +4802,7 @@ bool QD3D11GraphicsPipeline::create()
+     }
+     hr = rhiD->dev->CreateDepthStencilState(&dsDesc, &dsState);
+     if (FAILED(hr)) {
++        rhiD->checkDeviceLost(hr);
+         qWarning("Failed to create depth-stencil state: %s",
+             qPrintable(QSystemError::windowsComString(hr)));
+         return false;
+@@ -4740,6 +4830,7 @@ bool QD3D11GraphicsPipeline::create()
+     }
+     hr = rhiD->dev->CreateBlendState(&blendDesc, &blendState);
+     if (FAILED(hr)) {
++        rhiD->checkDeviceLost(hr);
+         qWarning("Failed to create blend state: %s",
+             qPrintable(QSystemError::windowsComString(hr)));
+         return false;
+@@ -4802,6 +4893,7 @@ bool QD3D11GraphicsPipeline::create()
+             case QRhiShaderStage::Vertex:
+                 hr = rhiD->dev->CreateVertexShader(bytecode.constData(), SIZE_T(bytecode.size()), nullptr, &vs.shader);
+                 if (FAILED(hr)) {
++                    rhiD->checkDeviceLost(hr);
+                     qWarning("Failed to create vertex shader: %s",
+                         qPrintable(QSystemError::windowsComString(hr)));
+                     return false;
+@@ -4814,6 +4906,7 @@ bool QD3D11GraphicsPipeline::create()
+             case QRhiShaderStage::TessellationControl:
+                 hr = rhiD->dev->CreateHullShader(bytecode.constData(), SIZE_T(bytecode.size()), nullptr, &hs.shader);
+                 if (FAILED(hr)) {
++                    rhiD->checkDeviceLost(hr);
+                     qWarning("Failed to create hull shader: %s",
+                         qPrintable(QSystemError::windowsComString(hr)));
+                     return false;
+@@ -4825,6 +4918,7 @@ bool QD3D11GraphicsPipeline::create()
+             case QRhiShaderStage::TessellationEvaluation:
+                 hr = rhiD->dev->CreateDomainShader(bytecode.constData(), SIZE_T(bytecode.size()), nullptr, &ds.shader);
+                 if (FAILED(hr)) {
++                    rhiD->checkDeviceLost(hr);
+                     qWarning("Failed to create domain shader: %s",
+                         qPrintable(QSystemError::windowsComString(hr)));
+                     return false;
+@@ -4836,6 +4930,7 @@ bool QD3D11GraphicsPipeline::create()
+             case QRhiShaderStage::Geometry:
+                 hr = rhiD->dev->CreateGeometryShader(bytecode.constData(), SIZE_T(bytecode.size()), nullptr, &gs.shader);
+                 if (FAILED(hr)) {
++                    rhiD->checkDeviceLost(hr);
+                     qWarning("Failed to create geometry shader: %s",
+                         qPrintable(QSystemError::windowsComString(hr)));
+                     return false;
+@@ -4847,6 +4942,7 @@ bool QD3D11GraphicsPipeline::create()
+             case QRhiShaderStage::Fragment:
+                 hr = rhiD->dev->CreatePixelShader(bytecode.constData(), SIZE_T(bytecode.size()), nullptr, &fs.shader);
+                 if (FAILED(hr)) {
++                    rhiD->checkDeviceLost(hr);
+                     qWarning("Failed to create pixel shader: %s",
+                         qPrintable(QSystemError::windowsComString(hr)));
+                     return false;
+@@ -4902,6 +4998,7 @@ bool QD3D11GraphicsPipeline::create()
+             hr = rhiD->dev->CreateInputLayout(inputDescs.constData(), UINT(inputDescs.count()),
+                                               vsByteCode, SIZE_T(vsByteCode.size()), &inputLayout);
+             if (FAILED(hr)) {
++                rhiD->checkDeviceLost(hr);
+                 qWarning("Failed to create input layout: %s",
+                     qPrintable(QSystemError::windowsComString(hr)));
+                 return false;
+@@ -4967,6 +5064,7 @@ bool QD3D11ComputePipeline::create()
+ 
+         HRESULT hr = rhiD->dev->CreateComputeShader(bytecode.constData(), SIZE_T(bytecode.size()), nullptr, &cs.shader);
+         if (FAILED(hr)) {
++            rhiD->checkDeviceLost(hr);
+             qWarning("Failed to create compute shader: %s",
+                 qPrintable(QSystemError::windowsComString(hr)));
+             return false;
+@@ -5015,6 +5113,7 @@ bool QD3D11SwapChainTimestamps::prepare(QRhiD3D11 *rhiD)
+             queryDesc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
+             HRESULT hr = rhiD->dev->CreateQuery(&queryDesc, &disjointQuery[i]);
+             if (FAILED(hr)) {
++                rhiD->checkDeviceLost(hr);
+                 qWarning("Failed to create timestamp disjoint query: %s",
+                          qPrintable(QSystemError::windowsComString(hr)));
+                 return false;
+@@ -5026,6 +5125,7 @@ bool QD3D11SwapChainTimestamps::prepare(QRhiD3D11 *rhiD)
+             if (!query[idx]) {
+                 HRESULT hr = rhiD->dev->CreateQuery(&queryDesc, &query[idx]);
+                 if (FAILED(hr)) {
++                    rhiD->checkDeviceLost(hr);
+                     qWarning("Failed to create timestamp query: %s",
+                              qPrintable(QSystemError::windowsComString(hr)));
+                     return false;
+@@ -5236,6 +5336,7 @@ bool QD3D11SwapChain::newColorBuffer(const QSize &size, DXGI_FORMAT format, DXGI
+     QRHI_RES_RHI(QRhiD3D11);
+     HRESULT hr = rhiD->dev->CreateTexture2D(&desc, nullptr, tex);
+     if (FAILED(hr)) {
++        rhiD->checkDeviceLost(hr);
+         qWarning("Failed to create color buffer texture: %s",
+             qPrintable(QSystemError::windowsComString(hr)));
+         return false;
+@@ -5246,6 +5347,7 @@ bool QD3D11SwapChain::newColorBuffer(const QSize &size, DXGI_FORMAT format, DXGI
+     rtvDesc.ViewDimension = sampleDesc.Count > 1 ? D3D11_RTV_DIMENSION_TEXTURE2DMS : D3D11_RTV_DIMENSION_TEXTURE2D;
+     hr = rhiD->dev->CreateRenderTargetView(*tex, &rtvDesc, rtv);
+     if (FAILED(hr)) {
++        rhiD->checkDeviceLost(hr);
+         qWarning("Failed to create color buffer rtv: %s",
+             qPrintable(QSystemError::windowsComString(hr)));
+         (*tex)->Release();
+diff --git a/src/gui/rhi/qrhid3d11_p.h b/src/gui/rhi/qrhid3d11_p.h
+index 7b7fce8..e01c67f 100644
+--- a/src/gui/rhi/qrhid3d11_p.h
++++ b/src/gui/rhi/qrhid3d11_p.h
+@@ -796,6 +796,7 @@ public:
+     void setQueueSubmitParams(QRhiNativeHandles *params) override;
+     void releaseCachedResources() override;
+     bool isDeviceLost() const override;
++    bool checkDeviceLost(HRESULT result = S_OK);
+ 
+     QByteArray pipelineCacheData() override;
+     void setPipelineCacheData(const QByteArray &data) override;
