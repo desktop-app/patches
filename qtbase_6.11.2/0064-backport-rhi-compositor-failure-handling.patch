@@ -1,0 +1,78 @@
+From 55509687f3ac5a70deb7055dcf91f83cb8c62207 Mon Sep 17 00:00:00 2001
+From: Robert Griebl <robert.griebl@qt.io>
+Date: Sat, 1 Aug 2026 16:40:31 +0200
+Subject: [PATCH] backingstore: Do not ignore failures in the RHI compositor
+
+Three return values were discarded in flush():
+
+- The first createOrResize(), even though the identical call a few
+  lines below is checked. On failure the buffers have been released
+  and there is nothing left to render into.
+- m_texture->create(). Uploading into a texture that failed to be
+  created hands a null native resource to the 3D API.
+- endFrame(), which is where the D3D backends detect a lost device
+  in Present().
+
+Map these to FlushFailedDueToLostDevice or FlushFailed so that
+QWidgetRepaintManager reaches its existing recovery path, which
+calls graphicsDeviceReportedLost(). On D3D11 that path could not be
+reached at all until now.
+
+Task-number: QTBUG-148717
+Pick-to: 6.8
+Change-Id: I5c5ada75e42b687c7d1f083829330ec13d1d911b
+Reviewed-by: Laszlo Agocs <laszlo.agocs@qt.io>
+(cherry picked from commit 4300b7651deecee0722b647160a297f972b14727)
+Reviewed-by: Qt Cherry-pick Bot <cherrypick_bot@qt-project.org>
+(cherry picked from commit 38c35d0062bbc11dca840bb7ae83c4a982e51e4b)
+
+Backport: Rebased on the existing compositor and dirty-region upload patches.
+The Windows 7 series retains the corresponding checks in its custom clearSurface path.
+
+---
+diff --git a/src/gui/painting/qbackingstoredefaultcompositor.cpp b/src/gui/painting/qbackingstoredefaultcompositor.cpp
+index 3cd0e0f..bf9a5b7 100644
+--- a/src/gui/painting/qbackingstoredefaultcompositor.cpp
++++ b/src/gui/painting/qbackingstoredefaultcompositor.cpp
+@@ -105,7 +105,12 @@ QRhiTexture *QBackingStoreDefaultCompositor::toTexture(const QImage &sourceImage
+             m_texture.reset(rhi->newTexture(QRhiTexture::RGBA8, image.size()));
+         else
+             m_texture->setPixelSize(image.size());
+-        m_texture->create();
++        if (!m_texture->create()) {
++            // Typically a lost device. Make sure to reset the null native resource
++            qWarning("QBackingStoreDefaultCompositor: Failed to create backing store texture");
++            m_texture.reset();
++            return nullptr;
++        }
+         resourceUpdates->uploadTexture(m_texture.get(), image);
+     } else {
+         const QRect imageRect = image.rect();
+@@ -520,8 +525,12 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+ 
+     QWindowPrivate::get(window)->lastComposeTime.start();
+ 
+-    if (swapchain->currentPixelSize() != swapchain->surfacePixelSize())
+-        swapchain->createOrResize();
++    if (swapchain->currentPixelSize() != swapchain->surfacePixelSize()) {
++        if (!swapchain->createOrResize()) {
++            return rhi->isDeviceLost() ? QPlatformBackingStore::FlushFailedDueToLostDevice
++                                       : QPlatformBackingStore::FlushFailed;
++        }
++    }
+ 
+     // Start recording a new frame.
+     QRhi::FrameOpResult frameResult = rhi->beginFrame(swapchain);
+@@ -741,7 +750,11 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+     if (gotNativeTexture)
+         backingStore->nativeTextureWasComposited(backingStoreTextureUsed ? cb : nullptr);
+ 
+-    rhi->endFrame(swapchain);
++    const QRhi::FrameOpResult endResult = rhi->endFrame(swapchain);
++    if (endResult == QRhi::FrameOpDeviceLost)
++        return QPlatformBackingStore::FlushFailedDueToLostDevice;
++    if (endResult != QRhi::FrameOpSuccess)
++        return QPlatformBackingStore::FlushFailed;
+ 
+     return QPlatformBackingStore::FlushSuccess;
+ }
