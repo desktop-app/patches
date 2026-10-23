@@ -393,3 +393,91 @@ index 27fcac48..4cdcbdcf 100644
        }
      }
    }
+diff --git a/libheif/context.cc b/libheif/context.cc
+index 04e6566b..f9c6d781 100644
+--- a/libheif/context.cc
++++ b/libheif/context.cc
+@@ -1507,6 +1507,11 @@ Result<std::shared_ptr<HeifPixelImage>> HeifContext::decode_image(heif_item_id I
+   DecodeTraversalState decode_state;
+   decode_state.processed_ids = std::move(processed_ids);
+ 
++  // The nesting depth bounds the native stack use of the decode recursion, so
++  // it applies even when the configurable security limits are disabled, like
++  // MAX_BOX_NESTING_LEVEL does for the box parser.
++  decode_state.max_nesting_level = MAX_DECODE_NESTING_LEVEL;
++
+   const heif_security_limits* limits = get_security_limits();
+   if (limits && limits->max_items != 0) {
+     // Bound total sub-image decodes at a modest multiple of max_items. A
+diff --git a/libheif/image-items/image_item.cc b/libheif/image-items/image_item.cc
+index d0b75292..9736635f 100644
+--- a/libheif/image-items/image_item.cc
++++ b/libheif/image-items/image_item.cc
+@@ -1143,6 +1143,21 @@ Result<std::shared_ptr<HeifPixelImage>> ImageItem::decode_image(const heif_decod
+                  "'iref' has cyclic references"};
+   }
+ 
++  // Bound the depth of the decode recursion. decode_state is copied by value at
++  // every hop, so nesting_level counts the image items on the path from the
++  // top-level decode to here, this item included. The cycle check and the
++  // decode budget above and below do not bound the depth: a linear chain of
++  // derived items that stays within max_items is acyclic and decodes each item
++  // once, yet recurses once per item and overflows the native stack of the
++  // decoding thread.
++  decode_state.nesting_level++;
++  if (decode_state.max_nesting_level != 0 &&
++      decode_state.nesting_level > decode_state.max_nesting_level) {
++    return Error{heif_error_Invalid_input,
++                 heif_suberror_Security_limit_exceeded,
++                 "Image items are nested too deeply"};
++  }
++
+   // Bound the total number of sub-image decodes for this top-level decode.
+   // Derived images (grid/iovl/iden) can reference the same base image through
+   // indirection, and because the cycle-detection set is per-path, a shared
+diff --git a/libheif/security_limits.h b/libheif/security_limits.h
+index ec13dad0..906d2659 100644
+--- a/libheif/security_limits.h
++++ b/libheif/security_limits.h
+@@ -52,6 +52,17 @@ static const uint32_t MAX_OVERLAY_NESTING_LEVEL = 3;
+ // change and cannot go into a point release).
+ static const uint32_t MAX_OVERLAY_IMAGES = 5;
+ 
++// Maximum number of image items nested along a single decode path: the
++// top-level item, the derived images (grid, iovl, iden) below it and the alpha
++// auxiliaries followed on the way. Every level is one more recursive
++// ImageItem::decode_image() frame on the native stack, so a long acyclic chain
++// of derived items (for example 'iden' -> 'iden' -> ... within max_items) that
++// passes the cycle and decode-count checks still overflows the stack of the
++// decoding thread. MIAF allows at most six derivation levels (ISO/IEC 23000-22,
++// clause 7.3.11), so this is a structural sanity limit, not a common-case
++// constraint.
++static const uint32_t MAX_DECODE_NESTING_LEVEL = 20;
++
+ // Factor applied to max_items to bound the total number of sub-image decode
+ // operations triggered by a single top-level decode. Derived images (grid,
+ // iovl, iden) can reference the same base image through indirection, and the
+@@ -69,9 +80,10 @@ static const uint32_t MAX_DERIVED_IMAGE_DECODE_FACTOR = 2;
+ // top-level decode. It is copied by value at every hop, which gives the two
+ // members opposite (and intended) sharing semantics:
+ //
+-//   - processed_ids and overlay_nesting are plain values, so each recursion
+-//     branch gets its own copy. processed_ids is a per-path cycle guard;
+-//     overlay_nesting counts the overlays nested along the current path.
++//   - processed_ids, overlay_nesting and nesting_level are plain values, so
++//     each recursion branch gets its own copy. processed_ids is a per-path
++//     cycle guard; overlay_nesting counts the overlays nested along the current
++//     path; nesting_level counts the image items on the current path.
+ //
+ //   - decode_count is a shared_ptr to an atomic, so every copy (including the
+ //     copies handed to parallel tile-decode threads) shares one global counter
+@@ -86,6 +98,9 @@ struct DecodeTraversalState
+   uint32_t overlay_nesting = 0;         // number of overlays on the path to here
+   uint32_t max_overlay_nesting = 0;     // 0 == unlimited
+ 
++  uint32_t nesting_level = 0;           // number of image items on the path to here
++  uint32_t max_nesting_level = 0;       // 0 == unlimited
++
+   std::shared_ptr<std::atomic<uint32_t>> decode_count;
+   uint32_t max_decodes = 0;             // 0 == unlimited
+ 
