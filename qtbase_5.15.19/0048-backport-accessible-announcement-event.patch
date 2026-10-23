@@ -1,0 +1,332 @@
+diff --git a/src/gui/accessible/qaccessible.cpp b/src/gui/accessible/qaccessible.cpp
+index 464383c..23ea7cd 100644
+--- a/src/gui/accessible/qaccessible.cpp
++++ b/src/gui/accessible/qaccessible.cpp
+@@ -207,6 +207,7 @@ Q_LOGGING_CATEGORY(lcAccessibilityCore, "qt.accessibility.core");
+     \value ActionChanged                    An action has been changed.
+     \value ActiveDescendantChanged
+     \value Alert                            A system alert (e.g., a message from a QMessageBox)
++    \value [since 6.8] Announcement         The announcement of a message is requested.
+     \value AttributeChanged
+     \value ContextHelpEnd                   Context help (QWhatsThis) for an object is finished.
+     \value ContextHelpStart                 Context help (QWhatsThis) for an object is initiated.
+@@ -432,6 +433,30 @@ Q_LOGGING_CATEGORY(lcAccessibilityCore, "qt.accessibility.core");
+     \sa QAccessibleTextInterface
+ */
+ 
++/*! \enum QAccessible::AnnouncementPoliteness
++    This enum describes the priority for announcements used by the
++    \l QAccessibleAnnouncementEvent.
++    \since 6.8
++
++    With \a QAccessible::AnouncementPoliteness::Polite, assistive technologies
++    should announce the message at the next graceful opportunity such as at the
++    end of speaking the current sentence or when the user pauses typing.
++
++    When specifying \a QAccessible::AnouncementPoliteness::Assertive, assistive
++    technologies should notify the user immediately.
++
++    Because an interruption might disorient users or cause them to not complete
++    their current task, \a QAccessible::AnouncementPoliteness::Assertive should
++    not be used unless the interruption is imperative.
++
++    \value Polite      The announcement has normal priority.
++    \value Assertive   The announcement has high priority and should notify
++                       the user immediately, even if that means interrupting the user's
++                       current task.
++
++    \sa QAccessibleAnnouncementEvent
++*/
++
+ 
+ /*!
+     \enum QAccessible::InterfaceType
+@@ -1560,6 +1585,58 @@ QAccessibleTableModelChangeEvent::~QAccessibleTableModelChangeEvent()
+ {
+     // must be empty until ### Qt 6
+ }
++
++/*!
++    \since 6.8
++    \class QAccessibleAnnouncementEvent
++    \ingroup accessibility
++    \inmodule QtGui
++
++    \brief The QAccessibleAnnouncementEvent is used to request the announcement
++    of a given message by assistive technologies.
++
++    This class is used with \l QAccessible::updateAccessibility().
++*/
++
++/*! \fn QAccessibleAnnouncementEvent::QAccessibleAnnouncementEvent(QObject *object, const QString &message)
++
++    Constructs a new QAccessibleAnnouncementEvent event for \a object
++    to request the announcement of \a message with politeness
++    \l QAccessible::AnnouncementPoliteness::Polite.
++
++    \l QAccessibleAnnouncementEvent::setPoliteness can be used to adjust the politeness.
++*/
++
++/*! \fn QAccessibleAnnouncementEvent::QAccessibleAnnouncementEvent(QAccessibleInterface *iface, const QString &message)
++
++    Constructs a new QAccessibleAnnouncementEvent event for \a iface
++    to request the announcement of \a message with politeness
++    \l QAccessible::AnnouncementPoliteness::Polite.
++
++    \l QAccessibleAnnouncementEvent::setPoliteness can be used to adjust the politeness.
++*/
++
++/*! \fn QString QAccessibleAnnouncementEvent::message() const
++
++    Returns the message.
++*/
++
++/*! \fn QAccessible::AnnouncementPoliteness QAccessibleAnnouncementEvent::politeness() const
++
++    Returns the politeness.
++*/
++
++/*! \fn void QAccessibleAnnouncementEvent::setPoliteness(QAccessible::AnnouncementPoliteness politeness)
++
++    Sets the politeness with which the announcement will be requested to \a politeness.
++*/
++
++/*!
++    \internal
++*/
++QAccessibleAnnouncementEvent::~QAccessibleAnnouncementEvent()
++{
++}
+ /*!
+     \class QAccessibleTextCursorEvent
+     \ingroup accessibility
+diff --git a/src/gui/accessible/qaccessible.h b/src/gui/accessible/qaccessible.h
+index 35e5591..93f74e1 100644
+--- a/src/gui/accessible/qaccessible.h
++++ b/src/gui/accessible/qaccessible.h
+@@ -62,6 +62,9 @@
+ // Patch: Backported the PositionInSet/SizeOfSet accessibility attributes.
+ #define QT_ACCESSIBLE_SET_POSITION_ATTRIBUTES 1
+ 
++// Patch: Backported QAccessibleAnnouncementEvent from Qt 6.8.
++#define QT_ACCESSIBLE_ANNOUNCEMENT_EVENT 1
++
+ QT_BEGIN_NAMESPACE
+ 
+ class QAccessibleInterface;
+@@ -148,6 +151,7 @@ public:
+         HelpChanged          = 0x80A0,
+         DefaultActionChanged = 0x80B0,
+         AcceleratorChanged   = 0x80C0,
++        Announcement         = 0x80D0,
+ 
+         InvalidEvent
+     };
+@@ -402,6 +406,12 @@ public:
+     };
+     Q_ENUM(Attribute)
+ 
++    enum class AnnouncementPoliteness {
++        Polite,
++        Assertive,
++    };
++    Q_ENUM(AnnouncementPoliteness)
++
+     enum TextBoundaryType {
+         CharBoundary,
+         WordBoundary,
+@@ -731,6 +741,7 @@ public:
+         Q_ASSERT(m_type != QAccessible::TextRemoved);
+         Q_ASSERT(m_type != QAccessible::TextUpdated);
+         Q_ASSERT(m_type != QAccessible::TableModelChanged);
++        Q_ASSERT(m_type != QAccessible::Announcement);
+     }
+ 
+     inline QAccessibleEvent(QAccessibleInterface *iface, QAccessible::Event typ)
+@@ -745,6 +756,7 @@ public:
+         Q_ASSERT(m_type != QAccessible::TextRemoved);
+         Q_ASSERT(m_type != QAccessible::TextUpdated);
+         Q_ASSERT(m_type != QAccessible::TableModelChanged);
++        Q_ASSERT(m_type != QAccessible::Announcement);
+         m_uniqueId = QAccessible::uniqueId(iface);
+     }
+ 
+@@ -1018,6 +1030,36 @@ protected:
+     int m_lastColumn;
+ };
+ 
++class Q_GUI_EXPORT QAccessibleAnnouncementEvent : public QAccessibleEvent
++{
++public:
++    explicit QAccessibleAnnouncementEvent(QObject *object, const QString &message)
++        : QAccessibleEvent(object, QAccessible::InvalidEvent)
++          , m_message(message)
++          , m_politeness(QAccessible::AnnouncementPoliteness::Polite)
++    {
++        m_type = QAccessible::Announcement;
++    }
++
++    explicit QAccessibleAnnouncementEvent(QAccessibleInterface *iface, const QString &message)
++        : QAccessibleEvent(iface, QAccessible::InvalidEvent)
++          , m_message(message)
++          , m_politeness(QAccessible::AnnouncementPoliteness::Polite)
++    {
++        m_type = QAccessible::Announcement;
++    }
++
++    ~QAccessibleAnnouncementEvent();
++
++    QString message() const { return m_message; }
++    QAccessible::AnnouncementPoliteness politeness() const { return m_politeness; }
++    void setPoliteness(QAccessible::AnnouncementPoliteness politeness) { m_politeness = politeness; };
++
++protected:
++    QString m_message;
++    QAccessible::AnnouncementPoliteness m_politeness;
++};
++
+ #ifndef Q_CLANG_QDOC
+ #define QAccessibleInterface_iid "org.qt-project.Qt.QAccessibleInterface"
+ Q_DECLARE_INTERFACE(QAccessibleInterface, QAccessibleInterface_iid)
+diff --git a/src/platformsupport/windowsuiautomation/qwindowsuiawrapper.cpp b/src/platformsupport/windowsuiautomation/qwindowsuiawrapper.cpp
+index 79541fe..8038e1a 100644
+--- a/src/platformsupport/windowsuiautomation/qwindowsuiawrapper.cpp
++++ b/src/platformsupport/windowsuiautomation/qwindowsuiawrapper.cpp
+@@ -53,6 +53,7 @@ QWindowsUiaWrapper::QWindowsUiaWrapper()
+         m_pUiaHostProviderFromHwnd = reinterpret_cast<PtrUiaHostProviderFromHwnd>(uiaLib.resolve("UiaHostProviderFromHwnd"));
+         m_pUiaRaiseAutomationPropertyChangedEvent = reinterpret_cast<PtrUiaRaiseAutomationPropertyChangedEvent>(uiaLib.resolve("UiaRaiseAutomationPropertyChangedEvent"));
+         m_pUiaRaiseAutomationEvent = reinterpret_cast<PtrUiaRaiseAutomationEvent>(uiaLib.resolve("UiaRaiseAutomationEvent"));
++        m_pUiaRaiseNotificationEvent = reinterpret_cast<PtrUiaRaiseNotificationEvent>(uiaLib.resolve("UiaRaiseNotificationEvent"));
+         m_pUiaClientsAreListening = reinterpret_cast<PtrUiaClientsAreListening>(uiaLib.resolve("UiaClientsAreListening"));
+     }
+ }
+@@ -68,7 +69,7 @@ QWindowsUiaWrapper *QWindowsUiaWrapper::instance()
+     return &wrapper;
+ }
+ 
+-// True if all symbols resolved.
++// True if most symbols resolved (UiaRaiseNotificationEvent is optional).
+ BOOL QWindowsUiaWrapper::ready()
+ {
+     return m_pUiaReturnRawElementProvider
+@@ -113,5 +114,12 @@ HRESULT QWindowsUiaWrapper::raiseAutomationEvent(IRawElementProviderSimple *pPro
+     return m_pUiaRaiseAutomationEvent(pProvider, id);
+ }
+ 
++HRESULT QWindowsUiaWrapper::raiseNotificationEvent(IRawElementProviderSimple *provider, NotificationKind notificationKind, NotificationProcessing notificationProcessing, BSTR displayString, BSTR activityId)
++{
++    if (!m_pUiaRaiseNotificationEvent)
++        return UIA_E_NOTSUPPORTED;
++    return m_pUiaRaiseNotificationEvent(provider, notificationKind, notificationProcessing, displayString, activityId);
++}
++
+ QT_END_NAMESPACE
+ 
+diff --git a/src/platformsupport/windowsuiautomation/qwindowsuiawrapper_p.h b/src/platformsupport/windowsuiautomation/qwindowsuiawrapper_p.h
+index 3ebc300..9208acb 100644
+--- a/src/platformsupport/windowsuiautomation/qwindowsuiawrapper_p.h
++++ b/src/platformsupport/windowsuiautomation/qwindowsuiawrapper_p.h
+@@ -80,17 +80,20 @@ public:
+     HRESULT hostProviderFromHwnd(HWND hwnd, IRawElementProviderSimple **ppProvider);
+     HRESULT raiseAutomationPropertyChangedEvent(IRawElementProviderSimple *pProvider, PROPERTYID id, VARIANT oldValue, VARIANT newValue);
+     HRESULT raiseAutomationEvent(IRawElementProviderSimple *pProvider, EVENTID id);
++    HRESULT raiseNotificationEvent(IRawElementProviderSimple *provider, NotificationKind notificationKind, NotificationProcessing notificationProcessing, BSTR displayString, BSTR activityId);
+ 
+ private:
+     typedef LRESULT (WINAPI *PtrUiaReturnRawElementProvider)(HWND, WPARAM, LPARAM, IRawElementProviderSimple *);
+     typedef HRESULT (WINAPI *PtrUiaHostProviderFromHwnd)(HWND, IRawElementProviderSimple **);
+     typedef HRESULT (WINAPI *PtrUiaRaiseAutomationPropertyChangedEvent)(IRawElementProviderSimple *, PROPERTYID, VARIANT, VARIANT);
+     typedef HRESULT (WINAPI *PtrUiaRaiseAutomationEvent)(IRawElementProviderSimple *, EVENTID);
++    typedef HRESULT (WINAPI *PtrUiaRaiseNotificationEvent)(IRawElementProviderSimple *, NotificationKind, NotificationProcessing, BSTR, BSTR);
+     typedef BOOL (WINAPI *PtrUiaClientsAreListening)();
+     PtrUiaReturnRawElementProvider             m_pUiaReturnRawElementProvider = nullptr;
+     PtrUiaHostProviderFromHwnd                 m_pUiaHostProviderFromHwnd = nullptr;
+     PtrUiaRaiseAutomationPropertyChangedEvent  m_pUiaRaiseAutomationPropertyChangedEvent = nullptr;
+     PtrUiaRaiseAutomationEvent                 m_pUiaRaiseAutomationEvent = nullptr;
++    PtrUiaRaiseNotificationEvent               m_pUiaRaiseNotificationEvent = nullptr;
+     PtrUiaClientsAreListening                  m_pUiaClientsAreListening = nullptr;
+ };
+ 
+diff --git a/src/platformsupport/windowsuiautomation/uiatypes_p.h b/src/platformsupport/windowsuiautomation/uiatypes_p.h
+index afbc957..0d2e116 100644
+--- a/src/platformsupport/windowsuiautomation/uiatypes_p.h
++++ b/src/platformsupport/windowsuiautomation/uiatypes_p.h
+@@ -162,6 +162,22 @@ enum ExpandCollapseState {
+     ExpandCollapseState_LeafNode          = 3
+ };
+ 
++enum NotificationKind {
++    NotificationKind_ItemAdded       = 0,
++    NotificationKind_ItemRemoved     = 1,
++    NotificationKind_ActionCompleted = 2,
++    NotificationKind_ActionAborted   = 3,
++    NotificationKind_Other           = 4
++};
++
++enum NotificationProcessing {
++    NotificationProcessing_ImportantAll          = 0,
++    NotificationProcessing_ImportantMostRecent   = 1,
++    NotificationProcessing_All                   = 2,
++    NotificationProcessing_MostRecent            = 3,
++    NotificationProcessing_CurrentThenMostRecent = 4
++};
++
+ struct UiaRect {
+     double left;
+     double top;
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiaaccessibility.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiaaccessibility.cpp
+index d819d79..cd5d07f 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiaaccessibility.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiaaccessibility.cpp
+@@ -166,6 +166,9 @@ void QWindowsUiaAccessibility::notifyAccessibilityUpdate(QAccessibleEvent *event
+         return;
+ 
+     switch (event->type()) {
++    case QAccessible::Announcement:
++        QWindowsUiaMainProvider::raiseNotification(static_cast<QAccessibleAnnouncementEvent *>(event));
++        break;
+     case QAccessible::Focus:
+         QWindowsUiaMainProvider::notifyFocusChange(event);
+         break;
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+index 187cac4..fdf9841 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+@@ -278,6 +278,25 @@ void QWindowsUiaMainProvider::notifyTextChange(QAccessibleEvent *event)
+     }
+ }
+ 
++void QWindowsUiaMainProvider::raiseNotification(QAccessibleAnnouncementEvent *event)
++{
++    if (QAccessibleInterface *accessible = event->accessibleInterface()) {
++        if (QWindowsUiaMainProvider *provider = providerForAccessible(accessible)) {
++            BSTR message = bStrFromQString(event->message());
++            QAccessible::AnnouncementPoliteness prio = event->politeness();
++            NotificationProcessing processing = (prio == QAccessible::AnnouncementPoliteness::Assertive)
++                    ? NotificationProcessing_ImportantAll
++                    : NotificationProcessing_All;
++            BSTR activityId = bStrFromQString(QString::fromLatin1(""));
++            QWindowsUiaWrapper::instance()->raiseNotificationEvent(provider, NotificationKind_Other, processing, message, activityId);
++
++            ::SysFreeString(message);
++            ::SysFreeString(activityId);
++            provider->Release();
++        }
++    }
++}
++
+ HRESULT STDMETHODCALLTYPE QWindowsUiaMainProvider::QueryInterface(REFIID iid, LPVOID *iface)
+ {
+     if (!iface)
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.h b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.h
+index 865f410..7cd1be2 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.h
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.h
+@@ -72,6 +72,7 @@ public:
+     static void notifyNameChange(QAccessibleEvent *event);
+     static void notifySelectionChange(QAccessibleEvent *event);
+     static void notifyTextChange(QAccessibleEvent *event);
++    static void raiseNotification(QAccessibleAnnouncementEvent *event);
+ 
+     // IUnknown
+     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, LPVOID *iface) override;
