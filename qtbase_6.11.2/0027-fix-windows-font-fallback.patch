@@ -1,8 +1,8 @@
 diff --git a/src/gui/text/windows/qwindowsfontdatabasebase.cpp b/src/gui/text/windows/qwindowsfontdatabasebase.cpp
-index 036c3c37582..18679ef42da 100644
+index d4e2664e108..31dc3f60917 100644
 --- a/src/gui/text/windows/qwindowsfontdatabasebase.cpp
 +++ b/src/gui/text/windows/qwindowsfontdatabasebase.cpp
-@@ -967,9 +967,13 @@ QString QWindowsFontDatabaseBase::familyForStyleHint(QFont::StyleHint styleHint)
+@@ -969,9 +969,13 @@ QString QWindowsFontDatabaseBase::familyForStyleHint(QFont::StyleHint styleHint)
  
  static const char *other_tryFonts[] = {
      "Arial",
@@ -16,7 +16,23 @@ index 036c3c37582..18679ef42da 100644
      "PMingLiU",
      "Arial Unicode MS",
      0
-@@ -1023,6 +1027,7 @@ QStringList QWindowsFontDatabaseBase::extraTryFontsForFamily(const QString &fami
+@@ -989,6 +993,7 @@ static const char *jp_tryFonts [] = {
+ };
+ 
+ static const char *ch_CN_tryFonts [] = {
++    "Microsoft YaHei UI",
+     "SimSun",
+     "Arial",
+     "PMingLiU",
+@@ -999,6 +1004,7 @@ static const char *ch_CN_tryFonts [] = {
+ };
+ 
+ static const char *ch_TW_tryFonts [] = {
++    "Microsoft JhengHei UI",
+     "PMingLiU",
+     "Arial",
+     "SimSun",
+@@ -1025,6 +1031,7 @@ QStringList QWindowsFontDatabaseBase::extraTryFontsForFamily(const QString &fami
  {
      QStringList result;
      if (!QFontDatabase::writingSystems(family).contains(QFontDatabase::Symbol)) {
