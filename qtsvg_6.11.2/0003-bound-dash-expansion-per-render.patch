@@ -1,0 +1,189 @@
+Bound dashed stroke expansion per SVG render.
+
+Telegram-originated hardening, not an upstream backport. It requires
+qtbase_6.11.2/0075-bound-dash-expansion-per-render.patch, whose private
+QDashBudget lets QtGui charge the dash loop iterations of QDashStroker
+and of the raster engine's dashed lines, and the outline geometry their
+dashes add, to one pair of allowances. QtGui alone limits dash
+repetitions only per segment or per line, so an untrusted SVG repeating
+such segments over many paths, references and nested offscreen images
+could emit hundreds of millions of dashes from a few kilobytes.
+
+Each draw of an untrusted document, and each uncached bounds pass, which
+can render pattern images, now arms one QDashBudget of
+QtSvg::renderingMaxDashSteps (65536) iterations and
+QtSvg::renderingMaxDashGeometry (2^20) geometry units, through
+QSvgRenderBudget::DrawScope, defined in the new private header
+qsvgdrawscope_p.h so that only its three users include qstroker_p.h.
+All painting on that thread until it returns, on the target painter and
+in the filter, mask, pattern and group opacity images drawn meanwhile,
+spends those allowances, and a draw or bounds pass nested in it adds
+none. A dashed segment or line that no longer fits is drawn solid, as at
+Qt's repetition limit; the qtbase patch describes the units and the
+rarer skips. AssumeTrustedSource documents, which have no render budget,
+arm nothing.
+
+diff --git a/src/svg/CMakeLists.txt b/src/svg/CMakeLists.txt
+index 5f24500..36bd134 100644
+--- a/src/svg/CMakeLists.txt
++++ b/src/svg/CMakeLists.txt
+@@ -23,6 +23,7 @@ qt_internal_add_module(Svg
+         qsvgstructure.cpp qsvgstructure_p.h
+         qsvgfilter.cpp qsvgfilter_p.h
+         qsvgstyle.cpp qsvgstyle_p.h
++        qsvgdrawscope_p.h
+         qsvgdocument.cpp qsvgdocument_p.h
+         qsvganimate.cpp qsvganimate_p.h
+         qsvghelper_p.h
+diff --git a/src/svg/qsvgdocument.cpp b/src/svg/qsvgdocument.cpp
+index 0583d93..55d3c9c 100644
+--- a/src/svg/qsvgdocument.cpp
++++ b/src/svg/qsvgdocument.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "qsvgdocument_p.h"
+ 
++#include "qsvgdrawscope_p.h"
+ #include "qsvghandler_p.h"
+ #include "qsvgfont_p.h"
+ 
+@@ -265,6 +266,7 @@ void QSvgDocument::draw(QPainter *p, const QRectF &bounds)
+         return;
+ 
+     m_renderBudget.raiseAllowance(p->device());
++    QSvgRenderBudget::DrawScope drawScope(m_states);
+     p->save();
+     //sets default style on the painter
+     //### not the most optimal way
+@@ -294,6 +296,7 @@ void QSvgDocument::draw(QPainter *p, const QString &id,
+         return;
+ 
+     m_renderBudget.raiseAllowance(p->device());
++    QSvgRenderBudget::DrawScope drawScope(m_states);
+     p->save();
+ 
+     const QRectF elementBounds = node->bounds();
+diff --git a/src/svg/qsvgdrawscope_p.h b/src/svg/qsvgdrawscope_p.h
+new file mode 100644
+index 0000000..0532cd4
+--- /dev/null
++++ b/src/svg/qsvgdrawscope_p.h
+@@ -0,0 +1,42 @@
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
++// Qt-Security score:significant reason:default
++
++
++#ifndef QSVGDRAWSCOPE_P_H
++#define QSVGDRAWSCOPE_P_H
++
++//
++//  W A R N I N G
++//  -------------
++//
++// This file is not part of the Qt API.  It exists purely as an
++// implementation detail.  This header file may change from version to
++// version without notice, or even be removed.
++//
++// We mean it.
++//
++
++#include "qsvgstyle_p.h"
++
++#include <QtGui/private/qstroker_p.h>
++
++#include <optional>
++
++QT_BEGIN_NAMESPACE
++
++// Limits the dash expansion of one draw or bounds pass of an untrusted document:
++// while it lives, all painting on this thread, offscreen images included, spends
++// one allowance, and a scope created inside another one adds none.
++class QSvgRenderBudget::DrawScope
++{
++    Q_DISABLE_COPY_MOVE(DrawScope)
++public:
++    explicit DrawScope(const QSvgExtraStates &states);
++
++private:
++    std::optional<QDashBudget> m_dashBudget;
++};
++
++QT_END_NAMESPACE
++
++#endif // QSVGDRAWSCOPE_P_H
+diff --git a/src/svg/qsvgnode.cpp b/src/svg/qsvgnode.cpp
+index 0443c58..ff9aaf2 100644
+--- a/src/svg/qsvgnode.cpp
++++ b/src/svg/qsvgnode.cpp
+@@ -5,6 +5,7 @@
+ 
+ #include "qsvgnode_p.h"
+ #include "qsvgdocument_p.h"
++#include "qsvgdrawscope_p.h"
+ #include "qsvggraphics_p.h"
+ 
+ #include <QLoggingCategory>
+@@ -398,6 +399,7 @@ QRectF QSvgNode::bounds() const
+     QSvgExtraStates states;
+     if (const QSvgDocument *doc = document())
+         states.renderBudget = doc->renderBudget();
++    QSvgRenderBudget::DrawScope drawScope(states);
+ 
+     if (parent())
+         parent()->applyStyleRecursive(&p, states);
+diff --git a/src/svg/qsvgstyle.cpp b/src/svg/qsvgstyle.cpp
+index 2a262e5..11b094e 100644
+--- a/src/svg/qsvgstyle.cpp
++++ b/src/svg/qsvgstyle.cpp
+@@ -9,6 +9,7 @@
+ #include "qsvgnode_p.h"
+ #include "private/qsvganimate_p.h"
+ #include "qsvgdocument_p.h"
++#include "qsvgdrawscope_p.h"
+ 
+ #include "qpainter.h"
+ #include "qcolor.h"
+@@ -131,6 +132,13 @@ void QSvgRenderBudget::release(qint64 bytes)
+         m_data->live.fetchAndSubRelaxed(qsizetype(bytes));
+ }
+ 
++QSvgRenderBudget::DrawScope::DrawScope(const QSvgExtraStates &states)
++{
++    // Only untrusted documents have a render budget; trusted ones start no allowance.
++    if (states.renderBudget)
++        m_dashBudget.emplace(QtSvg::renderingMaxDashSteps, QtSvg::renderingMaxDashGeometry);
++}
++
+ QSvgRenderLease::QSvgRenderLease(const QSvgExtraStates &states)
+     : m_budget(states.trustedSource ? nullptr : states.renderBudget)
+ {
+diff --git a/src/svg/qsvgstyle_p.h b/src/svg/qsvgstyle_p.h
+index 2ac8c33..1ecae55 100644
+--- a/src/svg/qsvgstyle_p.h
++++ b/src/svg/qsvgstyle_p.h
+@@ -144,6 +144,9 @@ class Q_SVG_EXPORT QSvgRenderBudget
+ {
+     Q_DISABLE_COPY_MOVE(QSvgRenderBudget)
+ public:
++    // Limits the dash expansion of one draw or bounds pass, see qsvgdrawscope_p.h.
++    class DrawScope;
++
+     QSvgRenderBudget();
+     ~QSvgRenderBudget();
+ 
+diff --git a/src/svg/qtsvgglobal_p.h b/src/svg/qtsvgglobal_p.h
+index c4f3c4d..1911c20 100644
+--- a/src/svg/qtsvgglobal_p.h
++++ b/src/svg/qtsvgglobal_p.h
+@@ -49,6 +49,11 @@ constexpr quint8 renderingMaxNestedNodes = 32;
+ constexpr qint64 renderingMinMemoryBudget = qint64(96) << 20;
+ constexpr qint64 renderingMaxMemoryBudget = qint64(768) << 20;
+ constexpr qint64 renderingMemoryBudgetDeviceFactor = 24;
++
++// Dash loop iterations one render of an untrusted document may run, and the geometry
++// its dashes may add downstream, see QDashBudget.
++constexpr qint64 renderingMaxDashSteps = 65536;
++constexpr qint64 renderingMaxDashGeometry = qint64(1) << 20;
+ }
+ 
+ QT_END_NAMESPACE

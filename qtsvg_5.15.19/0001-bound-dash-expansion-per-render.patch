@@ -1,0 +1,62 @@
+Bound dashed stroke expansion per SVG render.
+
+Telegram-originated hardening, not an upstream backport. It requires
+qtbase_5.15.19/0051-bound-dash-expansion-per-render.patch, whose private
+QDashBudget lets QtGui charge the dash loop iterations of QDashStroker
+and of the raster engine's dashed lines, and the outline geometry their
+dashes add, to one pair of allowances. QtGui alone limits dash
+repetitions only per segment or per line, so an SVG repeating such
+segments over many paths and <use> references could emit hundreds of
+millions of dashes from a few kilobytes.
+
+Both QSvgTinyDocument::draw() overloads now arm one QDashBudget of 65536
+iterations and 2^20 geometry units after their early returns. All
+painting on that thread until the draw returns spends those allowances,
+and a draw nested in it adds none. A dashed segment or line that no
+longer fits is drawn solid, as at Qt's repetition limit; the qtbase
+patch describes the units and the rarer skips. Qt 5's QtSvg has no
+trusted source option, draws no filters, masks or patterns and never
+paints while computing bounds, so these two draws are its only rendering
+entry points.
+
+diff --git a/src/svg/qsvgtinydocument.cpp b/src/svg/qsvgtinydocument.cpp
+index 64c6576..2cfaaaf 100644
+--- a/src/svg/qsvgtinydocument.cpp
++++ b/src/svg/qsvgtinydocument.cpp
+@@ -51,12 +51,20 @@
+ #include "qtransform.h"
+ #include "qdebug.h"
+ 
++#include <QtGui/private/qstroker_p.h>
++
+ #ifndef QT_NO_COMPRESS
+ #include <zlib.h>
+ #endif
+ 
+ QT_BEGIN_NAMESPACE
+ 
++// Dash loop iterations one render may run and the geometry its dashes may add
++// downstream, see QDashBudget. A draw nested in another one on the same thread
++// spends the outer allowances.
++static constexpr qint64 renderingMaxDashSteps = 65536;
++static constexpr qint64 renderingMaxDashGeometry = qint64(1) << 20;
++
+ QSvgTinyDocument::QSvgTinyDocument()
+     : QSvgStructureNode(0)
+     , m_widthPercent(false)
+@@ -266,6 +274,7 @@ void QSvgTinyDocument::draw(QPainter *p, const QRectF &bounds)
+     if (displayMode() == QSvgNode::NoneMode)
+         return;
+ 
++    QDashBudget dashBudget(renderingMaxDashSteps, renderingMaxDashGeometry);
+     p->save();
+     //sets default style on the painter
+     //### not the most optimal way
+@@ -308,6 +317,7 @@ void QSvgTinyDocument::draw(QPainter *p, const QString &id,
+     if (node->displayMode() == QSvgNode::NoneMode)
+         return;
+ 
++    QDashBudget dashBudget(renderingMaxDashSteps, renderingMaxDashGeometry);
+     p->save();
+ 
+     const QRectF elementBounds = node->transformedBounds();

@@ -1,0 +1,313 @@
+Bound dashed stroke expansion per render.
+
+Telegram-originated hardening, not an upstream backport. QDashStroker and
+the raster engine's dashed lines limit pattern repetitions per segment or
+per line only, so an untrusted SVG drawing many segments, strokes or
+references could emit hundreds of millions of dashes from a few kilobytes
+and exhaust memory and time. Even a few thousand dashes of a wide
+round-capped pen flatten into millions of outline vertices.
+
+Add QDashBudget, a private scope that QtSvg arms around each untrusted
+render. While the outermost budget on a thread lives, every iteration of
+the dash loops in QDashStroker::processCurrentSubpath() and
+QRasterPaintEnginePrivate::rasterizeLine_dashed() is charged to its step
+allowance, and the geometry each dash adds downstream to its geometry
+allowance: the outline vertices QOutlineMapper stores for every dash
+piece QDashStroker starts (both sides, the closing line and two caps; a
+round cap counts the points QBezier::addToPolygon() can make of two
+quarter circles of the pen's radius at the outline mapper's flatness,
+at most 512 each), and for raster dashes with square caps a unit per
+256 pixels of the width * width the caps add, as each dash is filled on
+its own. Neither allowance is ever overdrawn. A segment or line is
+dashed only if n * (int(periods) + 3) + 1 iterations, a bound on its
+worst case for n pattern entries, fit the remaining steps and the
+geometry of one dash per iteration fits the remaining geometry;
+otherwise the existing repetition-limit fallback draws it solid. An
+integer guard ends a segment or line at that bound if rounding stalls
+progress, and a subpath whose pattern or offset is not finite, or whose
+odd pattern has an entry the loop never visits, is skipped. Without a
+budget nothing changes.
+
+Unlike Qt 6, Qt 5 normalizes dash offsets with qFloor(), whose int result
+overflows for large finite offsets and leaves an enormous offset search,
+so a budgeted stroke also skips offsets that qFloor() cannot represent,
+in QDashStroker and before the raster engine's dashed lines.
+
+diff --git a/src/gui/painting/qpaintengine_raster.cpp b/src/gui/painting/qpaintengine_raster.cpp
+index a041607..ee3b31d 100644
+--- a/src/gui/painting/qpaintengine_raster.cpp
++++ b/src/gui/painting/qpaintengine_raster.cpp
+@@ -1655,6 +1655,11 @@ void QRasterPaintEngine::stroke(const QVectorPath &path, const QPen &pen)
+             patternLength += pattern.at(i);
+ 
+         if (patternLength > 0) {
++            // A budgeted stroke skips dashed lines whose offset qFloor() cannot represent.
++            if (QDashBudget::current()
++                && !(qAbs(dashOffset / patternLength) < std::numeric_limits<int>::max())) {
++                return;
++            }
+             int n = qFloor(dashOffset / patternLength);
+             dashOffset -= n * patternLength;
+             while (dashOffset >= pattern.at(dashIndex)) {
+@@ -3293,11 +3298,40 @@ void QRasterPaintEnginePrivate::rasterizeLine_dashed(QLineF line,
+         return;
+     }
+ 
++    QDashBudget *budget = QDashBudget::current();
++    qint64 maxSteps = 0;
++    qint64 capGeometry = 0;
++    if (budget) {
++        // As in QDashStroker, dash only a line whose worst case fits the budget and
++        // skip invalid numbers; the pattern size is unbounded, so divide first.
++        const qreal periods = length / (patternLength * width);
++        if (!(periods >= 0))
++            return;
++        // Each dash is filled on its own and square caps add width * width to it,
++        // so they are charged as geometry, a unit per 256 pixels.
++        if (squareCap) {
++            const qreal deviceArea = qreal(deviceRect.width()) * deviceRect.height();
++            capGeometry = qint64(std::ceil(qMin(width * width, deviceArea) / 256));
++        }
++        const qint64 periodSteps = int(periods) + 3;
++        const qint64 remaining = budget->remainingSteps();
++        if (remaining <= 0 || pattern.size() > (remaining - 1) / periodSteps
++            || pattern.size() * periodSteps * capGeometry > budget->remainingGeometry()) {
++            rasterizer->rasterizeLine(line.p1(), line.p2(), width / length, squareCap);
++            return;
++        }
++        maxSteps = pattern.size() * periodSteps;
++    }
++
++    qint64 steps = 0;
++    qint64 geometry = 0;
+     while (length > 0) {
+         const bool rasterize = *inDash;
+         qreal dash = (pattern.at(*dashIndex) - *dashOffset) * width;
+         QLineF l = line;
+ 
++        if (budget)
++            ++steps;
+         if (dash >= length) {
+             dash = line.length();  // Avoid accumulated precision error in 'length'
+             *dashOffset += dash / width;
+@@ -3310,11 +3344,19 @@ void QRasterPaintEnginePrivate::rasterizeLine_dashed(QLineF line,
+             length -= dash;
+             l.setLength(dash);
+             line.setP1(l.p2());
++            // Rounding or negative entries can stall length, so end the line at the guard.
++            if (budget && steps >= maxSteps)
++                length = 0;
+         }
+ 
+-        if (rasterize && dash > 0)
++        if (rasterize && dash > 0) {
+             rasterizer->rasterizeLine(l.p1(), l.p2(), width / dash, squareCap);
++            if (budget)
++                geometry += capGeometry;
++        }
+     }
++    if (budget)
++        budget->consume(steps, geometry);
+ }
+ 
+ /*!
+diff --git a/src/gui/painting/qstroker.cpp b/src/gui/painting/qstroker.cpp
+index 3b6357a..b990415 100644
+--- a/src/gui/painting/qstroker.cpp
++++ b/src/gui/painting/qstroker.cpp
+@@ -1098,6 +1098,40 @@ static bool lineIntersectsRect(qfixed2d p1, qfixed2d p2, const qfixed2d &tl, con
+ #endif
+ }
+ 
++/*
++    Outline vertices QOutlineMapper stores for one dash piece: both sides, the
++    closing line and the two caps QStroker::joinPoints() adds. A round cap is
++    two quarter circles of radius r that QBezier::addToPolygon() flattens at
++    half the dash threshold (QOutlineMapper and QPaintEngineEx::stroke() use
++    0.25 and 0.5 over the scale of the same transform), splitting a curve until
++    a piece passes its flatness test, at most 9 times. A piece of parameter
++    length h has its control points within 0.92 r h^2 of its chord, Manhattan
++    control offsets below r h (2.35 + 1.96 h) and a chord longer than 1.3 r h,
++    so the first depth at which either branch of the test holds for every
++    piece bounds the points; an unknown consumer gets the largest round cap.
++*/
++static qint64 dashPieceGeometry(const QStroker *stroker, qreal width, qreal dashThreshold)
++{
++    int capPoints = 2 * 512;
++    if (stroker && stroker->capStyleMode() == QStroker::FlatJoin) {
++        capPoints = 2;
++    } else if (stroker && stroker->capStyleMode() == QStroker::SquareJoin) {
++        capPoints = 3;
++    } else if (stroker) {
++        const qreal r = qAbs(width) / 2;
++        const qreal t = dashThreshold / 2;
++        for (int depth = 0; depth < 9; ++depth) {
++            const qreal h = qreal(1) / (1 << depth);
++            if (r * h * (qreal(2.35) + qreal(1.96) * h) < t
++                || (qreal(0.92) * r * h * h < t && qreal(1.3) * r * h > 1)) {
++                capPoints = 2 * (1 << depth);
++                break;
++            }
++        }
++    }
++    return 4 + 2 * capPoints;
++}
++
+ void QDashStroker::processCurrentSubpath()
+ {
+     int dashCount = qMin(m_dashPattern.size(), 32);
+@@ -1132,6 +1166,20 @@ void QDashStroker::processCurrentSubpath()
+     qreal elen = 0; // element length
+     qreal doffset = m_dashOffset * m_stroke_width;
+ 
++    QDashBudget *budget = QDashBudget::current();
++    qint64 pieceGeometry = 0;
++    if (budget) {
++        // The budget accounts only for a finite cycle that the loops below walk
++        // in full and an offset qFloor() can represent, so skip anything else.
++        const bool walksCycle = dashCount == 0 || dashCount == qMin(m_dashPattern.size(), 32);
++        const qreal offsetPeriods = doffset * invSumLength;
++        if (!walksCycle || sumLength < 0 || !qIsFinite(sumLength)
++            || !(qAbs(offsetPeriods) < std::numeric_limits<int>::max())) {
++            return;
++        }
++        pieceGeometry = dashPieceGeometry(m_stroker, m_stroke_width, m_dashThreshold);
++    }
++
+     // make sure doffset is in range [0..sumLength)
+     doffset -= qFloor(doffset * invSumLength) * sumLength;
+ 
+@@ -1183,6 +1231,18 @@ void QDashStroker::processCurrentSubpath()
+         bool clipIt = clipping && !lineIntersectsRect(prev, e, clip_tl, clip_br);
+         bool skipDashing = elen * invSumLength > repetitionLimit();
+         int maxDashes = dashCount;
++        int maxSteps = 0;
++        if (budget && !done && !clipIt && !skipDashing) {
++            // Dash only when the worst case of this segment, its iterations and a piece
++            // started by each, fits; else draw it solid below.
++            const qreal periods = elen * invSumLength;
++            skipDashing = !(periods >= 0);
++            if (!skipDashing) {
++                maxSteps = qMax(dashCount, 1) * (int(periods) + 3);
++                skipDashing = maxSteps + 1 > budget->remainingSteps()
++                    || maxSteps * pieceGeometry > budget->remainingGeometry();
++            }
++        }
+         if (skipDashing || clipIt) {
+             // Cut away full dash sequences.
+             elen -= std::floor(elen * invSumLength) * sumLength;
+@@ -1218,6 +1278,8 @@ void QDashStroker::processCurrentSubpath()
+         }
+ 
+         // Dash away...
++        int steps = 0;
++        int pieces = 0;
+         while (!done) {
+             QPointF p2;
+ 
+@@ -1227,6 +1289,8 @@ void QDashStroker::processCurrentSubpath()
+ 
+             Q_ASSERT(dpos >= 0);
+ 
++            if (budget)
++                ++steps;
+             if (dpos > elen) { // dash extends this line
+                 doffset = dashes[idash] - (dpos - elen); // subtract the part already used
+                 pos = estop; // move pos to next path element
+@@ -1234,7 +1298,8 @@ void QDashStroker::processCurrentSubpath()
+                 p2 = cline.p2();
+             } else { // Dash is on this line
+                 p2 = cline.pointAt(dpos/elen);
+-                pos = dpos + estart;
++                // Rounding can stall pos, so end the segment at the guard like maxDashes.
++                pos = (budget && steps >= maxSteps) ? estop : dpos + estart;
+                 done = pos >= estop;
+                 if (++idash >= dashCount)
+                     idash = 0;
+@@ -1255,6 +1320,8 @@ void QDashStroker::processCurrentSubpath()
+                     if (!has_offset || !hasMoveTo) {
+                         emitMoveTo(move_to_pos.x, move_to_pos.y);
+                         hasMoveTo = true;
++                        if (budget)
++                            ++pieces;
+                     }
+ 
+                     emitLineTo(line_to_pos.x, line_to_pos.y);
+@@ -1267,6 +1334,8 @@ void QDashStroker::processCurrentSubpath()
+                 move_to_pos.y = qt_real_to_fixed(p2.y());
+             }
+         }
++        if (budget)
++            budget->consume(steps, pieces * pieceGeometry);
+ 
+         // Shuffle to the next cycle...
+         estart = estop;
+@@ -1275,4 +1344,26 @@ void QDashStroker::processCurrentSubpath()
+ 
+ }
+ 
++static thread_local QDashBudget *currentDashBudget = nullptr;
++
++QDashBudget::QDashBudget(qint64 steps, qint64 geometry)
++    : m_steps(qMax(steps, qint64(0)))
++    , m_geometry(qMax(geometry, qint64(0)))
++    , m_owner(!currentDashBudget)
++{
++    if (m_owner)
++        currentDashBudget = this;
++}
++
++QDashBudget::~QDashBudget()
++{
++    if (m_owner)
++        currentDashBudget = nullptr;
++}
++
++QDashBudget *QDashBudget::current()
++{
++    return currentDashBudget;
++}
++
+ QT_END_NAMESPACE
+diff --git a/src/gui/painting/qstroker_p.h b/src/gui/painting/qstroker_p.h
+index 72e211d..29fe53f 100644
+--- a/src/gui/painting/qstroker_p.h
++++ b/src/gui/painting/qstroker_p.h
+@@ -400,6 +400,37 @@ inline void QDashStroker::end()
+         m_stroker->end();
+ }
+ 
++// Limits, on this thread while the outermost budget lives, the dash loop
++// iterations of QDashStroker and of the raster engine's dashed lines and the
++// geometry their dashes add downstream: outline vertices of the dash pieces
++// QStroker builds, or 256 pixels of square cap per unit for raster dashes.
++// A budget created while another one is current stays inert, so nested
++// painting spends the outer allowances.
++class Q_GUI_EXPORT QDashBudget
++{
++    Q_DISABLE_COPY_MOVE(QDashBudget)
++public:
++    QDashBudget(qint64 steps, qint64 geometry);
++    ~QDashBudget();
++
++    static QDashBudget *current();
++
++    qint64 remainingSteps() const { return m_steps; }
++    qint64 remainingGeometry() const { return m_geometry; }
++    void consume(qint64 steps, qint64 geometry)
++    {
++        Q_ASSERT(steps >= 0 && steps <= m_steps);
++        Q_ASSERT(geometry >= 0 && geometry <= m_geometry);
++        m_steps -= steps;
++        m_geometry -= geometry;
++    }
++
++private:
++    qint64 m_steps;
++    qint64 m_geometry;
++    bool m_owner;
++};
++
+ QT_END_NAMESPACE
+ 
+ #endif // QSTROKER_P_H
