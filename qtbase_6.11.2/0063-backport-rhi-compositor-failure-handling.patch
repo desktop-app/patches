@@ -26,12 +26,12 @@ Reviewed-by: Laszlo Agocs <laszlo.agocs@qt.io>
 Reviewed-by: Qt Cherry-pick Bot <cherrypick_bot@qt-project.org>
 (cherry picked from commit 38c35d0062bbc11dca840bb7ae83c4a982e51e4b)
 
-Backport: Rebased on the existing compositor and dirty-region upload patches.
+Backport: Rebased on the existing compositor patches.
 The Windows 7 series retains the corresponding checks in its custom clearSurface path.
 
 ---
 diff --git a/src/gui/painting/qbackingstoredefaultcompositor.cpp b/src/gui/painting/qbackingstoredefaultcompositor.cpp
-index 3cd0e0f..bf9a5b7 100644
+index e8e171bbe15..22b6bdb57bc 100644
 --- a/src/gui/painting/qbackingstoredefaultcompositor.cpp
 +++ b/src/gui/painting/qbackingstoredefaultcompositor.cpp
 @@ -105,7 +105,12 @@ QRhiTexture *QBackingStoreDefaultCompositor::toTexture(const QImage &sourceImage
@@ -47,8 +47,8 @@ index 3cd0e0f..bf9a5b7 100644
 +        }
          resourceUpdates->uploadTexture(m_texture.get(), image);
      } else {
-         const QRect imageRect = image.rect();
-@@ -520,8 +525,12 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+         QRect imageRect = image.rect();
+@@ -508,8 +513,12 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
  
      QWindowPrivate::get(window)->lastComposeTime.start();
  
@@ -63,7 +63,7 @@ index 3cd0e0f..bf9a5b7 100644
  
      // Start recording a new frame.
      QRhi::FrameOpResult frameResult = rhi->beginFrame(swapchain);
-@@ -741,7 +750,11 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+@@ -729,7 +738,11 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
      if (gotNativeTexture)
          backingStore->nativeTextureWasComposited(backingStoreTextureUsed ? cb : nullptr);
  
