@@ -1,0 +1,51 @@
+From deb8dcad67418210d5cc2104a97cb8cb9fd66e5e Mon Sep 17 00:00:00 2001
+From: Laszlo Agocs <laszlo.agocs@qt.io>
+Date: Wed, 05 Aug 2026 13:53:12 +0000
+Subject: [PATCH] rhi: d3d: Do derefAdapter while the LUID is still valid
+
+Calling the function after adapterLuid is nulled out is clearly
+not ideal.
+
+Task-number: QTBUG-148834
+Pick-to: 6.12 6.11 6.8
+Change-Id: I16e3118fe700ec628e3da5557d101092dff03f13
+Reviewed-by: Andy Nichols <andy.nichols@qt.io>
+
+Backport: Adjusted the D3D12 context to Qt 6.11.2 while preserving the upstream release ordering.
+
+---
+diff --git a/src/gui/rhi/qrhid3d11.cpp b/src/gui/rhi/qrhid3d11.cpp
+index d1d1ace69da..1dadd6246c1 100644
+--- a/src/gui/rhi/qrhid3d11.cpp
++++ b/src/gui/rhi/qrhid3d11.cpp
+@@ -479,10 +479,10 @@ void QRhiD3D11::destroy()
+         dxgiFactory = nullptr;
+     }
+ 
++    QDxgiVSyncService::instance()->derefAdapter(adapterLuid);
++
+     importedDeviceAndContext = false;
+     adapterLuid = {};
+-
+-    QDxgiVSyncService::instance()->derefAdapter(adapterLuid);
+ }
+ 
+ void QRhiD3D11::reportLiveObjects(ID3D11Device *device)
+diff --git a/src/gui/rhi/qrhid3d12.cpp b/src/gui/rhi/qrhid3d12.cpp
+index 5f28dc2e1e0..f257573bb8b 100644
+--- a/src/gui/rhi/qrhid3d12.cpp
++++ b/src/gui/rhi/qrhid3d12.cpp
+@@ -637,11 +637,11 @@ void QRhiD3D12::destroy()
+         dxgiFactory = nullptr;
+     }
+ 
++    QDxgiVSyncService::instance()->derefAdapter(adapterLuid);
++
+     adapterLuid = {};
+     importedDevice = false;
+     importedCommandQueue = false;
+-
+-    QDxgiVSyncService::instance()->derefAdapter(adapterLuid);
+ }
+ 
+ QRhi::AdapterList QRhiD3D12::enumerateAdaptersBeforeCreate(QRhiNativeHandles *nativeHandles) const

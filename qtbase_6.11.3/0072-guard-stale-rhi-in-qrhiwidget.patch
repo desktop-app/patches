@@ -1,0 +1,36 @@
+Subject: [PATCH] Avoid stale QRhi access after widget recovery
+
+After WindowAboutToChangeInternal releases a widget's resources and removes
+its cleanup callback, the old QRhi pointer is retained until the next paint.
+Recovery can destroy that QRhi while a hidden or idle widget still holds it.
+Guard callback removal in repeated window changes and widget destruction
+with the registration state introduced by patch 0069. Keep resource teardown
+for widgets that own an offscreen QRhi without a registered callback.
+
+This closes the G03, G05, G06 and G09 crash paths exposed by recovery retries
+and device monitoring in patches 0070 and 0071.
+
+diff --git a/src/widgets/kernel/qrhiwidget.cpp b/src/widgets/kernel/qrhiwidget.cpp
+index a28f53e5c17..b4a6006a51c 100644
+--- a/src/widgets/kernel/qrhiwidget.cpp
++++ b/src/widgets/kernel/qrhiwidget.cpp
+@@ -211,7 +211,9 @@ QRhiWidget::~QRhiWidget()
+     Q_D(QRhiWidget);
+ 
+     if (d->rhi) {
+-        d->rhi->removeCleanupCallback(this);
++        // An unregistered QRhi may have been destroyed since the last window change.
++        if (d->rhiCleanupRegistered)
++            d->rhi->removeCleanupCallback(this);
+         // rhi resources must be destroyed here, due to how QWidget teardown works;
+         // it should not be left to the private object's destruction.
+         d->resetRenderTargetObjects();
+@@ -295,7 +297,7 @@ bool QRhiWidget::event(QEvent *e)
+         // returning the existing QRhiTexture in the meantime.
+         d->textureInvalid = true;
+ 
+-        if (d->rhi && d->rhi != d->offscreenRenderer.rhi()) {
++        if (d->rhi && d->rhiCleanupRegistered && d->rhi != d->offscreenRenderer.rhi()) {
+             // Drop the cleanup callback registered to the toplevel's rhi and
+             // do the early-release, there may not be another chance to do
+             // this, and the QRhi we have currently set may be destroyed by the

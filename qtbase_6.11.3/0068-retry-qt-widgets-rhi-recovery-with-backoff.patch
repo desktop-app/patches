@@ -1,0 +1,445 @@
+Subject: [PATCH] Retry Qt Widgets RHI recovery until presentation succeeds
+
+Retain recovery state when QRhi or its first swap chain cannot be recreated.
+Coalesce rebuilding outside rendering with capped backoff per backing store,
+release resources for hidden windows, and recreate them on the next expose.
+Successful presentation resets the backoff. Cancel stale widget requests and
+delete failed swap chains before retrying.
+
+diff --git a/src/gui/painting/qbackingstorerhisupport.cpp b/src/gui/painting/qbackingstorerhisupport.cpp
+index a73d9f2abf5..48f870d7f76 100644
+--- a/src/gui/painting/qbackingstorerhisupport.cpp
++++ b/src/gui/painting/qbackingstorerhisupport.cpp
+@@ -215,6 +215,7 @@ QRhiSwapChain *QBackingStoreRhiSupport::swapChainForWindow(QWindow *window)
+         }
+         if (!created) {
+             qWarning("Failed to create swapchain for window flushed with an RHI-enabled backingstore");
++            delete swapchain;
+             delete rp;
+             return nullptr;
+         }
+diff --git a/src/gui/painting/qplatformbackingstore.cpp b/src/gui/painting/qplatformbackingstore.cpp
+index 9151b63fd1a..3922ed8ee30 100644
+--- a/src/gui/painting/qplatformbackingstore.cpp
++++ b/src/gui/painting/qplatformbackingstore.cpp
+@@ -35,6 +35,8 @@ public:
+         // (first the compositor, then the rhiSupport)
+         QBackingStoreRhiSupport rhiSupport;
+         QBackingStoreDefaultCompositor compositor;
++        bool recovering = false;
++        bool needsRecovery = false;
+     };
+     std::unordered_map<QSurface::SurfaceType, SurfaceSupport> surfaceSupport;
+ };
+@@ -218,11 +220,28 @@ QPlatformBackingStore::FlushResult QPlatformBackingStore::rhiFlush(QWindow *wind
+                                                                    qreal sourceTransformFactor)
+ {
+     auto &surfaceSupport = d_ptr->surfaceSupport[window->surfaceType()];
+-    return surfaceSupport.compositor.flush(this,
+-        surfaceSupport.rhiSupport.rhi(),
+-        surfaceSupport.rhiSupport.swapChainForWindow(window),
+-        window, sourceDevicePixelRatio, region, offset, textures,
+-        translucentBackground, sourceTransformFactor);
++    auto *rhi = surfaceSupport.rhiSupport.rhi();
++    if (surfaceSupport.needsRecovery || (rhi && rhi->isDeviceLost())) {
++        surfaceSupport.recovering = surfaceSupport.needsRecovery = true;
++        return FlushFailedDueToLostDevice;
++    }
++    if (!rhi)
++        return surfaceSupport.recovering ? FlushFailedDueToLostDevice : FlushFailed;
++
++    auto *swapchain = surfaceSupport.rhiSupport.swapChainForWindow(window);
++    const auto result = swapchain
++            ? surfaceSupport.compositor.flush(this, rhi, swapchain,
++                window, sourceDevicePixelRatio, region, offset, textures,
++                translucentBackground, sourceTransformFactor)
++            : FlushFailed;
++    if (result == FlushFailedDueToLostDevice || rhi->isDeviceLost()
++            || (surfaceSupport.recovering && result == FlushFailed)) {
++        surfaceSupport.recovering = surfaceSupport.needsRecovery = true;
++        return FlushFailedDueToLostDevice;
++    }
++    if (result == FlushSuccess && window->isExposed())
++        surfaceSupport.recovering = false;
++    return result;
+ }
+ 
+ QPlatformBackingStore::FlushResult QPlatformBackingStore::rhiClear(QWindow *window, const QColor &clearColor)
+@@ -412,12 +431,12 @@ void QPlatformBackingStore::createRhi(QWindow *window, QPlatformBackingStoreRhiC
+         << "and requested API" << config.api();
+ 
+     auto &support = d_ptr->surfaceSupport[window->surfaceType()];
+-    if (!support.rhiSupport.rhi()) {
++    if (!support.rhiSupport.rhi() && !support.recovering) {
+         support.rhiSupport.setConfig(config);
+         support.rhiSupport.setWindow(window);
+         support.rhiSupport.setFormat(window->format());
+         support.rhiSupport.create();
+-    } else {
++    } else if (support.rhiSupport.rhi()) {
+         qCDebug(lcQpaBackingStore) << "Window already has RHI support"
+             << "with backend" << support.rhiSupport.rhi()->backendName();
+     }
+@@ -432,15 +451,14 @@ QRhi *QPlatformBackingStore::rhi(QWindow *window) const
+ void QPlatformBackingStore::graphicsDeviceReportedLost(QWindow *window)
+ {
+     auto &surfaceSupport = d_ptr->surfaceSupport[window->surfaceType()];
+-    if (!surfaceSupport.rhiSupport.rhi())
+-        return;
+-
+-    qWarning("Rhi backingstore: graphics device lost, attempting to reinitialize");
++    surfaceSupport.recovering = surfaceSupport.needsRecovery = true;
+     surfaceSupport.compositor.reset();
+     surfaceSupport.rhiSupport.reset();
+-    surfaceSupport.rhiSupport.create();
+-    if (!surfaceSupport.rhiSupport.rhi())
+-        qWarning("Rhi backingstore: failed to reinitialize after losing the device");
++    surfaceSupport.rhiSupport.setWindow(window);
++    if (window->isExposed()) {
++        qWarning("Rhi backingstore: graphics device lost, attempting to reinitialize");
++        surfaceSupport.needsRecovery = !surfaceSupport.rhiSupport.create();
++    }
+ }
+ 
+ QT_END_NAMESPACE
+diff --git a/src/widgets/kernel/qwidgetrepaintmanager.cpp b/src/widgets/kernel/qwidgetrepaintmanager.cpp
+index 5c58722866e..55cb068d8ac 100644
+--- a/src/widgets/kernel/qwidgetrepaintmanager.cpp
++++ b/src/widgets/kernel/qwidgetrepaintmanager.cpp
+@@ -74,6 +74,8 @@ QWidgetRepaintManager::QWidgetRepaintManager(QWidget *topLevel)
+     : tlw(topLevel), store(tlw->backingStore())
+ {
+     Q_ASSERT(store);
++    rhiRecoveryTimer.setSingleShot(true);
++    QObject::connect(&rhiRecoveryTimer, &QTimer::timeout, tlw, [this] { recoverRhi(); });
+ 
+     // Ensure all existing subsurfaces and static widgets are added to their respective lists.
+     updateLists(topLevel);
+@@ -985,6 +987,58 @@ void QWidgetRepaintManager::markNeedsFlush(QWidget *widget, const QRegion &regio
+         needsFlushWidgets.append(widget);
+ }
+ 
++void QWidgetRepaintManager::scheduleRhiRecovery(QWidget *widget)
++{
++    const auto type = widget->windowHandle()->surfaceType();
++    recoveringRhiSurfaces.insert(type);
++    pendingRhiRecoveries.insert(type, widget);
++    if (!rhiRecoveryTimer.isActive())
++        rhiRecoveryTimer.start(rhiRecoveryDelay);
++}
++
++void QWidgetRepaintManager::recoverRhi()
++{
++    auto pending = std::exchange(pendingRhiRecoveries, {});
++    for (auto it = pending.begin(); it != pending.end();) {
++        const auto widget = it.value();
++        if (!widget || widget->window() != tlw || !widget->windowHandle()
++                || widget->windowHandle()->surfaceType() != it.key()) {
++            recoveringRhiSurfaces.remove(it.key());
++            it = pending.erase(it);
++        } else {
++            ++it;
++        }
++    }
++    if (pending.isEmpty()) {
++        if (recoveringRhiSurfaces.isEmpty())
++            rhiRecoveryDelay = 0;
++        return;
++    }
++
++    rhiRecoveryDelay = qMin(2000, qMax(100, rhiRecoveryDelay * 2));
++    const QPointer<QWidget> guard(tlw);
++    qSendWindowChangeToTextureChildrenRecursively(tlw, QEvent::WindowAboutToChangeInternal);
++    if (!guard)
++        return;
++    for (const auto &widget : std::as_const(pending)) {
++        if (widget && widget->window() == tlw && widget->windowHandle())
++            store->handle()->graphicsDeviceReportedLost(widget->windowHandle());
++        if (!guard)
++            return;
++    }
++    qSendWindowChangeToTextureChildrenRecursively(tlw, QEvent::WindowChangeInternal);
++    if (!guard)
++        return;
++    if (tlw->isVisible() && tlw->updatesEnabled())
++        markDirty(tlw->rect(), tlw, UpdateLater, BufferInvalid);
++    for (const auto &widget : std::as_const(pending)) {
++        if (widget && widget->window() == tlw && widget->windowHandle()
++                && widget->windowHandle()->isExposed()
++                && !store->handle()->rhi(widget->windowHandle()))
++            scheduleRhiRecovery(widget);
++    }
++}
++
+ /*!
+     Flushes the contents of the backing store into the top-level widget.
+ */
+@@ -1096,12 +1150,11 @@ void QWidgetRepaintManager::flush(QWidget *widget, const QRegion &region, QPlatf
+         widgetPrivate->sendComposeStatus(widget, true);
+ 
+         if (flushResult == QPlatformBackingStore::FlushFailedDueToLostDevice) {
+-            qSendWindowChangeToTextureChildrenRecursively(widget->window(),
+-                                                          QEvent::WindowAboutToChangeInternal);
+-            store->handle()->graphicsDeviceReportedLost(window);
+-            qSendWindowChangeToTextureChildrenRecursively(widget->window(),
+-                                                          QEvent::WindowChangeInternal);
+-            widget->update();
++            scheduleRhiRecovery(widget);
++        } else if (flushResult == QPlatformBackingStore::FlushSuccess && window->isExposed()) {
++            recoveringRhiSurfaces.remove(window->surfaceType());
++            if (recoveringRhiSurfaces.isEmpty())
++                rhiRecoveryDelay = 0;
+         }
+     } else {
+         store->flush(region, window, offset);
+diff --git a/src/widgets/kernel/qwidgetrepaintmanager_p.h b/src/widgets/kernel/qwidgetrepaintmanager_p.h
+index 62c1325838f..85dd6503c8b 100644
+--- a/src/widgets/kernel/qwidgetrepaintmanager_p.h
++++ b/src/widgets/kernel/qwidgetrepaintmanager_p.h
+@@ -1,118 +1,128 @@
+-// Copyright (C) 2016 The Qt Company Ltd.
+-// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
+-// Qt-Security score:significant reason:default
+-
+-#ifndef QWIDGETREPAINTMANAGER_P_H
+-#define QWIDGETREPAINTMANAGER_P_H
+-
+-//
+-//  W A R N I N G
+-//  -------------
+-//
+-// This file is not part of the Qt API.  It exists purely as an
+-// implementation detail.  This header file may change from version to
+-// version without notice, or even be removed.
+-//
+-// We mean it.
+-//
+-
+-#include <QtWidgets/private/qtwidgetsglobal_p.h>
+-#include <QtWidgets/qwidget.h>
+-#include <private/qwidget_p.h>
+-#include <QtGui/qbackingstore.h>
+-
+-QT_BEGIN_NAMESPACE
+-
+-class QPlatformTextureList;
+-class QPlatformTextureListWatcher;
+-class QWidgetRepaintManager;
+-
+-class Q_WIDGETS_EXPORT QWidgetRepaintManager
+-{
+-    Q_GADGET
+-public:
+-    enum UpdateTime {
+-        UpdateNow,
+-        UpdateLater
+-    };
+-    Q_ENUM(UpdateTime)
+-
+-    enum BufferState{
+-        BufferValid,
+-        BufferInvalid
+-    };
+-    Q_ENUM(BufferState)
+-
+-    QWidgetRepaintManager(QWidget *t);
+-    ~QWidgetRepaintManager();
+-
+-    QBackingStore *backingStore() const { return store; }
+-    void setBackingStore(QBackingStore *backingStore) { store = backingStore; }
+-
+-    template <class T>
+-    void markDirty(const T &r, QWidget *widget, UpdateTime updateTime = UpdateLater,
+-                   BufferState bufferState = BufferValid);
+-
+-    void removeDirtyWidget(QWidget *w);
+-
+-    void sync(QWidget *exposedWidget, const QRegion &exposedRegion);
+-    void sync();
+-
+-    void markNeedsFlush(QWidget *widget, const QRegion &region, const QPoint &topLevelOffset);
+-
+-    void addStaticWidget(QWidget *widget);
+-    void moveStaticWidgets(QWidget *reparented);
+-    void removeStaticWidget(QWidget *widget);
+-    QRegion staticContents(QWidget *widget = nullptr, const QRect &withinClipRect = QRect()) const;
+-    QRegion dirtyRegion() const { return dirty; }
+-    QList<QWidget *> dirtyWidgetList() const { return dirtyWidgets; }
+-    bool isDirty() const;
+-
+-    bool bltRect(const QRect &rect, int dx, int dy, QWidget *widget);
+-
+-private:
+-    void updateLists(QWidget *widget);
+-
+-    void addDirtyWidget(QWidget *widget, const QRegion &rgn);
+-    void resetWidget(QWidget *widget);
+-
+-    void addDirtyRenderToTextureWidget(QWidget *widget);
+-
+-    void sendUpdateRequest(QWidget *widget, UpdateTime updateTime);
+-
+-    bool syncAllowed();
+-    void paintAndFlush();
+-
+-    void markNeedsFlush(QWidget *widget, const QRegion &region = QRegion());
+-
+-    void flush();
+-    void flush(QWidget *widget, const QRegion &region, QPlatformTextureList *widgetTextures);
+-
+-    bool hasStaticContents() const;
+-    void updateStaticContentsSize();
+-
+-    QWidget *tlw = nullptr;
+-    QBackingStore *store = nullptr;
+-
+-    QRegion dirty; // needsRepaint
+-    QList<QWidget *> dirtyWidgets;
+-    QList<QWidget *> dirtyRenderToTextureWidgets;
+-
+-    QRegion topLevelNeedsFlush;
+-    QList<QWidget *> needsFlushWidgets;
+-
+-    QList<QWidget *> staticWidgets;
+-
+-    QPlatformTextureListWatcher *textureListWatcher = nullptr;
+-
+-    bool updateRequestSent = false;
+-
+-    QElapsedTimer perfTime;
+-    int perfFrames = 0;
+-
+-    Q_DISABLE_COPY_MOVE(QWidgetRepaintManager)
+-};
+-
+-QT_END_NAMESPACE
+-
+-#endif // QWIDGETREPAINTMANAGER_P_H
++// Copyright (C) 2016 The Qt Company Ltd.
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
++// Qt-Security score:significant reason:default
++
++#ifndef QWIDGETREPAINTMANAGER_P_H
++#define QWIDGETREPAINTMANAGER_P_H
++
++//
++//  W A R N I N G
++//  -------------
++//
++// This file is not part of the Qt API.  It exists purely as an
++// implementation detail.  This header file may change from version to
++// version without notice, or even be removed.
++//
++// We mean it.
++//
++
++#include <QtWidgets/private/qtwidgetsglobal_p.h>
++#include <QtWidgets/qwidget.h>
++#include <private/qwidget_p.h>
++#include <QtGui/qbackingstore.h>
++#include <QtGui/qwindow.h>
++#include <QtCore/qtimer.h>
++
++QT_BEGIN_NAMESPACE
++
++class QPlatformTextureList;
++class QPlatformTextureListWatcher;
++class QWidgetRepaintManager;
++
++class Q_WIDGETS_EXPORT QWidgetRepaintManager
++{
++    Q_GADGET
++public:
++    enum UpdateTime {
++        UpdateNow,
++        UpdateLater
++    };
++    Q_ENUM(UpdateTime)
++
++    enum BufferState{
++        BufferValid,
++        BufferInvalid
++    };
++    Q_ENUM(BufferState)
++
++    QWidgetRepaintManager(QWidget *t);
++    ~QWidgetRepaintManager();
++
++    QBackingStore *backingStore() const { return store; }
++    void setBackingStore(QBackingStore *backingStore) { store = backingStore; }
++
++    template <class T>
++    void markDirty(const T &r, QWidget *widget, UpdateTime updateTime = UpdateLater,
++                   BufferState bufferState = BufferValid);
++
++    void removeDirtyWidget(QWidget *w);
++
++    void sync(QWidget *exposedWidget, const QRegion &exposedRegion);
++    void sync();
++
++    void markNeedsFlush(QWidget *widget, const QRegion &region, const QPoint &topLevelOffset);
++
++    void addStaticWidget(QWidget *widget);
++    void moveStaticWidgets(QWidget *reparented);
++    void removeStaticWidget(QWidget *widget);
++    QRegion staticContents(QWidget *widget = nullptr, const QRect &withinClipRect = QRect()) const;
++    QRegion dirtyRegion() const { return dirty; }
++    QList<QWidget *> dirtyWidgetList() const { return dirtyWidgets; }
++    bool isDirty() const;
++
++    bool bltRect(const QRect &rect, int dx, int dy, QWidget *widget);
++
++private:
++    void updateLists(QWidget *widget);
++
++    void addDirtyWidget(QWidget *widget, const QRegion &rgn);
++    void resetWidget(QWidget *widget);
++
++    void addDirtyRenderToTextureWidget(QWidget *widget);
++
++    void sendUpdateRequest(QWidget *widget, UpdateTime updateTime);
++
++    bool syncAllowed();
++    void paintAndFlush();
++
++    void markNeedsFlush(QWidget *widget, const QRegion &region = QRegion());
++
++    void scheduleRhiRecovery(QWidget *widget);
++    void recoverRhi();
++
++    void flush();
++    void flush(QWidget *widget, const QRegion &region, QPlatformTextureList *widgetTextures);
++
++    bool hasStaticContents() const;
++    void updateStaticContentsSize();
++
++    QWidget *tlw = nullptr;
++    QBackingStore *store = nullptr;
++
++    QRegion dirty; // needsRepaint
++    QList<QWidget *> dirtyWidgets;
++    QList<QWidget *> dirtyRenderToTextureWidgets;
++
++    QRegion topLevelNeedsFlush;
++    QList<QWidget *> needsFlushWidgets;
++
++    QList<QWidget *> staticWidgets;
++
++    QPlatformTextureListWatcher *textureListWatcher = nullptr;
++
++    bool updateRequestSent = false;
++
++    QTimer rhiRecoveryTimer;
++    QHash<QSurface::SurfaceType, QPointer<QWidget>> pendingRhiRecoveries;
++    QSet<QSurface::SurfaceType> recoveringRhiSurfaces;
++    int rhiRecoveryDelay = 0;
++
++    QElapsedTimer perfTime;
++    int perfFrames = 0;
++
++    Q_DISABLE_COPY_MOVE(QWidgetRepaintManager)
++};
++
++QT_END_NAMESPACE
++
++#endif // QWIDGETREPAINTMANAGER_P_H

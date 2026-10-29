@@ -1,0 +1,572 @@
+Bound aggregate SVG offscreen and filter image memory.
+
+Telegram-originated hardening, not an upstream backport. Each image QtSvg
+allocates for a filter, mask, pattern or offscreen buffer is limited only by
+the per-image allocation limit, but an untrusted document could keep one
+filter region image alive per distinct result name and one buffer per nested
+filtered element, many gigabytes in total.
+
+For untrusted documents reserve every such image, and the transient workspace
+of each filter primitive, from one budget owned by the document before it is
+allocated, and return it when the last copy of the image is destroyed. Live
+storage of these images stays at most B = clamp(24 * 4 * W * H bytes, 96 MiB,
+768 MiB), where W x H is the largest root paint device the document was drawn
+on. A denied allocation takes the existing "too big, ignoring" fallback, and
+AssumeTrustedSource documents stay exempt as from the nesting limit.
+
+diff --git a/src/svg/qsvgdocument.cpp b/src/svg/qsvgdocument.cpp
+index 8c6cb4a8..7a3bcb38 100644
+--- a/src/svg/qsvgdocument.cpp
++++ b/src/svg/qsvgdocument.cpp
+@@ -31,6 +31,8 @@ QSvgDocument::QSvgDocument(QtSvg::Options options, QtSvg::AnimatorType type)
+     , m_options(options)
+ {
+     m_states.trustedSource = m_options.testFlag(QtSvg::AssumeTrustedSource);
++    if (!m_states.trustedSource)
++        m_states.renderBudget = &m_renderBudget;
+     bool animationEnabled = !m_options.testFlag(QtSvg::DisableAnimations);
+     switch (type) {
+         case QtSvg::AnimatorType::Automatic:
+@@ -257,6 +259,7 @@ void QSvgDocument::draw(QPainter *p, const QRectF &bounds)
+     if (displayMode() == QSvgNode::NoneMode)
+         return;
+ 
++    m_renderBudget.raiseAllowance(p->device());
+     p->save();
+     //sets default style on the painter
+     //### not the most optimal way
+@@ -285,6 +288,7 @@ void QSvgDocument::draw(QPainter *p, const QString &id,
+     if (node->displayMode() == QSvgNode::NoneMode)
+         return;
+ 
++    m_renderBudget.raiseAllowance(p->device());
+     p->save();
+ 
+     const QRectF elementBounds = node->bounds();
+diff --git a/src/svg/qsvgdocument_p.h b/src/svg/qsvgdocument_p.h
+index ef6a0087..3594ef98 100644
+--- a/src/svg/qsvgdocument_p.h
++++ b/src/svg/qsvgdocument_p.h
+@@ -99,6 +99,8 @@ public:
+ 
+     QSharedPointer<QSvgAbstractAnimator> animator() const;
+ 
++    QSvgRenderBudget *renderBudget() const { return m_states.renderBudget; }
++
+ private:
+     void mapSourceToTarget(QPainter *p, const QRectF &targetRect, const QRectF &sourceRect = QRectF());
+ private:
+@@ -118,6 +120,7 @@ private:
+     bool  m_animated;
+     int   m_fps;
+ 
++    QSvgRenderBudget m_renderBudget;
+     QSvgExtraStates m_states;
+ 
+     const QtSvg::Options m_options;
+diff --git a/src/svg/qsvgnode.cpp b/src/svg/qsvgnode.cpp
+index a6582301..1021e5ca 100644
+--- a/src/svg/qsvgnode.cpp
++++ b/src/svg/qsvgnode.cpp
+@@ -70,7 +70,7 @@ void QSvgNode::draw(QPainter *p, QSvgExtraStates &states)
+             p->setTransform(xf);
+             QRectF boundsRect = xf.mapRect(filterNode->filterRegion(localRect));
+             QImage proxy = drawIntoBuffer(p, states, boundsRect.toRect());
+-            proxy = filterNode->applyFilter(proxy, p, localRect);
++            proxy = filterNode->applyFilter(proxy, p, localRect, states);
+             if (maskNode && maskNode->type() == QSvgNode::Mask) {
+                 boundsRect = QRectF(proxy.offset(), proxy.size());
+                 localRect = p->transform().inverted().mapRect(boundsRect);
+@@ -155,7 +155,8 @@ void QSvgNode::drawWithMask(QPainter *p, QSvgExtraStates &states, const QImage &
+ QImage QSvgNode::drawIntoBuffer(QPainter *p, QSvgExtraStates &states, const QRect &boundsRect)
+ {
+     QImage proxy;
+-    if (!QImageIOHandler::allocateImage(boundsRect.size(), QImage::Format_ARGB32_Premultiplied, &proxy)) {
++    if (!QSvgRenderBudget::allocateImage(states, boundsRect.size(),
++                                         QImage::Format_ARGB32_Premultiplied, &proxy)) {
+         qCWarning(lcSvgDraw) << "The requested buffer size is too big, ignoring";
+         return proxy;
+     }
+@@ -397,6 +398,8 @@ QRectF QSvgNode::bounds() const
+     QPainter p(&dummy);
+     initPainter(&p);
+     QSvgExtraStates states;
++    if (const QSvgDocument *doc = document())
++        states.renderBudget = doc->renderBudget();
+ 
+     if (parent())
+         parent()->applyStyleRecursive(&p, states);
+diff --git a/src/svg/qsvgstructure.cpp b/src/svg/qsvgstructure.cpp
+index 4f148ef3..c6d48223 100644
+--- a/src/svg/qsvgstructure.cpp
++++ b/src/svg/qsvgstructure.cpp
+@@ -19,8 +19,11 @@
+ #include <QLoggingCategory>
+ #include <qscopedvaluerollback.h>
+ #include <QtGui/qimageiohandler.h>
++#include <QtGui/qimagereader.h>
+ 
+ #include <QtCore/qlatin1stringview.h>
++#include <QtCore/qmath.h>
++#include <QtCore/qnumeric.h>
+ #include <QtCore/qstringview.h>
+ #include <QtCore/private/qoffsetstringarray_p.h>
+ 
+@@ -478,7 +481,64 @@ void QSvgMarker::drawHelper(const QSvgNode *node, QPainter *p,
+     }
+ }
+ 
+-QImage QSvgFilterContainer::applyFilter(const QImage &buffer, QPainter *p, const QRectF &bounds) const
++// Bytes allocateImage() allocates for a 32-bit primitive image, or 0 where it refuses the size
++// and the primitive gives up at that point with a null result.
++static qint64 allocatableImageBytes(QSize size)
++{
++    const qint64 bytes = QSvgRenderBudget::imageBytes(size, QImage::Format_ARGB32_Premultiplied);
++    const int mbLimit = QImageReader::allocationLimit();
++    if (bytes <= 0 || (mbLimit && bytes > qint64(mbLimit) * (1 << 20)))
++        return 0;
++    return bytes;
++}
++
++// Storage a primitive allocates while it runs, besides its sources: the result and up to two
++// detached copies of shared sources (non-const scanLine()), or for a nonzero blur the result,
++// a scale-only copy and 32 byte ColorValues: 1024 inline plus, above 1024 pixels, one per pixel.
++static qint64 filterWorkspaceBytes(const QSvgFeFilterPrimitive *filter, QPainter *p,
++                                   const QRectF &itemBounds, const QRectF &filterBounds,
++                                   QtSvg::UnitTypes primitiveUnits, QtSvg::UnitTypes filterUnits,
++                                   qint64 largestSourceBytes)
++{
++    const qint64 resultBytes = allocatableImageBytes(filter->globalSubRegion(
++            p, itemBounds, filterBounds, primitiveUnits, filterUnits).toRect().size());
++    qint64 bytes = 0;
++    if (filter->type() != QSvgNode::FeGaussianblur) {
++        if (resultBytes == 0)
++            return 0;
++        if (qMulOverflow(largestSourceBytes, qint64(2), &bytes)
++                || qAddOverflow(bytes, resultBytes, &bytes)) {
++            return -1;
++        }
++        return bytes;
++    }
++
++    const QSvgFeGaussianBlur *blur = static_cast<const QSvgFeGaussianBlur *>(filter);
++    if (blur->stdDeviationX() == 0 && blur->stdDeviationY() == 0)
++        return 0;
++    const QTransform &xf = p->transform();
++    const QTransform scale = QTransform::fromScale(qHypot(xf.m11(), xf.m21()),
++                                                   qHypot(xf.m12(), xf.m22()));
++    const QRect tempRect = scale.mapRect(filter->localSubRegion(
++            itemBounds, filterBounds, primitiveUnits, filterUnits)).toRect();
++    const qint64 tempBytes = allocatableImageBytes(tempRect.size());
++    if (tempBytes == 0)
++        return 0;
++    constexpr qint64 tableInlineEntries = 32 * 32;
++    constexpr qint64 tableEntryBytes = 32;
++    const qint64 tempPixels = qint64(tempRect.width()) * tempRect.height();
++    qint64 tableEntries = tableInlineEntries;
++    if ((tempPixels > tableInlineEntries && qAddOverflow(tableEntries, tempPixels, &tableEntries))
++            || qMulOverflow(tableEntries, tableEntryBytes, &bytes)
++            || qAddOverflow(bytes, tempBytes, &bytes)
++            || qAddOverflow(bytes, resultBytes, &bytes)) {
++        return -1;
++    }
++    return bytes;
++}
++
++QImage QSvgFilterContainer::applyFilter(const QImage &buffer, QPainter *p, const QRectF &bounds,
++                                        const QSvgExtraStates &states) const
+ {
+     QRectF localFilterRegion = m_rect.resolveRelativeLengths(bounds, m_filterUnits);
+     QRect globalFilterRegion = p->transform().mapRect(localFilterRegion).toRect();
+@@ -488,14 +548,21 @@ QImage QSvgFilterContainer::applyFilter(const QImage &buffer, QPainter *p, const
+         return buffer;
+ 
+     QImage proxy;
+-    if (!QImageIOHandler::allocateImage(globalFilterRegionRel.size(), buffer.format(), &proxy)) {
+-        qCWarning(lcSvgDraw) << "The requested filter is too big, ignoring";
+-        return buffer;
++    {
++        // The copy is made while the size-checking image still exists.
++        QSvgRenderLease lease(states);
++        const qint64 proxyBytes = QSvgRenderBudget::imageBytes(globalFilterRegionRel.size(),
++                                                               buffer.format());
++        if (!lease.reserve(proxyBytes) || !lease.reserve(proxyBytes)
++                || !QImageIOHandler::allocateImage(globalFilterRegionRel.size(), buffer.format(), &proxy)) {
++            qCWarning(lcSvgDraw) << "The requested filter is too big, ignoring";
++            return buffer;
++        }
++        proxy = buffer.copy(globalFilterRegionRel);
++        proxy.setOffset(globalFilterRegion.topLeft());
++        if (proxy.isNull() || !lease.attach(proxy))
++            return buffer;
+     }
+-    proxy = buffer.copy(globalFilterRegionRel);
+-    proxy.setOffset(globalFilterRegion.topLeft());
+-    if (proxy.isNull())
+-        return buffer;
+ 
+     QMap<QString, QImage> buffers;
+     buffers[QStringLiteral("")] = proxy;
+@@ -512,19 +579,40 @@ QImage QSvgFilterContainer::applyFilter(const QImage &buffer, QPainter *p, const
+     }
+ 
+     if (requiresSourceAlpha) {
++        // The Alpha8 intermediate lives until the second conversion is done.
++        QSvgRenderLease lease(states);
++        if (!lease.reserve(QSvgRenderBudget::imageBytes(proxy.size(), QImage::Format_Alpha8))
++                || !lease.reserve(proxy.sizeInBytes())) {
++            qCWarning(lcSvgDraw) << "The requested filter is too big, ignoring";
++            return buffer;
++        }
+         QImage proxyAlpha = proxy.convertedTo(QImage::Format_Alpha8).convertedTo(proxy.format());
+         proxyAlpha.setOffset(proxy.offset());
+-        if (proxyAlpha.isNull())
++        if (proxyAlpha.isNull() || !lease.attach(proxyAlpha))
+             return buffer;
+         buffers[QStringLiteral("SourceAlpha")] = std::move(proxyAlpha);
+     }
+ 
++    qint64 largestSourceBytes = proxy.sizeInBytes();
+     QImage result;
+     for (const auto &node : renderers()) {
+         const QSvgFeFilterPrimitive *filter = QSvgFeFilterPrimitive::castToFilterPrimitive(node.get());
+         if (filter) {
++            QSvgRenderLease lease(states);
++            if (!lease.reserve(filterWorkspaceBytes(filter, p, bounds, localFilterRegion,
++                                                    m_primitiveUnits, m_filterUnits,
++                                                    largestSourceBytes))) {
++                qCWarning(lcSvgDraw) << "The requested filter is too big, ignoring";
++                return buffer;
++            }
+             result = filter->apply(buffers, p, bounds, localFilterRegion, m_primitiveUnits, m_filterUnits);
+             if (!result.isNull()) {
++                // A returned source already carries its charge.
++                if (!lease.attach(result)) {
++                    qCWarning(lcSvgDraw) << "The requested filter is too big, ignoring";
++                    return buffer;
++                }
++                largestSourceBytes = qMax(largestSourceBytes, qint64(result.sizeInBytes()));
+                 buffers[QStringLiteral("")] = result;
+                 buffers[filter->result()] = result;
+             }
+@@ -790,7 +878,7 @@ QImage QSvgMask::createMask(QPainter *p, QSvgExtraStates &states, const QRectF &
+     *globalRect = imageBound.toRectF();
+ 
+     QImage mask;
+-    if (!QImageIOHandler::allocateImage(imageBound.size(), QImage::Format_RGBA8888, &mask)) {
++    if (!QSvgRenderBudget::allocateImage(states, imageBound.size(), QImage::Format_RGBA8888, &mask)) {
+         qCWarning(lcSvgDraw) << "The requested mask size is too big, ignoring";
+         return mask;
+     }
+@@ -822,6 +910,7 @@ QImage QSvgMask::createMask(QPainter *p, QSvgExtraStates &states, const QRectF &
+     QSvgExtraStates maskNodeStates;
+     maskNodeStates.trustedSource = states.trustedSource;
+     maskNodeStates.remainingNestedNodes = states.remainingNestedNodes;
++    maskNodeStates.renderBudget = states.renderBudget;
+     applyStyleRecursive(&painter, maskNodeStates);
+ 
+     // The transformation of the mask node is not relevant. What matters are the contentUnits
+@@ -948,10 +1037,15 @@ QImage QSvgPattern::patternImage(QPainter *p, QSvgExtraStates &states, const QSv
+         return QImage(); // Avoid division by zero in calculateAppliedTransform()
+ 
+     calculateAppliedTransform(t, peBoundingBox, imageSize);
+-    if (document()->isCalculatingImplicitViewBox())
+-        return QImage(imageSize, QImage::Format_ARGB32); // dummy image to avoid endless recursion
+-    else
+-        return renderPattern(imageSize, std::make_pair(contentScaleFactorX, contentScaleFactorY), states);
++    if (document()->isCalculatingImplicitViewBox()) {
++        QImage dummy; // dummy image to avoid endless recursion
++        if (!QSvgRenderBudget::allocateImage(states, imageSize, QImage::Format_ARGB32, &dummy)) {
++            qCWarning(lcSvgDraw) << "The requested pattern size is too big, ignoring";
++            return defaultPattern();
++        }
++        return dummy;
++    }
++    return renderPattern(imageSize, std::make_pair(contentScaleFactorX, contentScaleFactorY), states);
+ }
+ 
+ QSvgNode::Type QSvgPattern::type() const
+@@ -966,7 +1060,7 @@ QImage QSvgPattern::renderPattern(QSize size, std::pair<qreal, qreal> scale, con
+ 
+     // Allocate a QImage to draw the pattern in with the calculated size.
+     QImage pattern;
+-    if (!QImageIOHandler::allocateImage(size, QImage::Format_ARGB32, &pattern)) {
++    if (!QSvgRenderBudget::allocateImage(states, size, QImage::Format_ARGB32, &pattern)) {
+         qCWarning(lcSvgDraw) << "The requested pattern size is too big, ignoring";
+         return defaultPattern();
+     }
+@@ -984,6 +1078,7 @@ QImage QSvgPattern::renderPattern(QSize size, std::pair<qreal, qreal> scale, con
+     QSvgExtraStates patternStates;
+     patternStates.trustedSource = states.trustedSource;
+     patternStates.remainingNestedNodes = states.remainingNestedNodes;
++    patternStates.renderBudget = states.renderBudget;
+     initPainter(&patternPainter);
+     applyStyleRecursive(&patternPainter, patternStates);
+     patternPainter.resetTransform();
+diff --git a/src/svg/qsvgstructure_p.h b/src/svg/qsvgstructure_p.h
+index 75f8d7cc..8f62cfc7 100644
+--- a/src/svg/qsvgstructure_p.h
++++ b/src/svg/qsvgstructure_p.h
+@@ -218,7 +218,8 @@ public:
+     void drawCommand(QPainter *, QSvgExtraStates &) override {};
+     bool shouldDrawNode(QPainter *, QSvgExtraStates &) const override;
+     Type type() const override;
+-    QImage applyFilter(const QImage &buffer, QPainter *p, const QRectF &bounds) const;
++    QImage applyFilter(const QImage &buffer, QPainter *p, const QRectF &bounds,
++                       const QSvgExtraStates &states) const;
+     void setSupported(bool supported);
+     bool supported() const;
+     QRectF filterRegion(const QRectF &itemBounds) const;
+diff --git a/src/svg/qsvgstyle.cpp b/src/svg/qsvgstyle.cpp
+index 489ae6be..2a262e5f 100644
+--- a/src/svg/qsvgstyle.cpp
++++ b/src/svg/qsvgstyle.cpp
+@@ -14,6 +14,9 @@
+ #include "qcolor.h"
+ #include "qdebug.h"
+ 
++#include <QtGui/qimageiohandler.h>
++#include <QtGui/private/qimage_p.h>
++
+ QT_BEGIN_NAMESPACE
+ 
+ QSvgRefCounted::~QSvgRefCounted()
+@@ -32,6 +35,142 @@ QSvgExtraStates::QSvgExtraStates()
+ {
+ }
+ 
++class QSvgRenderBudgetData : public QSharedData
++{
++public:
++    // Never exceeds renderingMaxMemoryBudget, so it fits qsizetype atomics on every platform.
++    QAtomicInteger<qsizetype> live;
++};
++
++namespace {
++
++struct QSvgImageReservation
++{
++    QExplicitlySharedDataPointer<QSvgRenderBudgetData> data;
++    qsizetype bytes;
++};
++
++// Runs from ~QImageData of the last alias, on whichever thread drops it.
++void releaseImageReservation(void *info)
++{
++    QSvgImageReservation *reservation = static_cast<QSvgImageReservation *>(info);
++    reservation->data->live.fetchAndSubRelaxed(reservation->bytes);
++    delete reservation;
++}
++
++}
++
++QSvgRenderBudget::QSvgRenderBudget()
++    : m_allowance(QtSvg::renderingMinMemoryBudget)
++{
++}
++
++QSvgRenderBudget::~QSvgRenderBudget()
++    = default;
++
++void QSvgRenderBudget::raiseAllowance(const QPaintDevice *rootDevice)
++{
++    if (!rootDevice)
++        return;
++    const qint64 width = rootDevice->width();
++    const qint64 height = rootDevice->height();
++    if (width <= 0 || height <= 0)
++        return;
++
++    constexpr qint64 bytesPerPixel = 4;
++    constexpr qint64 factor = bytesPerPixel * QtSvg::renderingMemoryBudgetDeviceFactor;
++    const qint64 area = width * height;
++    const qint64 allowance = area >= QtSvg::renderingMaxMemoryBudget / factor
++            ? QtSvg::renderingMaxMemoryBudget
++            : area * factor;
++    m_allowance = qMax(m_allowance, allowance);
++}
++
++qint64 QSvgRenderBudget::imageBytes(QSize size, QImage::Format format)
++{
++    if (size.isEmpty() || format <= QImage::Format_Invalid || format >= QImage::NImageFormats)
++        return -1;
++    const QImageData::ImageSizeParameters params = QImageData::calculateImageParameters(
++            size.width(), size.height(), qt_depthForFormat(format));
++    return params.isValid() ? qint64(params.totalSize) : -1;
++}
++
++bool QSvgRenderBudget::allocateImage(const QSvgExtraStates &states, QSize size,
++                                     QImage::Format format, QImage *image)
++{
++    QSvgRenderLease lease(states);
++    if (!lease.reserve(imageBytes(size, format))
++            || !QImageIOHandler::allocateImage(size, format, image)
++            || !lease.attach(*image)) {
++        *image = QImage();
++        return false;
++    }
++    return true;
++}
++
++bool QSvgRenderBudget::reserve(qint64 bytes)
++{
++    if (bytes == 0)
++        return true;
++    if (bytes > m_allowance)
++        return false;
++    if (!m_data)
++        m_data.reset(new QSvgRenderBudgetData);
++
++    qsizetype live = m_data->live.loadRelaxed();
++    do {
++        if (bytes > m_allowance - live)
++            return false;
++    } while (!m_data->live.testAndSetRelaxed(live, live + qsizetype(bytes), live));
++    return true;
++}
++
++void QSvgRenderBudget::release(qint64 bytes)
++{
++    if (bytes > 0)
++        m_data->live.fetchAndSubRelaxed(qsizetype(bytes));
++}
++
++QSvgRenderLease::QSvgRenderLease(const QSvgExtraStates &states)
++    : m_budget(states.trustedSource ? nullptr : states.renderBudget)
++{
++}
++
++QSvgRenderLease::~QSvgRenderLease()
++{
++    if (m_budget)
++        m_budget->release(m_reserved);
++}
++
++bool QSvgRenderLease::reserve(qint64 bytes)
++{
++    if (!m_budget)
++        return true;
++    if (bytes < 0 || !m_budget->reserve(bytes))
++        return false;
++    m_reserved += bytes;
++    return true;
++}
++
++bool QSvgRenderLease::attach(QImage &image)
++{
++    QImageData *d = QImageData::get(image);
++    if (!d || d->nbytes <= 0)
++        return false;
++    if (!m_budget || d->cleanupFunction == releaseImageReservation)
++        return true;
++    if (d->cleanupFunction)
++        return false; // never replace a foreign cleanup hook
++
++    const qint64 bytes = d->nbytes;
++    if (bytes > m_reserved && !reserve(bytes - m_reserved))
++        return false;
++    d->cleanupInfo = new QSvgImageReservation{ m_budget->m_data, d->nbytes };
++    d->cleanupFunction = releaseImageReservation;
++    m_reserved -= bytes;
++    return true;
++}
++
+ QSvgStyleProperty::~QSvgStyleProperty()
+     = default;
+ 
+diff --git a/src/svg/qsvgstyle_p.h b/src/svg/qsvgstyle_p.h
+index 69a64cca..2ac8c339 100644
+--- a/src/svg/qsvgstyle_p.h
++++ b/src/svg/qsvgstyle_p.h
+@@ -17,7 +17,9 @@
+ // We mean it.
+ //
+ 
++#include "QtCore/qshareddata.h"
+ #include "QtCore/qstack.h"
++#include "QtGui/qimage.h"
+ #include "QtGui/qpainter.h"
+ #include "QtGui/qpainterpath.h"
+ #include "QtGui/qpen.h"
+@@ -31,10 +33,13 @@
+ QT_BEGIN_NAMESPACE
+ 
+ class QPainter;
++class QPaintDevice;
+ class QSvgNode;
+ class QSvgFont;
+ class QSvgDocument;
+ class QSvgPattern;
++class QSvgRenderBudget;
++class QSvgRenderBudgetData;
+ 
+ template <class T> class QSvgRefCounter
+ {
+@@ -129,11 +134,51 @@ struct Q_SVG_EXPORT QSvgExtraStates
+     int nestedUseCount = 0;
+     bool trustedSource = false;
+     quint8 remainingNestedNodes = QtSvg::renderingMaxNestedNodes;
++    QSvgRenderBudget *renderBudget = nullptr; // owned by the document, null when trusted
+     bool vectorEffect; // true if pen is cosmetic
+     qint8 imageRendering; // QSvgQualityStyle::ImageRendering
+     bool inUse = false; // true if currently in QSvgUseNode
+ };
+ 
++class Q_SVG_EXPORT QSvgRenderBudget
++{
++    Q_DISABLE_COPY_MOVE(QSvgRenderBudget)
++public:
++    QSvgRenderBudget();
++    ~QSvgRenderBudget();
++
++    void raiseAllowance(const QPaintDevice *rootDevice);
++
++    static qint64 imageBytes(QSize size, QImage::Format format);
++    static bool allocateImage(const QSvgExtraStates &states, QSize size, QImage::Format format,
++                              QImage *image);
++
++private:
++    friend class QSvgRenderLease;
++
++    bool reserve(qint64 bytes);
++    void release(qint64 bytes);
++
++    // Created on the first charge and kept alive by every charged image.
++    QExplicitlySharedDataPointer<QSvgRenderBudgetData> m_data;
++    qint64 m_allowance;
++};
++
++class Q_SVG_EXPORT QSvgRenderLease
++{
++    Q_DISABLE_COPY_MOVE(QSvgRenderLease)
++public:
++    explicit QSvgRenderLease(const QSvgExtraStates &states);
++    ~QSvgRenderLease();
++
++    bool reserve(qint64 bytes);
++    bool attach(QImage &image);
++
++private:
++    QSvgRenderBudget *m_budget;
++    qint64 m_reserved = 0;
++};
++
+ class Q_SVG_EXPORT QSvgStyleProperty : public QSvgRefCounted
+ {
+ public:
+diff --git a/src/svg/qtsvgglobal_p.h b/src/svg/qtsvgglobal_p.h
+index 4981e473..c4f3c4d5 100644
+--- a/src/svg/qtsvgglobal_p.h
++++ b/src/svg/qtsvgglobal_p.h
+@@ -44,6 +44,11 @@ enum class OffsetRotateType : quint32 {
+ };
+ 
+ constexpr quint8 renderingMaxNestedNodes = 32;
++
++// Live offscreen image storage of one document scales with its root paint device.
++constexpr qint64 renderingMinMemoryBudget = qint64(96) << 20;
++constexpr qint64 renderingMaxMemoryBudget = qint64(768) << 20;
++constexpr qint64 renderingMemoryBudgetDeviceFactor = 24;
+ }
+ 
+ QT_END_NAMESPACE

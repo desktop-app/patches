@@ -1,0 +1,585 @@
+Subject: [PATCH] Keep incomplete RHI resource initialization retriable
+
+QRhiWidget must finish its target initialization before invoking render, also
+after partial creation or resize failures. Failed framebuffer grabs return an
+empty image. Discard failed compositor resources and balance aborted frames
+without presenting incomplete contents, retaining valid queued uploads.
+
+diff --git a/src/gui/painting/qbackingstoredefaultcompositor.cpp b/src/gui/painting/qbackingstoredefaultcompositor.cpp
+index 4f0a1225115..6fabd659266 100644
+--- a/src/gui/painting/qbackingstoredefaultcompositor.cpp
++++ b/src/gui/painting/qbackingstoredefaultcompositor.cpp
+@@ -343,16 +343,22 @@ QBackingStoreDefaultCompositor::PerQuadData QBackingStoreDefaultCompositor::crea
+     PerQuadData d;
+ 
+     d.ubuf = m_rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, UBUF_SIZE);
+-    if (!d.ubuf->create())
++    if (!d.ubuf->create()) {
+         qWarning("QBackingStoreDefaultCompositor: Failed to create uniform buffer");
++        d.reset();
++        return d;
++    }
+ 
+     d.srb = m_rhi->newShaderResourceBindings();
+     d.srb->setBindings({
+         QRhiShaderResourceBinding::uniformBuffer(0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, d.ubuf, 0, UBUF_SIZE),
+         QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, texture, m_samplerNearest.get())
+     });
+-    if (!d.srb->create())
++    if (!d.srb->create()) {
+         qWarning("QBackingStoreDefaultCompositor: Failed to create srb");
++        d.reset();
++        return d;
++    }
+     d.lastUsedTexture = texture;
+ 
+     if (textureExtra) {
+@@ -361,8 +367,11 @@ QBackingStoreDefaultCompositor::PerQuadData QBackingStoreDefaultCompositor::crea
+             QRhiShaderResourceBinding::uniformBuffer(0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, d.ubuf, 0, UBUF_SIZE),
+             QRhiShaderResourceBinding::sampledTexture(1, QRhiShaderResourceBinding::FragmentStage, textureExtra, m_samplerNearest.get())
+         });
+-        if (!d.srbExtra->create())
++        if (!d.srbExtra->create()) {
+             qWarning("QBackingStoreDefaultCompositor: Failed to create srb");
++            d.reset();
++            return d;
++        }
+     }
+ 
+     d.lastUsedTextureExtra = textureExtra;
+@@ -370,7 +379,7 @@ QBackingStoreDefaultCompositor::PerQuadData QBackingStoreDefaultCompositor::crea
+     return d;
+ }
+ 
+-void QBackingStoreDefaultCompositor::updatePerQuadData(PerQuadData *d, QRhiTexture *texture, QRhiTexture *textureExtra,
++bool QBackingStoreDefaultCompositor::updatePerQuadData(PerQuadData *d, QRhiTexture *texture, QRhiTexture *textureExtra,
+                                                        UpdateQuadDataOptions options)
+ {
+     // This whole check-if-texture-ptr-is-different is needed because there is
+@@ -378,8 +387,10 @@ void QBackingStoreDefaultCompositor::updatePerQuadData(PerQuadData *d, QRhiTextu
+     // QRhiTexture* from the same index in a subsequent flush.
+ 
+     const QRhiSampler::Filter filter = options.testFlag(NeedsLinearFiltering) ? QRhiSampler::Linear : QRhiSampler::Nearest;
+-    if ((d->lastUsedTexture == texture && d->lastUsedFilter == filter) || !d->srb)
+-        return;
++    if (!d->isValid())
++        return false;
++    if (d->lastUsedTexture == texture && d->lastUsedTextureExtra == textureExtra && d->lastUsedFilter == filter)
++        return true;
+ 
+     QRhiSampler *sampler = filter == QRhiSampler::Linear ? m_samplerLinear.get() : m_samplerNearest.get();
+     d->srb->setBindings({
+@@ -405,13 +416,18 @@ void QBackingStoreDefaultCompositor::updatePerQuadData(PerQuadData *d, QRhiTextu
+         });
+ 
+         if (needsCreate) {
+-            if (!d->srbExtra->create())
++            if (!d->srbExtra->create()) {
+                 qWarning("QBackingStoreDefaultCompositor: Failed to create srb");
++                delete d->srbExtra;
++                d->srbExtra = nullptr;
++                return false;
++            }
+         } else {
+             d->srbExtra->updateResources(QRhiShaderResourceBindings::BindingsAreSorted);
+         }
+-        d->lastUsedTextureExtra = textureExtra;
+     }
++    d->lastUsedTextureExtra = textureExtra;
++    return true;
+ }
+ 
+ void QBackingStoreDefaultCompositor::updateUniforms(PerQuadData *d, QRhiResourceUpdateBatch *resourceUpdates,
+@@ -426,7 +442,7 @@ void QBackingStoreDefaultCompositor::updateUniforms(PerQuadData *d, QRhiResource
+     resourceUpdates->updateDynamicBuffer(d->ubuf, 116, 4, &textureSwizzle);
+ }
+ 
+-void QBackingStoreDefaultCompositor::ensureResources(QRhiResourceUpdateBatch *resourceUpdates,
++bool QBackingStoreDefaultCompositor::ensureResources(QRhiResourceUpdateBatch *resourceUpdates,
+                                                      QRhiRenderPassDescriptor *rpDesc,
+                                                      QRhiTexture *backingStoreTexture)
+ {
+@@ -443,27 +459,39 @@ void QBackingStoreDefaultCompositor::ensureResources(QRhiResourceUpdateBatch *re
+         m_vbuf.reset(m_rhi->newBuffer(QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer, sizeof(vertexData)));
+         if (m_vbuf->create())
+             resourceUpdates->uploadStaticBuffer(m_vbuf.get(), vertexData);
+-        else
++        else {
+             qWarning("QBackingStoreDefaultCompositor: Failed to create vertex buffer");
++            m_vbuf.reset();
++            return false;
++        }
+     }
+ 
+     if (!m_samplerNearest) {
+         m_samplerNearest.reset(m_rhi->newSampler(QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None,
+                                                  QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge));
+-        if (!m_samplerNearest->create())
++        if (!m_samplerNearest->create()) {
+             qWarning("QBackingStoreDefaultCompositor: Failed to create sampler (Nearest filtering)");
++            m_samplerNearest.reset();
++            return false;
++        }
+     }
+ 
+     if (!m_samplerLinear) {
+         m_samplerLinear.reset(m_rhi->newSampler(QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::None,
+                                                 QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge));
+-        if (!m_samplerLinear->create())
++        if (!m_samplerLinear->create()) {
+             qWarning("QBackingStoreDefaultCompositor: Failed to create sampler (Linear filtering)");
++            m_samplerLinear.reset();
++            return false;
++        }
+     }
+ 
+     if (!m_widgetQuadData.isValid())
+         m_widgetQuadData = createPerQuadData(backingStoreTexture);
+ 
++    if (!m_widgetQuadData.isValid())
++        return false;
++
+     QRhiShaderResourceBindings *srb = m_widgetQuadData.srb; // just for the layout
+     if (!m_psNoBlend)
+         m_psNoBlend.reset(createGraphicsPipeline(m_rhi, srb, rpDesc, PipelineBlend::None));
+@@ -471,6 +499,7 @@ void QBackingStoreDefaultCompositor::ensureResources(QRhiResourceUpdateBatch *re
+         m_psBlend.reset(createGraphicsPipeline(m_rhi, srb, rpDesc, PipelineBlend::Alpha));
+     if (!m_psPremulBlend)
+         m_psPremulBlend.reset(createGraphicsPipeline(m_rhi, srb, rpDesc, PipelineBlend::PremulAlpha));
++    return m_psNoBlend && m_psBlend && m_psPremulBlend;
+ }
+ 
+ QPlatformBackingStore::FlushResult
+@@ -624,7 +653,18 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+     if (!backingStoreTexture && !gotTextureFromGraphicsBuffer)
+         backingStoreTexture = toTexture(backingStore, rhi, resourceUpdates, dirtyRegion, &flags);
+ 
+-    ensureResources(resourceUpdates, swapchain->renderPassDescriptor(), backingStoreTexture);
++    const auto abortFrame = [&] {
++        cb->resourceUpdate(resourceUpdates);
++        if (gotNativeTexture)
++            backingStore->nativeTextureWasComposited(nullptr);
++        const auto result = rhi->endFrame(swapchain, QRhi::SkipPresent);
++        return result == QRhi::FrameOpDeviceLost || rhi->isDeviceLost()
++                ? QPlatformBackingStore::FlushFailedDueToLostDevice
++                : QPlatformBackingStore::FlushFailed;
++    };
++    if (rhi->isDeviceLost()
++            || !ensureResources(resourceUpdates, swapchain->renderPassDescriptor(), backingStoreTexture))
++        return abortFrame();
+ 
+     UpdateUniformOptions uniformOptions;
+ #if Q_BYTE_ORDER == Q_LITTLE_ENDIAN
+@@ -672,8 +712,9 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+             const QMatrix3x3 source = sourceTransform(srcRect, backingStoreTexture->pixelSize(), origin);
+             const QMatrix4x4 target = targetTransform(targetRect, deviceWindowRect, invertTargetY);
+             updateUniforms(&m_widgetQuadData, resourceUpdates, target, source, uniformOptions);
+-            updatePerQuadData(&m_widgetQuadData, backingStoreTexture, nullptr,
+-                              needsLinearSampler ? UpdateQuadDataOptions(NeedsLinearFiltering) : UpdateQuadDataOptions());
++            if (!updatePerQuadData(&m_widgetQuadData, backingStoreTexture, nullptr,
++                              needsLinearSampler ? UpdateQuadDataOptions(NeedsLinearFiltering) : UpdateQuadDataOptions()))
++                return abortFrame();
+             backingStoreTextureUsed = true;
+         }
+     }
+@@ -706,11 +747,11 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+         if (t) {
+             if (!m_textureQuadData[i].isValid())
+                 m_textureQuadData[i] = createPerQuadData(t, tExtra);
+-            else
+-                updatePerQuadData(&m_textureQuadData[i], t, tExtra);
++            if (!m_textureQuadData[i].isValid()
++                    || !updatePerQuadData(&m_textureQuadData[i], t, tExtra,
++                                         needsLinearSampler ? UpdateQuadDataOptions(NeedsLinearFiltering) : UpdateQuadDataOptions()))
++                return abortFrame();
+             updateUniforms(&m_textureQuadData[i], resourceUpdates, target, source);
+-            if (needsLinearSampler)
+-                updatePerQuadData(&m_textureQuadData[i], t, tExtra, NeedsLinearFiltering);
+             if (!textureFlags.testFlag(QPlatformTextureList::StacksOnTop))
+                 ++textureWidgetsBelow;
+         } else {
+diff --git a/src/gui/painting/qbackingstoredefaultcompositor_p.h b/src/gui/painting/qbackingstoredefaultcompositor_p.h
+index d4d4e208258..70cf7d6e9b4 100644
+--- a/src/gui/painting/qbackingstoredefaultcompositor_p.h
++++ b/src/gui/painting/qbackingstoredefaultcompositor_p.h
+@@ -60,7 +60,7 @@ private:
+     };
+     Q_DECLARE_FLAGS(UpdateQuadDataOptions, UpdateQuadDataOption)
+ 
+-    void ensureResources(QRhiResourceUpdateBatch *resourceUpdates, QRhiRenderPassDescriptor *rpDesc,
++    bool ensureResources(QRhiResourceUpdateBatch *resourceUpdates, QRhiRenderPassDescriptor *rpDesc,
+                          QRhiTexture *backingStoreTexture);
+     QRhiTexture *toTexture(const QImage &image,
+                            QRhi *rhi,
+@@ -105,7 +105,7 @@ private:
+     QVarLengthArray<PerQuadData, 8> m_textureQuadData;
+ 
+     PerQuadData createPerQuadData(QRhiTexture *texture, QRhiTexture *textureExtra = nullptr);
+-    void updatePerQuadData(PerQuadData *d, QRhiTexture *texture, QRhiTexture *textureExtra = nullptr,
++    bool updatePerQuadData(PerQuadData *d, QRhiTexture *texture, QRhiTexture *textureExtra = nullptr,
+                            UpdateQuadDataOptions options = {});
+     void updateUniforms(PerQuadData *d, QRhiResourceUpdateBatch *resourceUpdates,
+                         const QMatrix4x4 &target, const QMatrix3x3 &source,
+diff --git a/src/widgets/kernel/qrhiwidget.cpp b/src/widgets/kernel/qrhiwidget.cpp
+index e7c23572ce4..a28f53e5c17 100644
+--- a/src/widgets/kernel/qrhiwidget.cpp
++++ b/src/widgets/kernel/qrhiwidget.cpp
+@@ -272,16 +272,15 @@ void QRhiWidget::paintEvent(QPaintEvent *)
+         return;
+ 
+     bool needsInit = false;
+-    d->ensureTexture(&needsInit);
+-    if (d->colorTexture || d->msaaColorBuffer) {
+-        bool canRender = true;
+-        if (needsInit)
+-            canRender = d->invokeInitialize(cb);
+-        if (canRender)
+-            render(cb);
+-    }
+-
+-    d->rhi->endOffscreenFrame();
++    d->textureInvalid = true;
++    auto canRender = d->ensureTexture(&needsInit);
++    if (canRender && (needsInit || !d->initialized))
++        canRender = d->invokeInitialize(cb);
++    if (canRender && !d->rhi->isDeviceLost())
++        render(cb);
++
++    const auto result = d->rhi->endOffscreenFrame();
++    d->textureInvalid = !canRender || result != QRhi::FrameOpSuccess;
+ }
+ 
+ /*!
+@@ -302,6 +301,7 @@ bool QRhiWidget::event(QEvent *e)
+             // this, and the QRhi we have currently set may be destroyed by the
+             // time we get to ensureRhi() again.
+             d->rhi->removeCleanupCallback(this);
++            d->rhiCleanupRegistered = false;
+             releaseResources(); // notify the user code about the early-release
+             d->releaseResources();
+             // must _not_ null out d->rhi here, for proper interaction with ensureRhi()
+@@ -397,14 +397,12 @@ QImage QRhiWidgetPrivate::grabFramebuffer()
+     QRhiReadbackResult readResult;
+     bool readCompleted = false;
+     bool needsInit = false;
+-    ensureTexture(&needsInit);
++    auto canRender = ensureTexture(&needsInit);
++    if (canRender && (needsInit || !initialized))
++        canRender = invokeInitialize(cb);
+ 
+-    if (colorTexture || msaaColorBuffer) {
+-        bool canRender = true;
+-        if (needsInit)
+-            canRender = invokeInitialize(cb);
+-        if (canRender)
+-            q->render(cb);
++    if (canRender && !rhi->isDeviceLost()) {
++        q->render(cb);
+ 
+         QRhiResourceUpdateBatch *readbackBatch = rhi->nextResourceUpdateBatch();
+         readResult.completed = [&readCompleted] { readCompleted = true; };
+@@ -412,9 +410,9 @@ QImage QRhiWidgetPrivate::grabFramebuffer()
+         cb->resourceUpdate(readbackBatch);
+     }
+ 
+-    rhi->endOffscreenFrame();
++    const auto result = rhi->endOffscreenFrame();
+ 
+-    if (readCompleted) {
++    if (result == QRhi::FrameOpSuccess && readCompleted && !readResult.data.isEmpty()) {
+         QImage::Format imageFormat = QImage::Format_RGBA8888;
+         switch (widgetTextureFormat) {
+         case QRhiWidget::TextureFormat::RGBA8:
+@@ -439,8 +437,6 @@ QImage QRhiWidgetPrivate::grabFramebuffer()
+             result = wrapperImage.copy();
+         result.setDevicePixelRatio(q->devicePixelRatio());
+         return result;
+-    } else {
+-        Q_UNREACHABLE();
+     }
+ 
+     return QImage();
+@@ -448,6 +444,8 @@ QImage QRhiWidgetPrivate::grabFramebuffer()
+ 
+ void QRhiWidgetPrivate::resetColorBufferObjects()
+ {
++    initialized = false;
++    textureInvalid = true;
+     if (colorTexture) {
+         pendingDeletes.append(colorTexture);
+         colorTexture = nullptr;
+@@ -464,6 +462,7 @@ void QRhiWidgetPrivate::resetColorBufferObjects()
+ 
+ void QRhiWidgetPrivate::resetRenderTargetObjects()
+ {
++    initialized = false;
+     if (renderTarget) {
+         renderTarget->deleteLater();
+         renderTarget = nullptr;
+@@ -498,7 +497,7 @@ void QRhiWidgetPrivate::ensureRhi()
+     }
+ 
+     // NB the rhi member may be an invalid object, the pointer can be used, but no deref
+-    if (currentRhi && rhi != currentRhi) {
++    if (currentRhi && (rhi != currentRhi || !rhiCleanupRegistered)) {
+         if (rhi) {
+             // if previously we created our own but now get a QRhi from the
+             // top-level, then drop what we have and start using the top-level's
+@@ -522,18 +521,20 @@ void QRhiWidgetPrivate::ensureRhi()
+         // while the QRhiWidget is still around.
+         currentRhi->addCleanupCallback(q, [q, this](QRhi *regRhi) {
+             if (!QWidgetPrivate::get(q)->data.in_destructor && this->rhi == regRhi) {
++                rhiCleanupRegistered = false;
+                 q->releaseResources(); // notify the user code about the early-release
+                 releaseResources();
+                 // must null out our ref, the QRhi object is going to be invalid
+                 this->rhi = nullptr;
+             }
+         });
++        rhiCleanupRegistered = true;
+     }
+ 
+     rhi = currentRhi;
+ }
+ 
+-void QRhiWidgetPrivate::ensureTexture(bool *changed)
++bool QRhiWidgetPrivate::ensureTexture(bool *changed)
+ {
+     Q_Q(QRhiWidget);
+ 
+@@ -578,7 +579,7 @@ void QRhiWidgetPrivate::ensureTexture(bool *changed)
+             qWarning("Failed to create backing texture for QRhiWidget");
+             delete colorTexture;
+             colorTexture = nullptr;
+-            return;
++            return false;
+         }
+     }
+ 
+@@ -599,7 +600,7 @@ void QRhiWidgetPrivate::ensureTexture(bool *changed)
+                 qWarning("Failed to create multisample color buffer for QRhiWidget");
+                 delete msaaColorBuffer;
+                 msaaColorBuffer = nullptr;
+-                return;
++                return false;
+             }
+         }
+         if (!resolveTexture) {
+@@ -610,7 +611,7 @@ void QRhiWidgetPrivate::ensureTexture(bool *changed)
+                 qWarning("Failed to create resolve texture for QRhiWidget");
+                 delete resolveTexture;
+                 resolveTexture = nullptr;
+-                return;
++                return false;
+             }
+         }
+     } else if (resolveTexture) {
+@@ -622,33 +623,46 @@ void QRhiWidgetPrivate::ensureTexture(bool *changed)
+         if (changed)
+             *changed = true;
+         colorTexture->setPixelSize(newSize);
+-        if (!colorTexture->create())
++        if (!colorTexture->create()) {
+             qWarning("Failed to rebuild texture for QRhiWidget after resizing");
++            resetRenderTargetObjects();
++            resetColorBufferObjects();
++            return false;
++        }
+     }
+ 
+     if (msaaColorBuffer && msaaColorBuffer->pixelSize() != newSize) {
+         if (changed)
+             *changed = true;
+         msaaColorBuffer->setPixelSize(newSize);
+-        if (!msaaColorBuffer->create())
++        if (!msaaColorBuffer->create()) {
+             qWarning("Failed to rebuild multisample color buffer for QRhiWidget after resizing");
++            resetRenderTargetObjects();
++            resetColorBufferObjects();
++            return false;
++        }
+     }
+ 
+     if (resolveTexture && resolveTexture->pixelSize() != newSize) {
+         if (changed)
+             *changed = true;
+         resolveTexture->setPixelSize(newSize);
+-        if (!resolveTexture->create())
++        if (!resolveTexture->create()) {
+             qWarning("Failed to rebuild resolve texture for QRhiWidget after resizing");
++            resetRenderTargetObjects();
++            resetColorBufferObjects();
++            return false;
++        }
+     }
+ 
+-    textureInvalid = false;
++    return true;
+ }
+ 
+ bool QRhiWidgetPrivate::invokeInitialize(QRhiCommandBuffer *cb)
+ {
+     Q_Q(QRhiWidget);
+-    if (!colorTexture && !msaaColorBuffer)
++    initialized = false;
++    if (rhi->isDeviceLost() || (!colorTexture && !msaaColorBuffer))
+         return false;
+ 
+     if (autoRenderTarget) {
+@@ -664,6 +678,7 @@ bool QRhiWidgetPrivate::invokeInitialize(QRhiCommandBuffer *cb)
+             depthStencilBuffer->setPixelSize(pixelSize);
+             if (!depthStencilBuffer->create()) {
+                 qWarning("Failed to rebuild depth-stencil buffer for QRhiWidget with new size");
++                resetRenderTargetObjects();
+                 return false;
+             }
+         }
+@@ -692,7 +707,8 @@ bool QRhiWidgetPrivate::invokeInitialize(QRhiCommandBuffer *cb)
+ 
+     q->initialize(cb);
+ 
+-    return true;
++    initialized = !rhi->isDeviceLost();
++    return initialized;
+ }
+ 
+ /*!
+diff --git a/src/widgets/kernel/qrhiwidget_p.h b/src/widgets/kernel/qrhiwidget_p.h
+index 9afcb5f5fa6..9c9694665e4 100644
+--- a/src/widgets/kernel/qrhiwidget_p.h
++++ b/src/widgets/kernel/qrhiwidget_p.h
+@@ -1,66 +1,68 @@
+-// Copyright (C) 2023 The Qt Company Ltd.
+-// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
+-// Qt-Security score:significant reason:default
+-
+-#ifndef QRHIWIDGET_P_H
+-#define QRHIWIDGET_P_H
+-
+-//
+-//  W A R N I N G
+-//  -------------
+-//
+-// This file is not part of the Qt API.  It exists purely as an
+-// implementation detail.  This header file may change from version to
+-// version without notice, or even be removed.
+-//
+-// We mean it.
+-//
+-
+-#include "qrhiwidget.h"
+-#include <rhi/qrhi.h>
+-#include <private/qwidget_p.h>
+-#include <private/qbackingstorerhisupport_p.h>
+-
+-QT_BEGIN_NAMESPACE
+-
+-class Q_WIDGETS_EXPORT QRhiWidgetPrivate : public QWidgetPrivate
+-{
+-    Q_DECLARE_PUBLIC(QRhiWidget)
+-public:
+-    TextureData texture() const override;
+-    QPlatformTextureList::Flags textureListFlags() override;
+-    QPlatformBackingStoreRhiConfig rhiConfig() const override;
+-    void endCompose() override;
+-    QImage grabFramebuffer() override;
+-
+-    void init();
+-    void ensureRhi();
+-    void ensureTexture(bool *changed);
+-    bool invokeInitialize(QRhiCommandBuffer *cb);
+-    void resetColorBufferObjects();
+-    void resetRenderTargetObjects();
+-    void releaseResources();
+-
+-    QRhi *rhi = nullptr;
+-    bool noSize = false;
+-    QPlatformBackingStoreRhiConfig config;
+-    QRhiWidget::TextureFormat widgetTextureFormat = QRhiWidget::TextureFormat::RGBA8;
+-    QRhiTexture::Format rhiTextureFormat = QRhiTexture::RGBA8;
+-    int samples = 1;
+-    QSize fixedSize;
+-    bool autoRenderTarget = true;
+-    bool mirrorVertically = false;
+-    QBackingStoreRhiSupport offscreenRenderer;
+-    bool textureInvalid = false;
+-    QRhiTexture *colorTexture = nullptr;
+-    QRhiRenderBuffer *msaaColorBuffer = nullptr;
+-    QRhiTexture *resolveTexture = nullptr;
+-    QRhiRenderBuffer *depthStencilBuffer = nullptr;
+-    QRhiTextureRenderTarget *renderTarget = nullptr;
+-    QRhiRenderPassDescriptor *renderPassDescriptor = nullptr;
+-    mutable QVector<QRhiResource *> pendingDeletes;
+-};
+-
+-QT_END_NAMESPACE
+-
+-#endif
++// Copyright (C) 2023 The Qt Company Ltd.
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
++// Qt-Security score:significant reason:default
++
++#ifndef QRHIWIDGET_P_H
++#define QRHIWIDGET_P_H
++
++//
++//  W A R N I N G
++//  -------------
++//
++// This file is not part of the Qt API.  It exists purely as an
++// implementation detail.  This header file may change from version to
++// version without notice, or even be removed.
++//
++// We mean it.
++//
++
++#include "qrhiwidget.h"
++#include <rhi/qrhi.h>
++#include <private/qwidget_p.h>
++#include <private/qbackingstorerhisupport_p.h>
++
++QT_BEGIN_NAMESPACE
++
++class Q_WIDGETS_EXPORT QRhiWidgetPrivate : public QWidgetPrivate
++{
++    Q_DECLARE_PUBLIC(QRhiWidget)
++public:
++    TextureData texture() const override;
++    QPlatformTextureList::Flags textureListFlags() override;
++    QPlatformBackingStoreRhiConfig rhiConfig() const override;
++    void endCompose() override;
++    QImage grabFramebuffer() override;
++
++    void init();
++    void ensureRhi();
++    bool ensureTexture(bool *changed);
++    bool invokeInitialize(QRhiCommandBuffer *cb);
++    void resetColorBufferObjects();
++    void resetRenderTargetObjects();
++    void releaseResources();
++
++    QRhi *rhi = nullptr;
++    bool noSize = false;
++    QPlatformBackingStoreRhiConfig config;
++    QRhiWidget::TextureFormat widgetTextureFormat = QRhiWidget::TextureFormat::RGBA8;
++    QRhiTexture::Format rhiTextureFormat = QRhiTexture::RGBA8;
++    int samples = 1;
++    QSize fixedSize;
++    bool autoRenderTarget = true;
++    bool mirrorVertically = false;
++    QBackingStoreRhiSupport offscreenRenderer;
++    bool textureInvalid = false;
++    bool initialized = false;
++    bool rhiCleanupRegistered = false;
++    QRhiTexture *colorTexture = nullptr;
++    QRhiRenderBuffer *msaaColorBuffer = nullptr;
++    QRhiTexture *resolveTexture = nullptr;
++    QRhiRenderBuffer *depthStencilBuffer = nullptr;
++    QRhiTextureRenderTarget *renderTarget = nullptr;
++    QRhiRenderPassDescriptor *renderPassDescriptor = nullptr;
++    mutable QVector<QRhiResource *> pendingDeletes;
++};
++
++QT_END_NAMESPACE
++
++#endif

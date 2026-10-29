@@ -1,0 +1,219 @@
+diff --git a/src/openglwidgets/qopenglwidget.cpp b/src/openglwidgets/qopenglwidget.cpp
+index 5f60b0437f4..94027b94300 100644
+--- a/src/openglwidgets/qopenglwidget.cpp
++++ b/src/openglwidgets/qopenglwidget.cpp
+@@ -594,6 +594,9 @@ public:
+     bool hasBeenComposed = false;
+     bool flushPending = false;
+     bool inPaintGL = false;
++    // Trying to fix a crash on context loss.
++    bool pendingReset = false;
++    mutable QList<QRhiTexture *> pendingTextureDeletes;
+     QOpenGLWidget::TargetBuffer currentTargetBuffer = QOpenGLWidget::LeftBuffer;
+ };
+ 
+@@ -633,12 +636,13 @@ void QOpenGLWidgetPaintDevice::ensureActiveTarget()
+     if (!wd->initialized)
+         return;
+ 
+-    if (QOpenGLContext::currentContext() != wd->context)
++    if (QOpenGLContext::currentContext() != wd->context) {
+         d->w->makeCurrent();
+-    else
++        if (!wd->initialized)
++            return; // Trying to fix a crash on context loss.
++    } else
+         wd->fbos[wd->currentTargetBuffer]->bind();
+ 
+-
+     if (!wd->inPaintGL)
+         QOpenGLContextPrivate::get(wd->context)->defaultFboRedirect = wd->fbos[wd->currentTargetBuffer]->handle();
+ 
+@@ -650,6 +654,13 @@ void QOpenGLWidgetPaintDevice::ensureActiveTarget()
+ 
+ QWidgetPrivate::TextureData QOpenGLWidgetPrivate::texture() const
+ {
++    // Trying to fix a crash on context loss: this is the only safe place to
++    // destroy the dropped wrapper textures - the caller is rebuilding the
++    // platform texture lists, so no cached list can still refer to them.
++    // See resetRhiDependentResources().
++    qDeleteAll(pendingTextureDeletes);
++    pendingTextureDeletes.clear();
++
+     return { wrapperTextures[QOpenGLWidget::LeftBuffer], wrapperTextures[QOpenGLWidget::RightBuffer] };
+ }
+ 
+@@ -690,6 +701,10 @@ void QOpenGLWidgetPrivate::reset()
+     if (initialized)
+         q->makeCurrent();
+ 
++    // Trying to fix a crash on context loss: the makeCurrent() above may have
++    // failed and requested a deferred reset; we are performing it right now.
++    pendingReset = false;
++
+     delete paintDevice;
+     paintDevice = nullptr;
+ 
+@@ -714,12 +729,18 @@ void QOpenGLWidgetPrivate::resetRhiDependentResources()
+     // widget gets associated with a different QRhi, even when all OpenGL
+     // contexts share resources.
+ 
+-    delete wrapperTextures[0];
+-    wrapperTextures[0] = nullptr;
+-
+-    if (isStereoEnabled()) {
+-        delete wrapperTextures[1];
+-        wrapperTextures[1] = nullptr;
++    // Trying to fix a crash on context loss: do not delete the wrapper
++    // textures synchronously. This may be reached while the composition
++    // machinery holds these pointers in a QPlatformTextureList it is about to
++    // flush (e.g. from a failed makeCurrent() during beginCompose()), and the
++    // cached lists on the top-level are only ever rebuilt through texture().
++    // So the next texture() call is the earliest point where destroying them
++    // is known to be safe. This mirrors QRhiWidgetPrivate::pendingDeletes.
++    for (int i = 0; i < 2; ++i) {
++        if (wrapperTextures[i]) {
++            pendingTextureDeletes.append(wrapperTextures[i]);
++            wrapperTextures[i] = nullptr;
++        }
+     }
+ }
+ 
+@@ -729,7 +750,11 @@ void QOpenGLWidgetPrivate::recreateFbos()
+ 
+     emit q->aboutToResize();
+ 
+-    context->makeCurrent(surface);
++    if (!context->makeCurrent(surface)) {
++        // Trying to fix a crash on context loss.
++        reset();
++        return;
++    }
+ 
+     destroyFbos();
+ 
+@@ -822,6 +847,9 @@ void QOpenGLWidgetPrivate::beginCompose()
+     if (flushPending) {
+         flushPending = false;
+         q->makeCurrent();
++        if (!initialized) {
++            return;
++        }
+         static_cast<QOpenGLExtensions *>(context->functions())->flushShared();
+     }
+     hasBeenComposed = true;
+@@ -840,6 +868,12 @@ void QOpenGLWidgetPrivate::initialize()
+     if (initialized)
+         return;
+ 
++    // Trying to fix a crash on context loss: perform the teardown that a
++    // failed makeCurrent() requested, now that it is safe to do so, before
++    // initializing from scratch.
++    if (pendingReset)
++        reset();
++
+     // If no global shared context get our toplevel's context with which we
+     // will share in order to make the texture usable by the underlying window's backingstore.
+     QWidget *tlw = q->window();
+@@ -878,6 +912,7 @@ void QOpenGLWidgetPrivate::initialize()
+     }
+     if (Q_UNLIKELY(!context->create())) {
+         qWarning("QOpenGLWidget: Failed to create context");
++        reset();
+         return;
+     }
+ 
+@@ -888,6 +923,7 @@ void QOpenGLWidgetPrivate::initialize()
+ 
+     if (Q_UNLIKELY(!context->makeCurrent(surface))) {
+         qWarning("QOpenGLWidget: Failed to make context current");
++        reset();
+         return;
+     }
+ 
+@@ -928,6 +964,9 @@ void QOpenGLWidgetPrivate::resolveSamplesForBuffer(QOpenGLWidget::TargetBuffer t
+     Q_Q(QOpenGLWidget);
+     if (resolvedFbos[targetBuffer]) {
+         q->makeCurrent(targetBuffer);
++        if (!initialized) {
++            return;
++        }
+         QRect rect(QPoint(0, 0), fbos[targetBuffer]->size());
+         QOpenGLFramebufferObject::blitFramebuffer(resolvedFbos[targetBuffer], rect, fbos[targetBuffer], rect);
+         flushPending = true;
+@@ -942,6 +981,8 @@ void QOpenGLWidgetPrivate::render()
+         return;
+ 
+     setCurrentTargetBuffer(QOpenGLWidget::LeftBuffer);
++    if (!initialized)
++        return; // Trying to fix a crash on context loss.
+ 
+     QOpenGLContext *ctx = QOpenGLContext::currentContext();
+     if (!ctx) {
+@@ -1079,12 +1120,20 @@ QImage QOpenGLWidgetPrivate::grabFramebuffer(QOpenGLWidget::TargetBuffer targetB
+     if (!fbos[targetBuffer]) // could be completely offscreen, without ever getting a resize event
+         recreateFbos();
+ 
++    if (!fbos[targetBuffer])
++        return QImage(); // Trying to fix a crash on context loss.
++
+     if (!inPaintGL)
+         render();
+ 
+     setCurrentTargetBuffer(targetBuffer);
++    if (!initialized)
++        return QImage(); // Trying to fix a crash on context loss.
++
+     if (resolvedFbos[targetBuffer]) {
+         resolveSamplesForBuffer(targetBuffer);
++        if (!initialized)
++            return QImage(); // Trying to fix a crash on context loss.
+         resolvedFbos[targetBuffer]->bind();
+     }
+ 
+@@ -1179,6 +1228,14 @@ QOpenGLWidget::~QOpenGLWidget()
+ 
+     Q_D(QOpenGLWidget);
+     d->reset();
++
++    // Trying to fix a crash on context loss: destroy the deferred wrapper
++    // textures for which no texture() call will come any more. Equivalent to
++    // the unpatched immediate delete in resetRhiDependentResources(), because
++    // the destruction of a composited widget repaints the top-level before
++    // the texture lists are flushed again.
++    qDeleteAll(d->pendingTextureDeletes);
++    d->pendingTextureDeletes.clear();
+ }
+ 
+ /*!
+@@ -1319,7 +1376,19 @@ void QOpenGLWidget::makeCurrent()
+     if (!d->initialized)
+         return;
+ 
+-    d->context->makeCurrent(d->surface);
++    if (!d->context->makeCurrent(d->surface)) {
++        // Trying to fix a crash on context loss.
++        // If makeCurrent() failed, that means we're not initialized any more.
++        qWarning("QOpenGLWidget: makeCurrent() failed, the context was lost");
++        d->initialized = false; // This prevents infinite recursion to makeCurrent().
++        // Do not destroy anything synchronously here: this may be reached from
++        // inside the backing store composition (beginCompose()) after the
++        // QPlatformTextureList with our wrapper textures was already handed to
++        // rhiFlush(), or from an active QPainter (ensureActiveTarget()). The
++        // actual teardown is deferred to the next initialize().
++        d->pendingReset = true;
++        return;
++    }
+ 
+     if (d->fbos[d->currentTargetBuffer]) // there may not be one if we are in reset()
+         d->fbos[d->currentTargetBuffer]->bind();
+@@ -1521,6 +1590,9 @@ void QOpenGLWidget::resizeEvent(QResizeEvent *e)
+         return;
+ 
+     d->recreateFbos();
++    if (!d->fbos[d->currentTargetBuffer])
++        return; // Trying to fix a crash on context loss.
++
+     // Make sure our own context is current before invoking user overrides. If
+     // the fbo was recreated then there's a chance something else is current now.
+     makeCurrent();

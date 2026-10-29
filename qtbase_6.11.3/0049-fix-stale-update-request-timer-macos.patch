@@ -1,0 +1,16 @@
+diff --git a/src/gui/kernel/qplatformwindow.cpp b/src/gui/kernel/qplatformwindow.cpp
+index c32d753bebf..af958da12fd 100644
+--- a/src/gui/kernel/qplatformwindow.cpp
++++ b/src/gui/kernel/qplatformwindow.cpp
+@@ -469,7 +469,10 @@ bool QPlatformWindow::windowEvent(QEvent *event)
+ 
+     if (event->type() == QEvent::Timer) {
+         if (static_cast<QTimerEvent *>(event)->timerId() == d->updateTimer.timerId()) {
+-            deliverUpdateRequest();
++            // The request may already have been delivered through another route,
++            // such as the macOS display link re-armed by windowDidChangeScreen().
++            if (hasPendingUpdateRequest())
++                deliverUpdateRequest();
+             // Delivery of the update request may be circumvented temporarily by the
+             // platform window, or the user may request another update during the
+             // delivery, so wait to stop the timer until we know we don't need it

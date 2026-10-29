@@ -1,0 +1,12 @@
+diff --git a/src/plugins/platforms/cocoa/qcocoawindow.mm b/src/plugins/platforms/cocoa/qcocoawindow.mm
+index d12527a3248..fcf067bd833 100644
+--- a/src/plugins/platforms/cocoa/qcocoawindow.mm
++++ b/src/plugins/platforms/cocoa/qcocoawindow.mm
+@@ -659,6 +659,7 @@ NSUInteger QCocoaWindow::windowStyleMask(Qt::WindowFlags flags)
+     // Don't wipe existing states for style flags we don't control here
+     styleMask |= (m_view.window.styleMask & (
+           NSWindowStyleMaskFullScreen
++        | NSWindowStyleMaskFullSizeContentView
+         | NSWindowStyleMaskUnifiedTitleAndToolbar
+         | NSWindowStyleMaskDocModalWindow
+         | NSWindowStyleMaskNonactivatingPanel

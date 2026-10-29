@@ -1,0 +1,42 @@
+diff --git a/src/gui/text/windows/qwindowsfontdatabasebase.cpp b/src/gui/text/windows/qwindowsfontdatabasebase.cpp
+index e90539f1715..e59ee1d16d2 100644
+--- a/src/gui/text/windows/qwindowsfontdatabasebase.cpp
++++ b/src/gui/text/windows/qwindowsfontdatabasebase.cpp
+@@ -974,9 +974,13 @@ QString QWindowsFontDatabaseBase::familyForStyleHint(QFont::StyleHint styleHint)
+ 
+ static const char *other_tryFonts[] = {
+     "Arial",
++    "Yu Gothic UI",
+     "MS UI Gothic",
++    "Malgun Gothic",
+     "Gulim",
++    "Microsoft YaHei UI",
+     "SimSun",
++    "Microsoft JhengHei UI",
+     "PMingLiU",
+     "Arial Unicode MS",
+     0
+@@ -994,6 +998,7 @@ static const char *jp_tryFonts [] = {
+ };
+ 
+ static const char *ch_CN_tryFonts [] = {
++    "Microsoft YaHei UI",
+     "SimSun",
+     "Arial",
+     "PMingLiU",
+@@ -1004,6 +1009,7 @@ static const char *ch_CN_tryFonts [] = {
+ };
+ 
+ static const char *ch_TW_tryFonts [] = {
++    "Microsoft JhengHei UI",
+     "PMingLiU",
+     "Arial",
+     "SimSun",
+@@ -1030,6 +1036,7 @@ QStringList QWindowsFontDatabaseBase::extraTryFontsForFamily(const QString &fami
+ {
+     QStringList result;
+     if (!QFontDatabase::writingSystems(family).contains(QFontDatabase::Symbol)) {
++        result << systemDefaultFont().family();
+         if (!tryFonts) {
+             LANGID lid = GetUserDefaultLangID();
+             switch (lid&0xff) {

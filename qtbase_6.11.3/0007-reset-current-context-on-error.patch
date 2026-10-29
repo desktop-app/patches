@@ -1,0 +1,33 @@
+diff --git a/src/gui/kernel/qopenglcontext.cpp b/src/gui/kernel/qopenglcontext.cpp
+index c4ce817b5c0..92abc62a587 100644
+--- a/src/gui/kernel/qopenglcontext.cpp
++++ b/src/gui/kernel/qopenglcontext.cpp
+@@ -709,8 +709,14 @@ bool QOpenGLContext::makeCurrent(QSurface *surface)
+         return false;
+     }
+ 
+-    if (!d->platformGLContext->makeCurrent(surface->surfaceHandle()))
++    if (!d->platformGLContext->makeCurrent(surface->surfaceHandle())) {
++        // In this place the context could switch from isValid to !isValid.
++        // It may still be current (from the previous successful calls),
++        // so we need to make everything look as if it was not set current.
++        if (QOpenGLContext::currentContext() == this)
++            doneCurrent();
+         return false;
++    }
+ 
+     QOpenGLContextPrivate::setCurrentContext(this);
+ #ifndef QT_NO_DEBUG
+@@ -841,6 +847,12 @@ void QOpenGLContext::swapBuffers(QSurface *surface)
+         return;
+     }
+     d->platformGLContext->swapBuffers(surfaceHandle);
++
++    // The swapBuffers call could switch the context from isValid to !isValid.
++    // It may still be current (from the previous successful calls),
++    // so we need to make everything look as if it was not set current.
++    if (QOpenGLContext::currentContext() == this && !isValid())
++        doneCurrent();
+ }
+ 
+ /*!

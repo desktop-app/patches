@@ -1,0 +1,320 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Thu, 22 Oct 2026 12:00:00 +0000
+Subject: [PATCH] follow the windows font smoothing setting in directwrite
+
+Turning off "Smooth edges of screen fonts" in Windows makes GDI draw text
+without antialiasing, but the DirectWrite engine never reads that setting,
+only the smoothing type, ClearType or standard, and keeps antialiasing
+every glyph. At a device pixel ratio of 1 that leaves all text smoothed
+with the DirectWrite font database, the default since Qt 6.8, and some of
+it with the GDI one, which since the fix for QTBUG-119995 creates
+DirectWrite engines there for fonts that need a simulated style, such as
+the italic of a font without an italic face.
+
+Read SPI_GETFONTSMOOTHING with the other smoothing settings and, while it
+is off and the device pixel ratio is 1, render aliased glyphs the way the
+engine already does for QFont::NoAntialias, which also keeps glyphs on
+whole pixels. Scaled text keeps antialiasing, as with Qt 5, because Qt
+lays it out in logical pixels and the scale would stretch the rounded
+advances. Color glyphs stay antialiased.
+
+diff --git a/src/gui/text/windows/qwindowsfontdatabase.cpp b/src/gui/text/windows/qwindowsfontdatabase.cpp
+index 0c6d9a31316..c878d660ead 100644
+--- a/src/gui/text/windows/qwindowsfontdatabase.cpp
++++ b/src/gui/text/windows/qwindowsfontdatabase.cpp
+@@ -74,6 +74,9 @@ QWindowsFontEngineData::QWindowsFontEngineData()
+     UINT result = 0;
+     if (SystemParametersInfo(SPI_GETFONTSMOOTHINGTYPE, 0, &result, 0))
+         clearTypeEnabled = (result == FE_FONTSMOOTHINGCLEARTYPE);
++    BOOL smoothing = TRUE;
++    if (SystemParametersInfo(SPI_GETFONTSMOOTHING, 0, &smoothing, 0))
++        fontSmoothingEnabled = (smoothing != FALSE);
+ 
+     const qreal gray_gamma = 2.31;
+     for (int i=0; i<256; ++i)
+diff --git a/src/gui/text/windows/qwindowsfontdatabasebase_p.h b/src/gui/text/windows/qwindowsfontdatabasebase_p.h
+index 2c5f8f63c8b..7781217a905 100644
+--- a/src/gui/text/windows/qwindowsfontdatabasebase_p.h
++++ b/src/gui/text/windows/qwindowsfontdatabasebase_p.h
+@@ -1,117 +1,118 @@
+-// Copyright (C) 2020 The Qt Company Ltd.
+-// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
+-
+-#ifndef QWINDOWSFONTDATABASEBASE_P_H
+-#define QWINDOWSFONTDATABASEBASE_P_H
+-
+-//
+-//  W A R N I N G
+-//  -------------
+-//
+-// This file is not part of the Qt API. It exists purely as an
+-// implementation detail. This header file may change from version to
+-// version without notice, or even be removed.
+-//
+-// We mean it.
+-//
+-
+-#include <qpa/qplatformfontdatabase.h>
+-#include <QtGui/private/qtgui-config_p.h>
+-#include <QtCore/QSharedPointer>
+-#include <QtCore/QLoggingCategory>
+-#include <QtCore/qt_windows.h>
+-
+-#if QT_CONFIG(directwrite)
+-    struct IDWriteFactory;
+-    struct IDWriteGdiInterop;
+-    struct IDWriteFontFace;
+-#endif
+-
+-QT_BEGIN_NAMESPACE
+-
+-#if QT_CONFIG(directwrite)
+-    class QCustomFontFileLoader;
+-#endif
+-
+-class QWindowsFontEngineData
+-{
+-    Q_DISABLE_COPY_MOVE(QWindowsFontEngineData)
+-public:
+-    QWindowsFontEngineData();
+-    ~QWindowsFontEngineData();
+-
+-    uint pow_gamma[256];
+-
+-    bool clearTypeEnabled = false;
+-    qreal fontSmoothingGamma;
+-    HDC hdc = 0;
+-#if QT_CONFIG(directwrite)
+-    IDWriteFactory *directWriteFactory = nullptr;
+-    IDWriteGdiInterop *directWriteGdiInterop = nullptr;
+-#endif
+-};
+-
+-class Q_GUI_EXPORT QWindowsFontDatabaseBase : public QPlatformFontDatabase
+-{
+-public:
+-    QWindowsFontDatabaseBase();
+-    ~QWindowsFontDatabaseBase() override;
+-
+-    QFontEngine *fontEngine(const QFontDef &fontDef, void *handle) override;
+-    QFontEngine *fontEngine(const QByteArray &fontData, qreal pixelSize, QFont::HintingPreference hintingPreference) override;
+-
+-    void invalidate() override;
+-
+-    static int defaultVerticalDPI();
+-
+-    static QSharedPointer<QWindowsFontEngineData> data();
+-#if QT_CONFIG(directwrite)
+-    static void createDirectWriteFactory(IDWriteFactory **factory);
+-#endif
+-    static QFont systemDefaultFont();
+-    static HFONT systemFont();
+-    static LOGFONT fontDefToLOGFONT(const QFontDef &fontDef, const QString &faceName);
+-    static QFont LOGFONT_to_QFont(const LOGFONT& lf, int verticalDPI = 0);
+-
+-    static QString familyForStyleHint(QFont::StyleHint styleHint);
+-    static QStringList extraTryFontsForFamily(const QString &family);
+-    static QStringList familiesForScript(QFontDatabasePrivate::ExtendedScript script);
+-
+-    class FontTable{};
+-    class EmbeddedFont
+-    {
+-    public:
+-        EmbeddedFont(const QByteArray &fontData) : m_fontData(fontData) {}
+-
+-        QString changeFamilyName(const QString &newFamilyName);
+-        QByteArray data() const { return m_fontData; }
+-        void updateFromOS2Table(QFontEngine *fontEngine);
+-        FontTable *tableDirectoryEntry(const QByteArray &tagName);
+-        QString familyName(FontTable *nameTableDirectory = nullptr);
+-
+-    private:
+-        QByteArray m_fontData;
+-    };
+-
+-    QFontDef sanitizeRequest(QFontDef request) const;
+-
+-protected:
+-
+-#if QT_CONFIG(directwrite)
+-    QList<IDWriteFontFace *> createDirectWriteFaces(const QByteArray &fontData,
+-                                                    const QString &filename,
+-                                                    bool queryVariations = true) const;
+-    IDWriteFontFace *createDirectWriteFace(const QByteArray &fontData);
+-#endif
+-
+-private:
+-    static bool init(QSharedPointer<QWindowsFontEngineData> data);
+-
+-#if QT_CONFIG(directwrite)
+-    mutable std::unique_ptr<QCustomFontFileLoader> m_fontFileLoader;
+-#endif
+-};
+-
+-QT_END_NAMESPACE
+-
+-#endif // QWINDOWSFONTDATABASEBASE_P_H
++// Copyright (C) 2020 The Qt Company Ltd.
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
++
++#ifndef QWINDOWSFONTDATABASEBASE_P_H
++#define QWINDOWSFONTDATABASEBASE_P_H
++
++//
++//  W A R N I N G
++//  -------------
++//
++// This file is not part of the Qt API. It exists purely as an
++// implementation detail. This header file may change from version to
++// version without notice, or even be removed.
++//
++// We mean it.
++//
++
++#include <qpa/qplatformfontdatabase.h>
++#include <QtGui/private/qtgui-config_p.h>
++#include <QtCore/QSharedPointer>
++#include <QtCore/QLoggingCategory>
++#include <QtCore/qt_windows.h>
++
++#if QT_CONFIG(directwrite)
++    struct IDWriteFactory;
++    struct IDWriteGdiInterop;
++    struct IDWriteFontFace;
++#endif
++
++QT_BEGIN_NAMESPACE
++
++#if QT_CONFIG(directwrite)
++    class QCustomFontFileLoader;
++#endif
++
++class QWindowsFontEngineData
++{
++    Q_DISABLE_COPY_MOVE(QWindowsFontEngineData)
++public:
++    QWindowsFontEngineData();
++    ~QWindowsFontEngineData();
++
++    uint pow_gamma[256];
++
++    bool clearTypeEnabled = false;
++    bool fontSmoothingEnabled = true;
++    qreal fontSmoothingGamma;
++    HDC hdc = 0;
++#if QT_CONFIG(directwrite)
++    IDWriteFactory *directWriteFactory = nullptr;
++    IDWriteGdiInterop *directWriteGdiInterop = nullptr;
++#endif
++};
++
++class Q_GUI_EXPORT QWindowsFontDatabaseBase : public QPlatformFontDatabase
++{
++public:
++    QWindowsFontDatabaseBase();
++    ~QWindowsFontDatabaseBase() override;
++
++    QFontEngine *fontEngine(const QFontDef &fontDef, void *handle) override;
++    QFontEngine *fontEngine(const QByteArray &fontData, qreal pixelSize, QFont::HintingPreference hintingPreference) override;
++
++    void invalidate() override;
++
++    static int defaultVerticalDPI();
++
++    static QSharedPointer<QWindowsFontEngineData> data();
++#if QT_CONFIG(directwrite)
++    static void createDirectWriteFactory(IDWriteFactory **factory);
++#endif
++    static QFont systemDefaultFont();
++    static HFONT systemFont();
++    static LOGFONT fontDefToLOGFONT(const QFontDef &fontDef, const QString &faceName);
++    static QFont LOGFONT_to_QFont(const LOGFONT& lf, int verticalDPI = 0);
++
++    static QString familyForStyleHint(QFont::StyleHint styleHint);
++    static QStringList extraTryFontsForFamily(const QString &family);
++    static QStringList familiesForScript(QFontDatabasePrivate::ExtendedScript script);
++
++    class FontTable{};
++    class EmbeddedFont
++    {
++    public:
++        EmbeddedFont(const QByteArray &fontData) : m_fontData(fontData) {}
++
++        QString changeFamilyName(const QString &newFamilyName);
++        QByteArray data() const { return m_fontData; }
++        void updateFromOS2Table(QFontEngine *fontEngine);
++        FontTable *tableDirectoryEntry(const QByteArray &tagName);
++        QString familyName(FontTable *nameTableDirectory = nullptr);
++
++    private:
++        QByteArray m_fontData;
++    };
++
++    QFontDef sanitizeRequest(QFontDef request) const;
++
++protected:
++
++#if QT_CONFIG(directwrite)
++    QList<IDWriteFontFace *> createDirectWriteFaces(const QByteArray &fontData,
++                                                    const QString &filename,
++                                                    bool queryVariations = true) const;
++    IDWriteFontFace *createDirectWriteFace(const QByteArray &fontData);
++#endif
++
++private:
++    static bool init(QSharedPointer<QWindowsFontEngineData> data);
++
++#if QT_CONFIG(directwrite)
++    mutable std::unique_ptr<QCustomFontFileLoader> m_fontFileLoader;
++#endif
++};
++
++QT_END_NAMESPACE
++
++#endif // QWINDOWSFONTDATABASEBASE_P_H
+diff --git a/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp b/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
+index 0f818912064..52128b66284 100644
+--- a/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
++++ b/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
+@@ -182,9 +182,17 @@ static QFont::HintingPreference determineHinting(const QFontDef &fontDef)
+     return hintingPreference;
+ }
+ 
++bool QWindowsFontEngineDirectWrite::fontSmoothingDisabled() const
++{
++    return !m_fontEngineData->fontSmoothingEnabled
++            && qFuzzyCompare(qApp->devicePixelRatio(), 1.0);
++}
++
+ DWRITE_RENDERING_MODE QWindowsFontEngineDirectWrite::hintingPreferenceToRenderingMode(const QFontDef &fontDef) const
+ {
+-    if ((fontDef.styleStrategy & QFont::NoAntialias) && glyphFormat != QFontEngine::Format_ARGB)
++    const bool aliased = (fontDef.styleStrategy & QFont::NoAntialias)
++            || fontSmoothingDisabled();
++    if (aliased && glyphFormat != QFontEngine::Format_ARGB)
+         return DWRITE_RENDERING_MODE_ALIASED;
+ 
+     QFont::HintingPreference hintingPreference = determineHinting(fontDef);
+@@ -784,7 +792,9 @@ QImage QWindowsFontEngineDirectWrite::alphaMapForGlyph(glyph_t glyph,
+ bool QWindowsFontEngineDirectWrite::supportsHorizontalSubPixelPositions() const
+ {
+     QFont::HintingPreference hinting = determineHinting(fontDef);
+-    return (hinting != QFont::PreferFullHinting && !(fontDef.styleStrategy & QFont::NoAntialias));
++    return (hinting != QFont::PreferFullHinting
++            && !(fontDef.styleStrategy & QFont::NoAntialias)
++            && !fontSmoothingDisabled());
+ }
+ 
+ QFontEngine::Properties QWindowsFontEngineDirectWrite::properties() const
+diff --git a/src/gui/text/windows/qwindowsfontenginedirectwrite_p.h b/src/gui/text/windows/qwindowsfontenginedirectwrite_p.h
+index d03d932a54a..90a76e3d1fd 100644
+--- a/src/gui/text/windows/qwindowsfontenginedirectwrite_p.h
++++ b/src/gui/text/windows/qwindowsfontenginedirectwrite_p.h
+@@ -163,6 +163,7 @@ private:
+                         DWRITE_RENDERING_MODE renderMode) const;
+     static QString filenameFromFontFile(IDWriteFontFile *fontFile);
+     DWRITE_RENDERING_MODE hintingPreferenceToRenderingMode(const QFontDef &fontDef) const;
++    bool fontSmoothingDisabled() const;
+ 
+     const QSharedPointer<QWindowsFontEngineData> m_fontEngineData;
+ 

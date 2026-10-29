@@ -1,0 +1,48 @@
+diff --git a/src/plugins/platforms/cocoa/qnsview_mouse.mm b/src/plugins/platforms/cocoa/qnsview_mouse.mm
+index f510e36f083..c54d66a5448 100644
+--- a/src/plugins/platforms/cocoa/qnsview_mouse.mm
++++ b/src/plugins/platforms/cocoa/qnsview_mouse.mm
+@@ -675,6 +675,13 @@ static const QPointingDevice *pointingDeviceFor(qint64 deviceID)
+ 
+     if ([self isTransparentForUserInput])
+         return [super scrollWheel:theEvent];
++
++    const auto hidden = !self.window.visible || [self isHiddenOrHasHiddenAncestor];
++    if (hidden) {
++        const auto ended = NSEventPhaseEnded | NSEventPhaseCancelled;
++        if (!m_scrolling || !((theEvent.phase | theEvent.momentumPhase) & ended))
++            return;
++    }
+ 
+     QPoint angleDelta;
+     Qt::MouseEventSource source = Qt::MouseEventNotSynthesized;
+@@ -753,7 +760,7 @@ static const QPointingDevice *pointingDeviceFor(qint64 deviceID)
+ 
+     // Sanitize deltas for events that should not result in scrolling.
+     // On macOS 12.1 this phase has been observed to report deltas.
+-    if (theEvent.phase == NSEventPhaseCancelled) {
++    if (theEvent.phase == NSEventPhaseCancelled || hidden) {
+         if (!pixelDelta.isNull() || !angleDelta.isNull()) {
+             qCInfo(lcQpaMouse) << "Ignoring unexpected delta for" << theEvent;
+             pixelDelta = QPoint();
+diff --git a/src/plugins/platforms/cocoa/qnswindow.mm b/src/plugins/platforms/cocoa/qnswindow.mm
+index 667a631b863..61571dcc2c9 100644
+--- a/src/plugins/platforms/cocoa/qnswindow.mm
++++ b/src/plugins/platforms/cocoa/qnswindow.mm
+@@ -319,6 +319,16 @@ QT_END_NAMESPACE
+         return;
+     }
+ 
++#if QT_CONFIG(wheelevent)
++    if (theEvent.type == NSEventTypeScrollWheel && !self.visible) {
++        // AppKit does not deliver scroll events to hidden content views.
++        if (auto *view = qnsview_cast(self.contentView)) {
++            [view scrollWheel:theEvent];
++            return;
++        }
++    }
++#endif
++
+     const bool mouseEventInFrameStrut = [theEvent, self]{
+         if (qt_mac_isMouseEvent(theEvent)) {
+             const NSPoint loc = theEvent.locationInWindow;

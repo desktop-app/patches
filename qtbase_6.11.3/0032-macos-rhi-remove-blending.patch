@@ -1,0 +1,66 @@
+commit 859d51d3cb416309b02079174673a0df05e282bc
+Author: John Preston <johnprestonmail@gmail.com>
+Date: Thu, 28 May 2026 18:48:10 +0000
+
+    Force no-blend paint in no-alpha windows.
+
+diff --git a/src/gui/painting/qbackingstoredefaultcompositor.cpp b/src/gui/painting/qbackingstoredefaultcompositor.cpp
+index 4ed0932d5ff..4f0a1225115 100644
+--- a/src/gui/painting/qbackingstoredefaultcompositor.cpp
++++ b/src/gui/painting/qbackingstoredefaultcompositor.cpp
+@@ -680,6 +680,7 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+ 
+     const int textureWidgetCount = textures->count();
+     const int oldTextureQuadDataCount = m_textureQuadData.size();
++    int textureWidgetsBelow = 0;
+     if (oldTextureQuadDataCount != textureWidgetCount) {
+         for (int i = textureWidgetCount; i < oldTextureQuadDataCount; ++i)
+             m_textureQuadData[i].reset();
+@@ -687,8 +688,10 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+     }
+ 
+     for (int i = 0; i < textureWidgetCount; ++i) {
+-        const bool invertSourceForTextureWidget = textures->flags(i).testFlag(QPlatformTextureList::MirrorVertically)
+-                                                      ? !invertSource : invertSource;
++        const QPlatformTextureList::Flags textureFlags = textures->flags(i);
++        const bool invertSourceForTextureWidget = textureFlags.testFlag(QPlatformTextureList::MirrorVertically)
++                ? !invertSource
++                : invertSource;
+         QMatrix4x4 target;
+         QMatrix3x3 source;
+         if (!prepareDrawForRenderToTextureWidget(textures, i, window, deviceWindowRect,
+@@ -708,6 +711,8 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+             updateUniforms(&m_textureQuadData[i], resourceUpdates, target, source);
+             if (needsLinearSampler)
+                 updatePerQuadData(&m_textureQuadData[i], t, tExtra, NeedsLinearFiltering);
++            if (!textureFlags.testFlag(QPlatformTextureList::StacksOnTop))
++                ++textureWidgetsBelow;
+         } else {
+             m_textureQuadData[i].reset();
+         }
+@@ -716,6 +721,16 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+     // Record the render pass (with committing the resource updates).
+     const QSize outputSizeInPixels = swapchain->currentPixelSize();
+     QColor clearColor = translucentBackground ? Qt::transparent : Qt::black;
++    const bool surfaceHasAlpha = window->format().hasAlpha();
++    const bool drawBackingStoreWithoutBlend = backingStoreTextureUsed
++            && gotNativeTexture
++            && premultiplied
++            && !translucentBackground
++            && !surfaceHasAlpha
++            && textureWidgetsBelow == 0;
++    QRhiGraphicsPipeline *backingStorePipeline = drawBackingStoreWithoutBlend
++            ? m_psNoBlend.get()
++            : (premultiplied ? m_psPremulBlend.get() : m_psBlend.get());
+ 
+     cb->resourceUpdate(resourceUpdates);
+ 
+@@ -748,7 +763,7 @@ QPlatformBackingStore::FlushResult QBackingStoreDefaultCompositor::flush(QPlatfo
+             }
+         }
+ 
+-        cb->setGraphicsPipeline(premultiplied ? m_psPremulBlend.get() : m_psBlend.get());
++        cb->setGraphicsPipeline(backingStorePipeline);
+ 
+         // Backingstore texture with the normal widgets.
+         if (backingStoreTextureUsed) {

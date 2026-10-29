@@ -1,0 +1,540 @@
+diff --git a/src/gui/kernel/qguiapplication_platform.h b/src/gui/kernel/qguiapplication_platform.h
+index c11f268c177..62f93eef238 100644
+--- a/src/gui/kernel/qguiapplication_platform.h
++++ b/src/gui/kernel/qguiapplication_platform.h
+@@ -21,6 +21,7 @@
+ #if QT_CONFIG(xcb)
+ typedef struct _XDisplay Display;
+ struct xcb_connection_t;
++struct xkb_state;
+ #endif
+ 
+ #if QT_CONFIG(wayland)
+@@ -64,6 +65,7 @@ struct Q_GUI_EXPORT QX11Application
+     QT_DECLARE_NATIVE_INTERFACE(QX11Application, 1, QGuiApplication)
+     virtual Display *display() const = 0;
+     virtual xcb_connection_t *connection() const = 0;
++    virtual xkb_state *xkbState() const = 0;
+ };
+ #endif
+ 
+diff --git a/src/plugins/platforms/offscreen/qoffscreenintegration_x11.h b/src/plugins/platforms/offscreen/qoffscreenintegration_x11.h
+index 7b2ad6e1ce0..dfe7f1fbf73 100644
+--- a/src/plugins/platforms/offscreen/qoffscreenintegration_x11.h
++++ b/src/plugins/platforms/offscreen/qoffscreenintegration_x11.h
+@@ -34,6 +34,7 @@ public:
+ #if QT_CONFIG(xcb)
+     Display *display() const override;
+     xcb_connection_t *connection() const override { return nullptr; }
++    xkb_state *xkbState() const override { return nullptr; }
+ #endif
+     QScopedPointer<QOffscreenX11Connection> m_connection;
+ };
+diff --git a/src/plugins/platforms/wayland/qwaylandinputdevice_p.h b/src/plugins/platforms/wayland/qwaylandinputdevice_p.h
+index aeb7b4c24c1..1631fddb4d5 100644
+--- a/src/plugins/platforms/wayland/qwaylandinputdevice_p.h
++++ b/src/plugins/platforms/wayland/qwaylandinputdevice_p.h
+@@ -280,6 +280,7 @@ public:
+     struct ::wl_keyboard *wl_keyboard() { return QtWayland::wl_keyboard::object(); }
+ 
+ #if QT_CONFIG(xkbcommon)
++    xkb_state *xkbState() const { return mXkbState.get(); }
+     virtual int keysymToQtKey(xkb_keysym_t keysym, Qt::KeyboardModifiers modifiers, xkb_state *state, xkb_keycode_t code) {
+         return QXkbCommon::keysymToQtKey(keysym, modifiers, state, code);
+     }
+diff --git a/src/plugins/platforms/xcb/qxcbkeyboard.h b/src/plugins/platforms/xcb/qxcbkeyboard.h
+index febc2658b3d..ab1604b48ff 100644
+--- a/src/plugins/platforms/xcb/qxcbkeyboard.h
++++ b/src/plugins/platforms/xcb/qxcbkeyboard.h
+@@ -1,107 +1,109 @@
+-// Copyright (C) 2016 The Qt Company Ltd.
+-// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
+-// Qt-Security score:significant reason:default
+-
+-#pragma once
+-
+-#include "qxcbobject.h"
+-
+-#include <xcb/xcb_keysyms.h>
+-#define explicit dont_use_cxx_explicit
+-#include <xcb/xkb.h>
+-#undef explicit
+-
+-#include <QtGui/private/qxkbcommon_p.h>
+-#include <xkbcommon/xkbcommon-x11.h>
+-
+-#include <qpa/qplatformkeymapper.h>
+-
+-#include <QEvent>
+-
+-QT_BEGIN_NAMESPACE
+-
+-class QXcbKeyboard : public QXcbObject, public QPlatformKeyMapper
+-{
+-public:
+-    QXcbKeyboard(QXcbConnection *connection);
+-
+-    ~QXcbKeyboard();
+-
+-    void initialize();
+-    void selectEvents();
+-
+-    void handleKeyPressEvent(const xcb_key_press_event_t *event);
+-    void handleKeyReleaseEvent(const xcb_key_release_event_t *event);
+-
+-    Qt::KeyboardModifiers translateModifiers(int s) const;
+-    void updateKeymap(xcb_mapping_notify_event_t *event);
+-    void updateKeymap();
+-
+-    QList<QKeyCombination> possibleKeyCombinations(const QKeyEvent *event) const override;
+-    Qt::KeyboardModifiers queryKeyboardModifiers() const override;
+-
+-    void updateXKBMods();
+-    xkb_mod_mask_t xkbModMask(quint16 state);
+-    void updateXKBStateFromCore(quint16 state);
+-    void updateXKBStateFromXI(void *modInfo, void *groupInfo);
+-
+-    int coreDeviceId() const { return core_device_id; }
+-    void updateXKBState(xcb_xkb_state_notify_event_t *state);
+-
+-    void handleStateChanges(xkb_state_component changedComponents);
+-
+-protected:
+-    void handleKeyEvent(xcb_window_t sourceWindow, QEvent::Type type, xcb_keycode_t code,
+-                        quint16 state, xcb_timestamp_t time, bool fromSendEvent);
+-
+-    void resolveMaskConflicts();
+-
+-    typedef QMap<xcb_keysym_t, int> KeysymModifierMap;
+-    struct xkb_keymap *keymapFromCore(const KeysymModifierMap &keysymMods);
+-
+-    void updateModifiers(const KeysymModifierMap &keysymMods);
+-    KeysymModifierMap keysymsToModifiers();
+-
+-    void updateVModMapping();
+-    void updateVModToRModMapping();
+-
+-private:
+-    bool m_config = false;
+-    bool m_isAutoRepeat = false;
+-    xcb_keycode_t m_autoRepeatCode = 0;
+-
+-    struct _mod_masks {
+-        uint alt;
+-        uint altgr;
+-        uint meta;
+-        uint super;
+-        uint hyper;
+-    };
+-
+-    _mod_masks rmod_masks;
+-
+-    xcb_key_symbols_t *m_key_symbols = nullptr;
+-    struct _xkb_mods {
+-        xkb_mod_index_t shift;
+-        xkb_mod_index_t lock;
+-        xkb_mod_index_t control;
+-        xkb_mod_index_t mod1;
+-        xkb_mod_index_t mod2;
+-        xkb_mod_index_t mod3;
+-        xkb_mod_index_t mod4;
+-        xkb_mod_index_t mod5;
+-    };
+-    _xkb_mods xkb_mods;
+-
+-    _mod_masks vmod_masks;
+-    int core_device_id;
+-
+-    QXkbCommon::ScopedXKBState m_xkbState;
+-    QXkbCommon::ScopedXKBKeymap m_xkbKeymap;
+-    QXkbCommon::ScopedXKBContext m_xkbContext;
+-
+-    bool m_superAsMeta = false;
+-    bool m_hyperAsMeta = false;
+-};
+-
+-QT_END_NAMESPACE
++// Copyright (C) 2016 The Qt Company Ltd.
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
++// Qt-Security score:significant reason:default
++
++#pragma once
++
++#include "qxcbobject.h"
++
++#include <xcb/xcb_keysyms.h>
++#define explicit dont_use_cxx_explicit
++#include <xcb/xkb.h>
++#undef explicit
++
++#include <QtGui/private/qxkbcommon_p.h>
++#include <xkbcommon/xkbcommon-x11.h>
++
++#include <qpa/qplatformkeymapper.h>
++
++#include <QEvent>
++
++QT_BEGIN_NAMESPACE
++
++class QXcbKeyboard : public QXcbObject, public QPlatformKeyMapper
++{
++public:
++    QXcbKeyboard(QXcbConnection *connection);
++
++    ~QXcbKeyboard();
++
++    void initialize();
++    void selectEvents();
++
++    void handleKeyPressEvent(const xcb_key_press_event_t *event);
++    void handleKeyReleaseEvent(const xcb_key_release_event_t *event);
++
++    Qt::KeyboardModifiers translateModifiers(int s) const;
++    void updateKeymap(xcb_mapping_notify_event_t *event);
++    void updateKeymap();
++
++    QList<QKeyCombination> possibleKeyCombinations(const QKeyEvent *event) const override;
++    Qt::KeyboardModifiers queryKeyboardModifiers() const override;
++
++    void updateXKBMods();
++    xkb_mod_mask_t xkbModMask(quint16 state);
++    void updateXKBStateFromCore(quint16 state);
++    void updateXKBStateFromXI(void *modInfo, void *groupInfo);
++
++    int coreDeviceId() const { return core_device_id; }
++    void updateXKBState(xcb_xkb_state_notify_event_t *state);
++
++    void handleStateChanges(xkb_state_component changedComponents);
++
++    xkb_state *xkbState() const { return m_xkbState.get(); }
++
++protected:
++    void handleKeyEvent(xcb_window_t sourceWindow, QEvent::Type type, xcb_keycode_t code,
++                        quint16 state, xcb_timestamp_t time, bool fromSendEvent);
++
++    void resolveMaskConflicts();
++
++    typedef QMap<xcb_keysym_t, int> KeysymModifierMap;
++    struct xkb_keymap *keymapFromCore(const KeysymModifierMap &keysymMods);
++
++    void updateModifiers(const KeysymModifierMap &keysymMods);
++    KeysymModifierMap keysymsToModifiers();
++
++    void updateVModMapping();
++    void updateVModToRModMapping();
++
++private:
++    bool m_config = false;
++    bool m_isAutoRepeat = false;
++    xcb_keycode_t m_autoRepeatCode = 0;
++
++    struct _mod_masks {
++        uint alt;
++        uint altgr;
++        uint meta;
++        uint super;
++        uint hyper;
++    };
++
++    _mod_masks rmod_masks;
++
++    xcb_key_symbols_t *m_key_symbols = nullptr;
++    struct _xkb_mods {
++        xkb_mod_index_t shift;
++        xkb_mod_index_t lock;
++        xkb_mod_index_t control;
++        xkb_mod_index_t mod1;
++        xkb_mod_index_t mod2;
++        xkb_mod_index_t mod3;
++        xkb_mod_index_t mod4;
++        xkb_mod_index_t mod5;
++    };
++    _xkb_mods xkb_mods;
++
++    _mod_masks vmod_masks;
++    int core_device_id;
++
++    QXkbCommon::ScopedXKBState m_xkbState;
++    QXkbCommon::ScopedXKBKeymap m_xkbKeymap;
++    QXkbCommon::ScopedXKBContext m_xkbContext;
++
++    bool m_superAsMeta = false;
++    bool m_hyperAsMeta = false;
++};
++
++QT_END_NAMESPACE
+diff --git a/src/plugins/platforms/xcb/qxcbnativeinterface.cpp b/src/plugins/platforms/xcb/qxcbnativeinterface.cpp
+index 3bd9a80c35f..c8996f73a45 100644
+--- a/src/plugins/platforms/xcb/qxcbnativeinterface.cpp
++++ b/src/plugins/platforms/xcb/qxcbnativeinterface.cpp
+@@ -5,6 +5,7 @@
+ #include "qxcbnativeinterface.h"
+ 
+ #include "qxcbcursor.h"
++#include "qxcbkeyboard.h"
+ #include "qxcbscreen.h"
+ #include "qxcbwindow.h"
+ #include "qxcbintegration.h"
+@@ -346,6 +347,14 @@ xcb_connection_t *QXcbNativeInterface::connection() const
+     return integration->connection()->xcb_connection();
+ }
+ 
++xkb_state *QXcbNativeInterface::xkbState() const
++{
++    QXcbIntegration *integration = QXcbIntegration::instance();
++    if (QXcbConnection *connection = integration->connection())
++        return connection->keyboard()->xkbState();
++    return nullptr;
++}
++
+ void *QXcbNativeInterface::atspiBus()
+ {
+     QXcbIntegration *integration = static_cast<QXcbIntegration *>(QGuiApplicationPrivate::platformIntegration());
+diff --git a/src/plugins/platforms/xcb/qxcbnativeinterface.h b/src/plugins/platforms/xcb/qxcbnativeinterface.h
+index 0542a45c768..d853ff6263e 100644
+--- a/src/plugins/platforms/xcb/qxcbnativeinterface.h
++++ b/src/plugins/platforms/xcb/qxcbnativeinterface.h
+@@ -1,121 +1,122 @@
+-// Copyright (C) 2016 The Qt Company Ltd.
+-// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
+-// Qt-Security score:significant reason:default
+-
+-#pragma once
+-
+-#include <qpa/qplatformnativeinterface.h>
+-#include <xcb/xcb.h>
+-
+-#include <QtCore/QRect>
+-
+-#include <QtGui/qguiapplication.h>
+-
+-#include "qxcbexport.h"
+-#include "qxcbconnection.h"
+-
+-QT_BEGIN_NAMESPACE
+-
+-class QXcbScreen;
+-class QXcbNativeInterfaceHandler;
+-
+-class Q_XCB_EXPORT QXcbNativeInterface : public QPlatformNativeInterface
+-    , public QNativeInterface::QX11Application
+-{
+-    Q_OBJECT
+-public:
+-    enum ResourceType {
+-        XDisplay,
+-        Connection,
+-        Screen,
+-        AppTime,
+-        AppUserTime,
+-        ScreenHintStyle,
+-        StartupId,
+-        TrayWindow,
+-        GetTimestamp,
+-        X11Screen,
+-        RootWindow,
+-        ScreenSubpixelType,
+-        ScreenAntialiasingEnabled,
+-        AtspiBus,
+-        CompositingEnabled,
+-        VkSurface,
+-        GeneratePeekerId,
+-        RemovePeekerId,
+-        PeekEventQueue
+-    };
+-
+-    QXcbNativeInterface();
+-
+-    void *nativeResourceForIntegration(const QByteArray &resource) override;
+-    void *nativeResourceForContext(const QByteArray &resourceString, QOpenGLContext *context) override;
+-    void *nativeResourceForScreen(const QByteArray &resource, QScreen *screen) override;
+-    void *nativeResourceForWindow(const QByteArray &resourceString, QWindow *window) override;
+-    void *nativeResourceForBackingStore(const QByteArray &resource, QBackingStore *backingStore) override;
+-#ifndef QT_NO_CURSOR
+-    void *nativeResourceForCursor(const QByteArray &resource, const QCursor &cursor) override;
+-#endif
+-
+-    NativeResourceForIntegrationFunction nativeResourceFunctionForIntegration(const QByteArray &resource) override;
+-    NativeResourceForContextFunction nativeResourceFunctionForContext(const QByteArray &resource) override;
+-    NativeResourceForScreenFunction nativeResourceFunctionForScreen(const QByteArray &resource) override;
+-    NativeResourceForWindowFunction nativeResourceFunctionForWindow(const QByteArray &resource) override;
+-    NativeResourceForBackingStoreFunction nativeResourceFunctionForBackingStore(const QByteArray &resource) override;
+-
+-    QFunctionPointer platformFunction(const QByteArray &function) const override;
+-
+-    inline const QByteArray &nativeEventType() const { return m_nativeEventType; }
+-
+-    void *displayForWindow(QWindow *window);
+-    void *connectionForWindow(QWindow *window);
+-    void *screenForWindow(QWindow *window);
+-    void *appTime(const QXcbScreen *screen);
+-    void *appUserTime(const QXcbScreen *screen);
+-    void *getTimestamp(const QXcbScreen *screen);
+-    void *startupId();
+-    void *x11Screen();
+-    void *rootWindow();
+-
+-    Display *display() const override;
+-    xcb_connection_t *connection() const override;
+-
+-    void *atspiBus();
+-    static void setStartupId(const char *);
+-    static void setAppTime(QScreen *screen, xcb_timestamp_t time);
+-    static void setAppUserTime(QScreen *screen, xcb_timestamp_t time);
+-
+-    static qint32 generatePeekerId();
+-    static bool removePeekerId(qint32 peekerId);
+-    static bool peekEventQueue(QXcbEventQueue::PeekerCallback peeker, void *peekerData = nullptr,
+-                               QXcbEventQueue::PeekOptions option = QXcbEventQueue::PeekDefault,
+-                               qint32 peekerId = -1);
+-
+-    Q_INVOKABLE QString dumpConnectionNativeWindows(const QXcbConnection *connection, WId root) const;
+-    Q_INVOKABLE QString dumpNativeWindows(WId root = 0) const;
+-
+-    void addHandler(QXcbNativeInterfaceHandler *handler);
+-    void removeHandler(QXcbNativeInterfaceHandler *handler);
+-signals:
+-    void systemTrayWindowChanged(QScreen *screen);
+-
+-private:
+-    const QByteArray m_nativeEventType = QByteArrayLiteral("xcb_generic_event_t");
+-
+-    static QXcbScreen *qPlatformScreenForWindow(QWindow *window);
+-
+-    QList<QXcbNativeInterfaceHandler *> m_handlers;
+-    NativeResourceForIntegrationFunction handlerNativeResourceFunctionForIntegration(const QByteArray &resource) const;
+-    NativeResourceForContextFunction handlerNativeResourceFunctionForContext(const QByteArray &resource) const;
+-    NativeResourceForScreenFunction handlerNativeResourceFunctionForScreen(const QByteArray &resource) const;
+-    NativeResourceForWindowFunction handlerNativeResourceFunctionForWindow(const QByteArray &resource) const;
+-    NativeResourceForBackingStoreFunction handlerNativeResourceFunctionForBackingStore(const QByteArray &resource) const;
+-    QFunctionPointer handlerPlatformFunction(const QByteArray &function) const;
+-    void *handlerNativeResourceForIntegration(const QByteArray &resource) const;
+-    void *handlerNativeResourceForContext(const QByteArray &resource, QOpenGLContext *context) const;
+-    void *handlerNativeResourceForScreen(const QByteArray &resource, QScreen *screen) const;
+-    void *handlerNativeResourceForWindow(const QByteArray &resource, QWindow *window) const;
+-    void *handlerNativeResourceForBackingStore(const QByteArray &resource, QBackingStore *backingStore) const;
+-};
+-
+-QT_END_NAMESPACE
++// Copyright (C) 2016 The Qt Company Ltd.
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
++// Qt-Security score:significant reason:default
++
++#pragma once
++
++#include <qpa/qplatformnativeinterface.h>
++#include <xcb/xcb.h>
++
++#include <QtCore/QRect>
++
++#include <QtGui/qguiapplication.h>
++
++#include "qxcbexport.h"
++#include "qxcbconnection.h"
++
++QT_BEGIN_NAMESPACE
++
++class QXcbScreen;
++class QXcbNativeInterfaceHandler;
++
++class Q_XCB_EXPORT QXcbNativeInterface : public QPlatformNativeInterface
++    , public QNativeInterface::QX11Application
++{
++    Q_OBJECT
++public:
++    enum ResourceType {
++        XDisplay,
++        Connection,
++        Screen,
++        AppTime,
++        AppUserTime,
++        ScreenHintStyle,
++        StartupId,
++        TrayWindow,
++        GetTimestamp,
++        X11Screen,
++        RootWindow,
++        ScreenSubpixelType,
++        ScreenAntialiasingEnabled,
++        AtspiBus,
++        CompositingEnabled,
++        VkSurface,
++        GeneratePeekerId,
++        RemovePeekerId,
++        PeekEventQueue
++    };
++
++    QXcbNativeInterface();
++
++    void *nativeResourceForIntegration(const QByteArray &resource) override;
++    void *nativeResourceForContext(const QByteArray &resourceString, QOpenGLContext *context) override;
++    void *nativeResourceForScreen(const QByteArray &resource, QScreen *screen) override;
++    void *nativeResourceForWindow(const QByteArray &resourceString, QWindow *window) override;
++    void *nativeResourceForBackingStore(const QByteArray &resource, QBackingStore *backingStore) override;
++#ifndef QT_NO_CURSOR
++    void *nativeResourceForCursor(const QByteArray &resource, const QCursor &cursor) override;
++#endif
++
++    NativeResourceForIntegrationFunction nativeResourceFunctionForIntegration(const QByteArray &resource) override;
++    NativeResourceForContextFunction nativeResourceFunctionForContext(const QByteArray &resource) override;
++    NativeResourceForScreenFunction nativeResourceFunctionForScreen(const QByteArray &resource) override;
++    NativeResourceForWindowFunction nativeResourceFunctionForWindow(const QByteArray &resource) override;
++    NativeResourceForBackingStoreFunction nativeResourceFunctionForBackingStore(const QByteArray &resource) override;
++
++    QFunctionPointer platformFunction(const QByteArray &function) const override;
++
++    inline const QByteArray &nativeEventType() const { return m_nativeEventType; }
++
++    void *displayForWindow(QWindow *window);
++    void *connectionForWindow(QWindow *window);
++    void *screenForWindow(QWindow *window);
++    void *appTime(const QXcbScreen *screen);
++    void *appUserTime(const QXcbScreen *screen);
++    void *getTimestamp(const QXcbScreen *screen);
++    void *startupId();
++    void *x11Screen();
++    void *rootWindow();
++
++    Display *display() const override;
++    xcb_connection_t *connection() const override;
++    xkb_state *xkbState() const override;
++
++    void *atspiBus();
++    static void setStartupId(const char *);
++    static void setAppTime(QScreen *screen, xcb_timestamp_t time);
++    static void setAppUserTime(QScreen *screen, xcb_timestamp_t time);
++
++    static qint32 generatePeekerId();
++    static bool removePeekerId(qint32 peekerId);
++    static bool peekEventQueue(QXcbEventQueue::PeekerCallback peeker, void *peekerData = nullptr,
++                               QXcbEventQueue::PeekOptions option = QXcbEventQueue::PeekDefault,
++                               qint32 peekerId = -1);
++
++    Q_INVOKABLE QString dumpConnectionNativeWindows(const QXcbConnection *connection, WId root) const;
++    Q_INVOKABLE QString dumpNativeWindows(WId root = 0) const;
++
++    void addHandler(QXcbNativeInterfaceHandler *handler);
++    void removeHandler(QXcbNativeInterfaceHandler *handler);
++signals:
++    void systemTrayWindowChanged(QScreen *screen);
++
++private:
++    const QByteArray m_nativeEventType = QByteArrayLiteral("xcb_generic_event_t");
++
++    static QXcbScreen *qPlatformScreenForWindow(QWindow *window);
++
++    QList<QXcbNativeInterfaceHandler *> m_handlers;
++    NativeResourceForIntegrationFunction handlerNativeResourceFunctionForIntegration(const QByteArray &resource) const;
++    NativeResourceForContextFunction handlerNativeResourceFunctionForContext(const QByteArray &resource) const;
++    NativeResourceForScreenFunction handlerNativeResourceFunctionForScreen(const QByteArray &resource) const;
++    NativeResourceForWindowFunction handlerNativeResourceFunctionForWindow(const QByteArray &resource) const;
++    NativeResourceForBackingStoreFunction handlerNativeResourceFunctionForBackingStore(const QByteArray &resource) const;
++    QFunctionPointer handlerPlatformFunction(const QByteArray &function) const;
++    void *handlerNativeResourceForIntegration(const QByteArray &resource) const;
++    void *handlerNativeResourceForContext(const QByteArray &resource, QOpenGLContext *context) const;
++    void *handlerNativeResourceForScreen(const QByteArray &resource, QScreen *screen) const;
++    void *handlerNativeResourceForWindow(const QByteArray &resource, QWindow *window) const;
++    void *handlerNativeResourceForBackingStore(const QByteArray &resource, QBackingStore *backingStore) const;
++};
++
++QT_END_NAMESPACE
