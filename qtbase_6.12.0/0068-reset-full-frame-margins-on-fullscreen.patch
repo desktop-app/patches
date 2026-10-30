@@ -1,0 +1,58 @@
+diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
+index 22d88658..5dd7d280 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.cpp
++++ b/src/plugins/platforms/windows/qwindowswindow.cpp
+@@ -2851,6 +2851,7 @@ void QWindowsWindow::setWindowState_sys(Qt::WindowStates newState)
+                 newStyle |= WS_SYSMENU;
+             if (visible)
+                 newStyle |= WS_VISIBLE;
++            m_isFullScreen = true;
+             setStyle(newStyle);
+             const HMONITOR monitor = MonitorFromWindow(m_data.hwnd, MONITOR_DEFAULTTONEAREST);
+             MONITORINFO monitorInfo = {};
+@@ -2875,6 +2876,7 @@ void QWindowsWindow::setWindowState_sys(Qt::WindowStates newState)
+             }
+         } else {
+             // Restore saved state.
++            m_isFullScreen = false;
+             unsigned newStyle = m_savedStyle ? m_savedStyle : style();
+             if (visible)
+                 newStyle |= WS_VISIBLE;
+@@ -3110,8 +3112,16 @@ void QWindowsWindow::calculateFullFrameMargins()
+     setFullFrameMargins(adjustedMargins);
+ }
+ 
++[[nodiscard]] static bool isFullScreenPopupStyle(HWND hwnd)
++{
++    const LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
++    return (style & WS_POPUP) && !(style & (WS_CAPTION | WS_THICKFRAME));
++}
++
+ QMargins QWindowsWindow::frameMargins() const
+ {
++    if (m_isFullScreen || isFullScreenPopupStyle(m_data.hwnd))
++        return {};
+     QMargins result = fullFrameMargins();
+     if (isTopLevel() && m_data.hasFrame)
+         result -= invisibleMargins(m_data.hwnd);
+@@ -3122,6 +3132,8 @@ QMargins QWindowsWindow::fullFrameMargins() const
+ {
+     if (shouldOmitFrameAdjustment(m_data.flags, m_data.hwnd))
+         return {};
++    if (m_isFullScreen || isFullScreenPopupStyle(m_data.hwnd))
++        return {};
+     return m_data.fullFrameMargins;
+ }
+ 
+diff --git a/src/plugins/platforms/windows/qwindowswindow.h b/src/plugins/platforms/windows/qwindowswindow.h
+index 35148182..cf34a5fc 100644
+--- a/src/plugins/platforms/windows/qwindowswindow.h
++++ b/src/plugins/platforms/windows/qwindowswindow.h
+@@ -391,6 +391,7 @@ private:
+     mutable unsigned m_flags = WithinCreate;
+     HDC m_hdc = nullptr;
+     Qt::WindowStates m_windowState = Qt::WindowNoState;
++    bool m_isFullScreen = false;
+     QString m_windowTitle;
+     qreal m_opacity = 1;
+ #ifndef QT_NO_CURSOR

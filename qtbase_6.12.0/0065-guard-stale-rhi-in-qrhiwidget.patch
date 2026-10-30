@@ -1,0 +1,24 @@
+diff --git a/src/widgets/kernel/qrhiwidget.cpp b/src/widgets/kernel/qrhiwidget.cpp
+index 7b66aac8..359d1056 100644
+--- a/src/widgets/kernel/qrhiwidget.cpp
++++ b/src/widgets/kernel/qrhiwidget.cpp
+@@ -211,7 +211,9 @@ QRhiWidget::~QRhiWidget()
+     Q_D(QRhiWidget);
+ 
+     if (d->rhi) {
+-        d->rhi->removeCleanupCallback(this);
++        // An unregistered QRhi may have been destroyed since the last window change.
++        if (d->rhiCleanupRegistered)
++            d->rhi->removeCleanupCallback(this);
+         // rhi resources must be destroyed here, due to how QWidget teardown works;
+         // it should not be left to the private object's destruction.
+         d->resetRenderTargetObjects();
+@@ -295,7 +297,7 @@ bool QRhiWidget::event(QEvent *e)
+         // returning the existing QRhiTexture in the meantime.
+         d->textureInvalid = true;
+ 
+-        if (d->rhi && d->rhi != d->offscreenRenderer.rhi()) {
++        if (d->rhi && d->rhiCleanupRegistered && d->rhi != d->offscreenRenderer.rhi()) {
+             // Drop the cleanup callback registered to the toplevel's rhi and
+             // do the early-release, there may not be another chance to do
+             // this, and the QRhi we have currently set may be destroyed by the

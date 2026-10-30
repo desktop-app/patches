@@ -1,0 +1,45 @@
+diff --git a/src/gui/rhi/qrhimetal.mm b/src/gui/rhi/qrhimetal.mm
+index 9889e341..9bbb5c82 100644
+--- a/src/gui/rhi/qrhimetal.mm
++++ b/src/gui/rhi/qrhimetal.mm
+@@ -6973,6 +6973,9 @@ bool QMetalSwapChain::createOrResize()
+     d->layer = qrhi_objectFromProxyData<CAMetalLayer>(&m_proxyData, window, QRhi::Metal, 0);
+     Q_ASSERT(d->layer);
+ 
++    if (@available(macOS 10.13.2, iOS 11.2, tvOS 11.2, watchOS 4.2, *))
++        d->layer.maximumDrawableCount = NSUInteger(QMTL_FRAMES_IN_FLIGHT);
++
+     chooseFormats();
+     if (d->colorFormat != d->layer.pixelFormat)
+         d->layer.pixelFormat = d->colorFormat;
+@@ -7029,7 +7032,7 @@ bool QMetalSwapChain::createOrResize()
+     for (int i = 0; i < QMTL_FRAMES_IN_FLIGHT; ++i) {
+         d->lastGpuTime[i] = 0;
+         if (!d->sem[i])
+-            d->sem[i] = dispatch_semaphore_create(QMTL_FRAMES_IN_FLIGHT - 1);
++            d->sem[i] = dispatch_semaphore_create(1);
+     }
+ 
+     currentFrameSlot = 0;
+@@ -7077,7 +7080,7 @@ bool QMetalSwapChain::createOrResize()
+             if (d->msaaTex[i]) {
+                 QRhiMetalData::DeferredReleaseEntry e;
+                 e.type = QRhiMetalData::DeferredReleaseEntry::RenderBuffer;
+-                e.lastActiveFrameSlot = 1; // because currentFrameSlot is reset to 0
++                e.lastActiveFrameSlot = QMTL_FRAMES_IN_FLIGHT - 1; // because currentFrameSlot is reset to 0
+                 e.renderbuffer.texture = d->msaaTex[i];
+                 rhiD->d->releaseQueue.append(e);
+             }
+diff --git a/src/gui/rhi/qrhimetal_p.h b/src/gui/rhi/qrhimetal_p.h
+index cdcb0694..460cfda5 100644
+--- a/src/gui/rhi/qrhimetal_p.h
++++ b/src/gui/rhi/qrhimetal_p.h
+@@ -21,7 +21,7 @@
+ 
+ QT_BEGIN_NAMESPACE
+ 
+-static const int QMTL_FRAMES_IN_FLIGHT = 2;
++static const int QMTL_FRAMES_IN_FLIGHT = 3;
+ 
+ // have to hide the ObjC stuff, this header cannot contain MTL* at all
+ struct QMetalBufferData;

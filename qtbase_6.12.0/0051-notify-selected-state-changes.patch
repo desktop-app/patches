@@ -1,0 +1,31 @@
+diff --git a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+index a8cd6446..be10170b 100644
+--- a/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
++++ b/src/plugins/platforms/windows/uiautomation/qwindowsuiamainprovider.cpp
+@@ -102,6 +102,17 @@ void QWindowsUiaMainProvider::notifyStateChange(QAccessibleStateChangeEvent *eve
+                 }
+             }
+         }
++        if (event->changedStates().selected) {
++            const auto state = accessible->state();
++            if (state.selectable) {
++                if (auto provider = providerForAccessible(accessible)) {
++                    const auto eventId = state.selected
++                            ? UIA_SelectionItem_ElementAddedToSelectionEventId
++                            : UIA_SelectionItem_ElementRemovedFromSelectionEventId;
++                    UiaRaiseAutomationEvent(provider.Get(), eventId);
++                }
++            }
++        }
+         if (event->changedStates().expanded) {
+             if (accessible->state().expandable) {
+                 if (auto provider = providerForAccessible(accessible)) {
+@@ -109,7 +120,7 @@ void QWindowsUiaMainProvider::notifyStateChange(QAccessibleStateChangeEvent *eve
+ 
+                     QComVariant oldVal;
+                     QComVariant newVal{expandedState};
+-                    UiaRaiseAutomationPropertyChangedEvent(
++                    QWindowsUiaWrapper::instance()->raiseAutomationPropertyChangedEvent(
+                             provider.Get(), UIA_ExpandCollapseExpandCollapseStatePropertyId, oldVal.get(), newVal.get());
+                 }
+             }

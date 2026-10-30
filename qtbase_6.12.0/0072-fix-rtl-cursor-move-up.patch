@@ -1,0 +1,47 @@
+diff --git a/src/corelib/thread/qthread_win.cpp b/src/corelib/thread/qthread_win.cpp
+index 866231f9..bfbb46bb 100644
+--- a/src/corelib/thread/qthread_win.cpp
++++ b/src/corelib/thread/qthread_win.cpp
+@@ -403,7 +403,7 @@ void QThread::sleep(std::chrono::nanoseconds nsecs)
+         static const auto setWaitableTimerEx = createWaitableTimerEx
+                 ? reinterpret_cast<SetWaitableTimerExPtr>(::GetProcAddress(
+                         ::GetModuleHandle(L"kernel32.dll"), "SetWaitableTimerExW"))
+-                : nullptr;
++                : reinterpret_cast<SetWaitableTimerExPtr>(nullptr);
+         if (createWaitableTimerEx && setWaitableTimerEx) {
+             QUniqueWin32NullHandle waitableTimerHandle;
+             waitableTimerHandle.reset(createWaitableTimerEx(
+@@ -418,7 +418,7 @@ void QThread::sleep(std::chrono::nanoseconds nsecs)
+                 BOOL timerResult = setWaitableTimerEx(
+                         waitableTimerHandle.get(), &i,
+                         0, // not periodic
+-                        nullptr, nullptr, // no callback
++                        FALSE, nullptr, // no callback
+                         nullptr, // no wake context / don't wake from sleep
+                         0); // lowest tolerated delay
+ 
+diff --git a/src/gui/text/qtextlayout.cpp b/src/gui/text/qtextlayout.cpp
+index 2271005d..c2943727 100644
+--- a/src/gui/text/qtextlayout.cpp
++++ b/src/gui/text/qtextlayout.cpp
+@@ -3157,8 +3157,19 @@ int QTextLine::xToCursor(qreal _x, CursorPosition cpos) const
+     bool visual = eng->visualCursorMovement();
+     if (x <= 0) {
+         // left of first item
++
++        // Patch: Fix go up one line in RTL case of an empty line.
++        // except for the last line we assume that the
++        // character between lines is a space and we want
++        // to position the cursor to the left of that
++        // character.
++        int maxPos = line.from + line_length;
++        if (index < eng->lines.count() - 1)
++            maxPos = qMin(eng->previousLogicalPosition(maxPos), maxPos);
++
+         if (eng->isRightToLeft())
+-            return line.from + line_length;
++            //return line.from + line_length;
++            return maxPos;
+         return line.from;
+     }   else if (x < line.textWidth || (line.justified && x < line.width)) {
+         // has to be in one of the runs

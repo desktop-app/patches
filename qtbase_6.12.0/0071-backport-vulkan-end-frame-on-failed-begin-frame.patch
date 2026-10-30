@@ -1,0 +1,32 @@
+From 1631a1512c9120760aa1f186c708deb60199b67d Mon Sep 17 00:00:00 2001
+From: 23rd <23rd@vivaldi.net>
+Date: Fri, 30 Oct 2026 04:54:44 +0000
+Subject: [PATCH 71/72] Backport Qt c68e1fc11dd8 (end frame on failed begin
+ frame in Vulkan RHI).
+
+---
+ src/gui/rhi/qrhivulkan.cpp | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/gui/rhi/qrhivulkan.cpp b/src/gui/rhi/qrhivulkan.cpp
+index b1da62cd..d894c0f2 100644
+--- a/src/gui/rhi/qrhivulkan.cpp
++++ b/src/gui/rhi/qrhivulkan.cpp
+@@ -2699,6 +2699,9 @@ QRhi::FrameOpResult QRhiVulkan::beginFrame(QRhiSwapChain *swapChain, QRhi::Begin
+     QVkSwapChain::FrameResources &frame(swapChainD->frameRes[frameResIndex]);
+ 
+     inst->handle()->beginFrame(swapChainD->window);
++    auto instEndFrameOnErrorGuard = qScopeGuard([this, swapChainD] {
++        inst->handle()->endFrame(swapChainD->window);
++    });
+ 
+     // Make sure the previous commands for the same frame slot have finished.
+     //
+@@ -2798,6 +2801,7 @@ QRhi::FrameOpResult QRhiVulkan::beginFrame(QRhiSwapChain *swapChain, QRhi::Begin
+         }
+     }
+ 
++    instEndFrameOnErrorGuard.dismiss();
+     return QRhi::FrameOpSuccess;
+ }
+ 

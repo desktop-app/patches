@@ -1,0 +1,93 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Wed, 21 Oct 2026 12:00:00 +0000
+Subject: [PATCH] let the application guard rhi driver calls
+
+The application can detect a GPU driver crash and switch to software
+rendering on the next launch, if it knows when the crash happened inside
+the driver. Bracket the two backing store calls that run there, graphics
+device creation and swapchain creation, with an application-provided guard.
+They also run again when a lost device is recreated.
+
+diff --git diff --git a/src/gui/painting/qbackingstorerhisupport.cpp b/src/gui/painting/qbackingstorerhisupport.cpp
+index 73cd7ef6..2d174c4f 100644
+--- a/src/gui/painting/qbackingstorerhisupport.cpp
++++ b/src/gui/painting/qbackingstorerhisupport.cpp
+@@ -17,6 +17,37 @@
+ 
+ QT_BEGIN_NAMESPACE
+ 
++static QRhiDriverCallGuard qt_rhi_driver_call_guard = nullptr;
++
++void qt_set_rhi_driver_call_guard(QRhiDriverCallGuard guard)
++{
++    qt_rhi_driver_call_guard = guard;
++}
++
++namespace {
++
++class DriverCallScope
++{
++public:
++    DriverCallScope() : m_guard(qt_rhi_driver_call_guard)
++    {
++        if (m_guard)
++            m_guard(true);
++    }
++    ~DriverCallScope()
++    {
++        if (m_guard)
++            m_guard(false);
++    }
++
++private:
++    Q_DISABLE_COPY_MOVE(DriverCallScope)
++
++    const QRhiDriverCallGuard m_guard;
++};
++
++} // namespace
++
+ QBackingStoreRhiSupport::~QBackingStoreRhiSupport()
+ {
+     reset();
+@@ -49,6 +80,8 @@ bool QBackingStoreRhiSupport::create()
+     if (!QGuiApplicationPrivate::platformIntegration()->hasCapability(QPlatformIntegration::RhiBasedRendering))
+         return false;
+ 
++    const DriverCallScope driverCall;
++
+     // note: m_window may be null (special case for fully offscreen rendering)
+ 
+     QRhi *rhi = nullptr;
+@@ -176,7 +209,12 @@ QRhiSwapChain *QBackingStoreRhiSupport::swapChainForWindow(QWindow *window)
+         swapchain->setFlags(flags);
+         rp = swapchain->newCompatibleRenderPassDescriptor();
+         swapchain->setRenderPassDescriptor(rp);
+-        if (!swapchain->createOrResize()) {
++        bool created = false;
++        {
++            const DriverCallScope driverCall;
++            created = swapchain->createOrResize();
++        }
++        if (!created) {
+             qWarning("Failed to create swapchain for window flushed with an RHI-enabled backingstore");
+             delete rp;
+             return nullptr;
+diff --git a/src/gui/painting/qplatformbackingstore.h b/src/gui/painting/qplatformbackingstore.h
+index fdd30acd..2211c008 100644
+--- a/src/gui/painting/qplatformbackingstore.h
++++ b/src/gui/painting/qplatformbackingstore.h
+@@ -200,6 +200,13 @@ private:
+ 
+ Q_DECLARE_OPERATORS_FOR_FLAGS(QPlatformBackingStore::TextureFlags)
+ 
++// Called with true before and false after the RHI-enabled backing store
++// creates a graphics device or a swapchain, the calls that run inside the
++// GPU driver, so that the application can detect crashes in there.
++#define QT_RHI_DRIVER_CALL_GUARD
++using QRhiDriverCallGuard = void (*)(bool begin);
++Q_GUI_EXPORT void qt_set_rhi_driver_call_guard(QRhiDriverCallGuard guard);
++
+ QT_END_NAMESPACE
+ 
+ #endif // QPLATFORMBACKINGSTORE_H

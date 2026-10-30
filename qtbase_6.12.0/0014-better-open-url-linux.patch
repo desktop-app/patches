@@ -1,0 +1,13 @@
+diff --git a/src/gui/platform/unix/qdesktopunixservices.cpp b/src/gui/platform/unix/qdesktopunixservices.cpp
+index aa330f22..9ae22ee8 100644
+--- a/src/gui/platform/unix/qdesktopunixservices.cpp
++++ b/src/gui/platform/unix/qdesktopunixservices.cpp
+@@ -176,7 +176,7 @@ bool QDesktopUnixServices::launchProcess(LaunchType type, const QUrl &url,
+ #if QT_CONFIG(dbus)
+ static inline bool checkNeedPortalSupport()
+ {
+-    return QFileInfo::exists("/.flatpak-info"_L1) || qEnvironmentVariableIsSet("SNAP");
++    return true;
+ }
+ 
+ static inline QDBusMessage xdgDesktopPortalOpenFile(const QUrl &url, const QString &parentWindow,

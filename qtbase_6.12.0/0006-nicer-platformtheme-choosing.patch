@@ -1,0 +1,45 @@
+diff --git a/src/gui/kernel/qguiapplication.cpp b/src/gui/kernel/qguiapplication.cpp
+index 64fc3679..d0c0ae98 100644
+--- a/src/gui/kernel/qguiapplication.cpp
++++ b/src/gui/kernel/qguiapplication.cpp
+@@ -1380,19 +1380,18 @@ static void init_platform(const QString &pluginNamesWithArguments, const QString
+         themeNames.append(platformThemeName);
+     }
+ 
+-#if defined(Q_OS_UNIX) && !defined(Q_OS_DARWIN)
+-    // 2) Special case - check whether it's a flatpak or snap app to use xdg-desktop-portal platform theme for portals support
+-    if (checkNeedPortalSupport()) {
+-        qCDebug(lcQpaTheme) << "Adding xdgdesktopportal to list of theme names";
+-        themeNames.append(QStringLiteral("xdgdesktopportal"));
+-    }
+-#endif
+-
+-    // 3) Ask the platform integration for a list of theme names
++    // 2) Ask the platform integration for a list of theme names
+     const auto platformIntegrationThemeNames = QGuiApplicationPrivate::platform_integration->themeNames();
+     qCDebug(lcQpaTheme) << "Adding platform integration's theme names to list of theme names:" << platformIntegrationThemeNames;
+     themeNames.append(platformIntegrationThemeNames);
+ 
++    // 3) Special case - prefer xdgdesktopportal
++    if (themeNames.indexOf(QStringLiteral("xdgdesktopportal")) > 0) {
++        qCDebug(lcQpaTheme) << "Moving xdgdesktopportal to the front of list of theme names";
++        themeNames.removeAll(QStringLiteral("xdgdesktopportal"));
++        themeNames.prepend(QStringLiteral("xdgdesktopportal"));
++    }
++
+     // 4) Look for a theme plugin.
+     for (const QString &themeName : std::as_const(themeNames)) {
+         qCDebug(lcQpaTheme) << "Attempting to create platform theme" << themeName << "via QPlatformThemeFactory::create";
+diff --git a/src/gui/platform/unix/qgenericunixtheme.cpp b/src/gui/platform/unix/qgenericunixtheme.cpp
+index 204e9446..2cb01580 100644
+--- a/src/gui/platform/unix/qgenericunixtheme.cpp
++++ b/src/gui/platform/unix/qgenericunixtheme.cpp
+@@ -150,6 +150,8 @@ QStringList QGenericUnixTheme::themeNames()
+ {
+     QStringList result;
+     if (QGuiApplication::desktopSettingsAware()) {
++        result.push_back(QStringLiteral("xdgdesktopportal"));
++        result.push_back(QStringLiteral("gtk3"));
+         const QByteArray desktopEnvironment = QGuiApplicationPrivate::platformIntegration()->services()->desktopEnvironment();
+         QList<QByteArray> gtkBasedEnvironments;
+         gtkBasedEnvironments << "GNOME"

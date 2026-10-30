@@ -1,0 +1,20 @@
+diff --git a/src/gui/image/qpnghandler.cpp b/src/gui/image/qpnghandler.cpp
+index 9fa62204..6d0085e4 100644
+--- a/src/gui/image/qpnghandler.cpp
++++ b/src/gui/image/qpnghandler.cpp
+@@ -427,6 +427,15 @@ bool QPngHandlerPrivate::readPngHeader()
+     }
+ 
+     png_set_read_fn(png_ptr, this, iod_read_fn);
++
++#if defined(PNG_SET_UNKNOWN_CHUNKS_SUPPORTED) && defined(PNG_HANDLE_AS_UNKNOWN_SUPPORTED)
++    // Text chunks are never used, and each zTXt or iTXt chunk inflates up to
++    // libpng's per-chunk limit, so a small file could expand into hundreds of
++    // megabytes of QString data. Skip them without decompressing.
++    static const png_byte textChunks[] = "tEXt\0zTXt\0iTXt";
++    png_set_keep_unknown_chunks(png_ptr, PNG_HANDLE_CHUNK_NEVER, textChunks, 3);
++#endif
++
+     png_read_info(png_ptr, info_ptr);
+ 
+     readPngTexts(info_ptr);

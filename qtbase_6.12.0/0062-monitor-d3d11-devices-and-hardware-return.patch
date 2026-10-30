@@ -1,0 +1,264 @@
+diff --git a/src/gui/painting/qbackingstorerhisupport.cpp b/src/gui/painting/qbackingstorerhisupport.cpp
+index 61e3d9dd..544316b2 100644
+--- a/src/gui/painting/qbackingstorerhisupport.cpp
++++ b/src/gui/painting/qbackingstorerhisupport.cpp
+@@ -5,6 +5,9 @@
+ #include "qbackingstorerhisupport_p.h"
+ #include <qpa/qplatformintegration.h>
+ #include <private/qguiapplication_p.h>
++#ifdef Q_OS_WIN
++#include <d3d11.h>
++#endif
+ 
+ #if QT_CONFIG(opengl)
+ #include <QtGui/qoffscreensurface.h>
+@@ -73,6 +76,10 @@ void QBackingStoreRhiSupport::reset()
+ 
+     delete m_openGLFallbackSurface;
+     m_openGLFallbackSurface = nullptr;
++#ifdef Q_OS_WIN
++    m_adapterFactory.Reset();
++    m_adapterCheckTimer.invalidate();
++#endif
+ }
+ 
+ bool QBackingStoreRhiSupport::create()
+@@ -118,7 +125,16 @@ bool QBackingStoreRhiSupport::create()
+         if (m_config.api() == QPlatformBackingStoreRhiConfig::D3D11) {
+             QRhiD3D11InitParams params;
+             params.enableDebugLayer = m_config.isDebugLayerEnabled();
+-            rhi = QRhi::create(QRhi::D3D11, &params, flags);
++            if (m_replacementRhi) {
++                const auto handles = static_cast<const QRhiD3D11NativeHandles *>(m_replacementRhi->nativeHandles());
++                const auto device = static_cast<ID3D11Device *>(handles->dev);
++                if (device && SUCCEEDED(device->GetDeviceRemovedReason()))
++                    rhi = m_replacementRhi.release();
++                else
++                    m_replacementRhi.reset();
++            }
++            if (!rhi)
++                rhi = QRhi::create(QRhi::D3D11, &params, flags);
+             if (!rhi && !flags.testFlag(QRhi::PreferSoftwareRenderer)) {
+                 qCDebug(lcQpaBackingStore, "Failed to create a D3D11 device with default settings; "
+                                            "attempting to get a software rasterizer backed device instead");
+@@ -181,7 +197,90 @@ bool QBackingStoreRhiSupport::create()
+ 
+     m_rhi = rhi;
+     m_openGLFallbackSurface = surface;
++#ifdef Q_OS_WIN
++    m_adapterChangePending = false;
++    m_adapterRetryDelay = 1000;
++    m_adapterCheckTimer.start();
++    if (rhi->backend() == QRhi::D3D11) {
++        m_softwareFallback = rhi->driverInfo().deviceType == QRhiDriverInfo::CpuDevice;
++        const auto handles = static_cast<const QRhiD3D11NativeHandles *>(rhi->nativeHandles());
++        const auto device = static_cast<ID3D11Device *>(handles->dev);
++        ComPtr<IDXGIDevice> dxgiDevice;
++        ComPtr<IDXGIAdapter> adapter;
++        DXGI_ADAPTER_DESC desc = {};
++        if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))
++                && SUCCEEDED(dxgiDevice->GetAdapter(&adapter))
++                && SUCCEEDED(adapter->GetDesc(&desc))) {
++            m_adapterLuid = desc.AdapterLuid;
++            m_driverVersionKnown = SUCCEEDED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &m_driverVersion));
++            adapter->GetParent(IID_PPV_ARGS(&m_adapterFactory));
++        }
++    }
++#endif
++    return true;
++}
++
++bool QBackingStoreRhiSupport::checkDevice()
++{
++    if (!m_rhi)
++        return false;
++    if (m_rhi->isDeviceLost())
++        return true;
++#ifdef Q_OS_WIN
++    if (m_rhi->backend() != QRhi::D3D11)
++        return false;
++    const auto handles = static_cast<const QRhiD3D11NativeHandles *>(m_rhi->nativeHandles());
++    const auto device = static_cast<ID3D11Device *>(handles->dev);
++    if (!device || FAILED(device->GetDeviceRemovedReason()))
++        return true;
++    if (qEnvironmentVariableIntValue("QSG_RHI_PREFER_SOFTWARE_RENDERER")
++            || qEnvironmentVariableIsSet("QT_D3D_ADAPTER_INDEX") || !m_adapterFactory)
++        return false;
++    if (m_replacementRhi)
++        return true;
++    if (m_adapterFactory->IsCurrent() && !m_softwareFallback && !m_adapterChangePending)
++        return false;
++    if (m_adapterCheckTimer.isValid() && m_adapterCheckTimer.elapsed() < m_adapterRetryDelay)
++        return false;
++    m_adapterCheckTimer.restart();
++    m_adapterRetryDelay = qMin(qint64(30000), m_adapterRetryDelay * 2);
++
++    ComPtr<IDXGIFactory1> factory;
++    ComPtr<IDXGIAdapter1> adapter;
++    DXGI_ADAPTER_DESC1 desc = {};
++    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))
++            || FAILED(factory->EnumAdapters1(0, &adapter))
++            || FAILED(adapter->GetDesc1(&desc)))
++        return false;
++    m_adapterFactory = factory;
++    LARGE_INTEGER version = {};
++    const auto versionKnown = SUCCEEDED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &version));
++    const auto sameAdapter = desc.AdapterLuid.LowPart == m_adapterLuid.LowPart
++            && desc.AdapterLuid.HighPart == m_adapterLuid.HighPart;
++    if (!m_softwareFallback && sameAdapter
++            && (!versionKnown || !m_driverVersionKnown || version.QuadPart == m_driverVersion.QuadPart)) {
++        m_adapterChangePending = false;
++        m_adapterRetryDelay = 1000;
++        return false;
++    }
++    m_adapterChangePending = true;
++    if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
++        return false;
++
++    const DriverCallScope driverCall;
++    QRhiD3D11InitParams params;
++    params.enableDebugLayer = m_config.isDebugLayerEnabled();
++    QRhi::Flags flags;
++    if (qEnvironmentVariableIntValue("QSG_RHI_PROFILE"))
++        flags |= QRhi::EnableDebugMarkers | QRhi::EnableTimestamps;
++    std::unique_ptr<QRhi> replacement(QRhi::create(QRhi::D3D11, &params, flags));
++    if (!replacement || replacement->driverInfo().deviceType == QRhiDriverInfo::CpuDevice)
++        return false;
++    m_replacementRhi = std::move(replacement);
+     return true;
++#else
++    return false;
++#endif
+ }
+ 
+ QRhiSwapChain *QBackingStoreRhiSupport::swapChainForWindow(QWindow *window)
+diff --git a/src/gui/painting/qbackingstorerhisupport_p.h b/src/gui/painting/qbackingstorerhisupport_p.h
+index df947f05..cebd6612 100644
+--- a/src/gui/painting/qbackingstorerhisupport_p.h
++++ b/src/gui/painting/qbackingstorerhisupport_p.h
+@@ -22,6 +22,11 @@
+ #include <QtGui/qoffscreensurface.h>
+ #include <rhi/qrhi.h>
+ #include <qpa/qplatformbackingstore.h>
++#ifdef Q_OS_WIN
++#include <QtCore/qelapsedtimer.h>
++#include <QtCore/private/qcomptr_p.h>
++#include <dxgi.h>
++#endif
+ 
+ QT_BEGIN_NAMESPACE
+ 
+@@ -37,6 +42,7 @@ public:
+     void setConfig(const QPlatformBackingStoreRhiConfig &config) { m_config = config; }
+ 
+     bool create();
++    bool checkDevice();
+ 
+     QRhiSwapChain *swapChainForWindow(QWindow *window);
+ 
+@@ -54,6 +60,17 @@ private:
+     QPlatformBackingStoreRhiConfig m_config;
+     QRhi *m_rhi = nullptr;
+     QOffscreenSurface *m_openGLFallbackSurface = nullptr;
++#ifdef Q_OS_WIN
++    ComPtr<IDXGIFactory1> m_adapterFactory;
++    LUID m_adapterLuid = {};
++    LARGE_INTEGER m_driverVersion = {};
++    bool m_driverVersionKnown = false;
++    bool m_softwareFallback = false;
++    bool m_adapterChangePending = false;
++    QElapsedTimer m_adapterCheckTimer;
++    qint64 m_adapterRetryDelay = 1000;
++    std::unique_ptr<QRhi> m_replacementRhi;
++#endif
+     struct SwapchainData {
+         QRhiSwapChain *swapchain = nullptr;
+         QRhiRenderPassDescriptor *renderPassDescriptor = nullptr;
+diff --git a/src/gui/painting/qplatformbackingstore.cpp b/src/gui/painting/qplatformbackingstore.cpp
+index 107a742c..0f0f08c9 100644
+--- a/src/gui/painting/qplatformbackingstore.cpp
++++ b/src/gui/painting/qplatformbackingstore.cpp
+@@ -449,6 +449,19 @@ QRhi *QPlatformBackingStore::rhi(QWindow *window) const
+     return d_ptr->surfaceSupport[window->surfaceType()].rhiSupport.rhi();
+ }
+ 
++bool QPlatformBackingStore::checkRhiDevice(QWindow *window)
++{
++    const auto it = d_ptr->surfaceSupport.find(window->surfaceType());
++    if (it == d_ptr->surfaceSupport.end())
++        return false;
++    auto &support = it->second;
++    if (!support.needsRecovery && support.rhiSupport.checkDevice()) {
++        support.recovering = support.needsRecovery = true;
++        return true;
++    }
++    return false;
++}
++
+ void QPlatformBackingStore::graphicsDeviceReportedLost(QWindow *window)
+ {
+     auto &surfaceSupport = d_ptr->surfaceSupport[window->surfaceType()];
+diff --git a/src/gui/painting/qplatformbackingstore.h b/src/gui/painting/qplatformbackingstore.h
+index 2211c008..795e3f8b 100644
+--- a/src/gui/painting/qplatformbackingstore.h
++++ b/src/gui/painting/qplatformbackingstore.h
+@@ -190,6 +190,7 @@ public:
+     QRhi *rhi(QWindow *window) const;
+     void surfaceAboutToBeDestroyed();
+     void graphicsDeviceReportedLost(QWindow *window);
++    bool checkRhiDevice(QWindow *window);
+ 
+ private:
+     QPlatformBackingStorePrivate *d_ptr;
+diff --git a/src/widgets/kernel/qwidgetrepaintmanager.cpp b/src/widgets/kernel/qwidgetrepaintmanager.cpp
+index 55cb068d..5657c477 100644
+--- a/src/widgets/kernel/qwidgetrepaintmanager.cpp
++++ b/src/widgets/kernel/qwidgetrepaintmanager.cpp
+@@ -17,6 +17,9 @@
+ #endif
+ 
+ #include <private/qwidget_p.h>
++#ifdef Q_OS_WIN
++#include <private/qwidgetwindow_p.h>
++#endif
+ #include <private/qapplication_p.h>
+ #include <private/qpaintengine_raster_p.h>
+ #if QT_CONFIG(graphicseffect)
+@@ -76,6 +79,23 @@ QWidgetRepaintManager::QWidgetRepaintManager(QWidget *topLevel)
+     Q_ASSERT(store);
+     rhiRecoveryTimer.setSingleShot(true);
+     QObject::connect(&rhiRecoveryTimer, &QTimer::timeout, tlw, [this] { recoverRhi(); });
++#ifdef Q_OS_WIN
++    rhiDeviceCheckTimer.setInterval(1000);
++    QObject::connect(&rhiDeviceCheckTimer, &QTimer::timeout, tlw, [this] {
++        QSet<QSurface::SurfaceType> checked;
++        const auto windows = QGuiApplication::allWindows();
++        for (auto *window : windows) {
++            const auto widgetWindow = qobject_cast<QWidgetWindow *>(window);
++            if (!widgetWindow || widgetWindow->widget()->window() != tlw
++                    || checked.contains(window->surfaceType()))
++                continue;
++            checked.insert(window->surfaceType());
++            if (store->handle()->checkRhiDevice(window))
++                scheduleRhiRecovery(widgetWindow->widget());
++        }
++    });
++    rhiDeviceCheckTimer.start();
++#endif
+ 
+     // Ensure all existing subsurfaces and static widgets are added to their respective lists.
+     updateLists(topLevel);
+diff --git a/src/widgets/kernel/qwidgetrepaintmanager_p.h b/src/widgets/kernel/qwidgetrepaintmanager_p.h
+index a8f4eb76..24fe3e4c 100644
+--- a/src/widgets/kernel/qwidgetrepaintmanager_p.h
++++ b/src/widgets/kernel/qwidgetrepaintmanager_p.h
+@@ -113,6 +113,9 @@ private:
+     bool updateRequestSent = false;
+ 
+     QTimer rhiRecoveryTimer;
++#ifdef Q_OS_WIN
++    QTimer rhiDeviceCheckTimer;
++#endif
+     QHash<QSurface::SurfaceType, QPointer<QWidget>> pendingRhiRecoveries;
+     QSet<QSurface::SurfaceType> recoveringRhiSurfaces;
+     int rhiRecoveryDelay = 0;

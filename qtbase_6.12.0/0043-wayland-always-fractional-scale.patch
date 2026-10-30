@@ -1,0 +1,132 @@
+diff --git a/src/plugins/platforms/wayland/qwaylandcursorsurface_p.h b/src/plugins/platforms/wayland/qwaylandcursorsurface_p.h
+index 1039eb93..cfce207f 100644
+--- a/src/plugins/platforms/wayland/qwaylandcursorsurface_p.h
++++ b/src/plugins/platforms/wayland/qwaylandcursorsurface_p.h
+@@ -64,7 +64,7 @@ public:
+     {
+         int scale = 0;
+         for (auto *screen : m_screens)
+-            scale = qMax(scale, screen->scale());
++            scale = qMax(scale, qCeil(screen->scale()));
+         return scale;
+     }
+ 
+diff --git a/src/plugins/platforms/wayland/qwaylandscreen.cpp b/src/plugins/platforms/wayland/qwaylandscreen.cpp
+index a005812e..1fbd9c72 100644
+--- a/src/plugins/platforms/wayland/qwaylandscreen.cpp
++++ b/src/plugins/platforms/wayland/qwaylandscreen.cpp
+@@ -184,14 +184,16 @@ Qt::ScreenOrientation QWaylandScreen::orientation() const
+     return m_orientation;
+ }
+ 
+-int QWaylandScreen::scale() const
++qreal QWaylandScreen::scale() const
+ {
+-    return mScale;
++    return devicePixelRatio();
+ }
+ 
+ qreal QWaylandScreen::devicePixelRatio() const
+ {
+-    return qreal(mScale);
++    return (mWaylandDisplay->fractionalScaleManager() && std::fmod(mFractionalScale, qreal(1)) != 0)
++        ? mFractionalScale
++        : qreal(mScale);
+ }
+ 
+ qreal QWaylandScreen::refreshRate() const
+@@ -352,7 +354,6 @@ void QWaylandScreen::updateOutputProperties()
+             m_orientation = newOrientation;
+             QWindowSystemInterface::handleScreenOrientationChange(screen(), m_orientation);
+         }
+-        mTransform = -1;
+     }
+ 
+     QWindowSystemInterface::handleScreenRefreshRateChange(screen(), refreshRate());
+@@ -407,7 +408,26 @@ void QWaylandScreen::updateXdgOutputProperties()
+ {
+     Q_ASSERT(mInitialized);
+     Q_ASSERT(zxdg_output_v1::isInitialized());
++    bool rotated = false;
++    switch (mTransform) {
++    case WL_OUTPUT_TRANSFORM_90:
++    case WL_OUTPUT_TRANSFORM_270:
++    case WL_OUTPUT_TRANSFORM_FLIPPED_90:
++    case WL_OUTPUT_TRANSFORM_FLIPPED_270:
++        rotated = true;
++        break;
++    }
++    mFractionalScale = mGeometry.isValid() && mXdgGeometry.isValid()
++        ? std::round((rotated
++        ? qreal(mGeometry.width()) / qreal(mXdgGeometry.height())
++            + qreal(mGeometry.height()) / qreal(mXdgGeometry.width())
++        : qreal(mGeometry.width()) / qreal(mXdgGeometry.width())
++            + qreal(mGeometry.height()) / qreal(mXdgGeometry.height()))
++        * qreal(0.5) * qreal(120)) / qreal(120)
++        : qreal(1);
++    const QDpi dpi = logicalDpi();
+     QWindowSystemInterface::handleScreenGeometryChange(screen(), geometry(), availableGeometry());
++    QWindowSystemInterface::handleScreenLogicalDotsPerInchChange(screen(), dpi.first, dpi.second);
+ }
+ 
+ } // namespace QtWaylandClient
+diff --git a/src/plugins/platforms/wayland/qwaylandscreen_p.h b/src/plugins/platforms/wayland/qwaylandscreen_p.h
+index a6b51a2c..b6a8dd18 100644
+--- a/src/plugins/platforms/wayland/qwaylandscreen_p.h
++++ b/src/plugins/platforms/wayland/qwaylandscreen_p.h
+@@ -68,7 +68,7 @@ public:
+     QList<QPlatformScreen *> virtualSiblings() const override;
+ 
+     Qt::ScreenOrientation orientation() const override;
+-    int scale() const;
++    qreal scale() const;
+     qreal devicePixelRatio() const override;
+     qreal refreshRate() const override;
+ 
+@@ -127,6 +127,7 @@ protected:
+     QRect mGeometry;
+     QRect mXdgGeometry;
+     int mScale = 1;
++    qreal mFractionalScale = 1;
+     int mDepth = 32;
+     int mRefreshRate = 60000;
+     int mSubpixel = -1;
+diff --git a/src/plugins/platforms/wayland/qwaylandwindow.cpp b/src/plugins/platforms/wayland/qwaylandwindow.cpp
+index 4279d9c2..5b997f3a 100644
+--- a/src/plugins/platforms/wayland/qwaylandwindow.cpp
++++ b/src/plugins/platforms/wayland/qwaylandwindow.cpp
+@@ -236,7 +236,7 @@ void QWaylandWindow::initializeWlSurface(bool colorSpace)
+     }
+     emit wlSurfaceCreated();
+ 
+-    if (mDisplay->fractionalScaleManager() && qApp->highDpiScaleFactorRoundingPolicy() == Qt::HighDpiScaleFactorRoundingPolicy::PassThrough) {
++    if (mDisplay->fractionalScaleManager()) {
+         mFractionalScale.reset(new QWaylandFractionalScale(mDisplay->fractionalScaleManager()->get_fractional_scale(mSurface->object())));
+ 
+         connect(mFractionalScale.get(), &QWaylandFractionalScale::preferredScaleChanged,
+@@ -1538,7 +1538,7 @@ void QWaylandWindow::updateScale()
+         return;
+     }
+ 
+-    int scale = screen()->isPlaceholder() ? 1 : static_cast<QWaylandScreen *>(screen())->scale();
++    qreal scale = screen()->isPlaceholder() ? qreal(1) : static_cast<QWaylandScreen *>(screen())->scale();
+     setScale(scale);
+ }
+ 
+@@ -1557,6 +1557,7 @@ void QWaylandWindow::setScale(qreal newScale)
+     ensureSize();
+ 
+     QWindowSystemInterface::handleWindowDevicePixelRatioChanged<QWindowSystemInterface::SynchronousDelivery>(window());
++    QWindowSystemInterface::handleGeometryChange<QWindowSystemInterface::SynchronousDelivery>(window(), geometry());
+     if (isExposed()) {
+         // redraw at the new DPR
+         window()->requestUpdate();
+@@ -1655,7 +1656,7 @@ qreal QWaylandWindow::scale() const
+ 
+ qreal QWaylandWindow::devicePixelRatio() const
+ {
+-    return mScale.value_or(waylandScreen() ? waylandScreen()->scale() : 1);
++    return mScale.value_or(waylandScreen() ? waylandScreen()->scale() : qreal(1));
+ }
+ 
+ bool QWaylandWindow::setMouseGrabEnabled(bool grab)

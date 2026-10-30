@@ -1,0 +1,84 @@
+diff --git a/src/corelib/text/qbytearray.cpp b/src/corelib/text/qbytearray.cpp
+index 8d72f5fd..13f68ec1 100644
+--- a/src/corelib/text/qbytearray.cpp
++++ b/src/corelib/text/qbytearray.cpp
+@@ -738,7 +738,7 @@ QByteArray qUncompress(const uchar* data, qsizetype nbytes)
+     if (nbytes < HeaderSize)
+         return invalidCompressedData();
+ 
+-    const auto expectedSize = qFromBigEndian<CompressSizeHint_t>(data);
++    auto expectedSize = qFromBigEndian<CompressSizeHint_t>(data);
+     if (nbytes == HeaderSize) {
+         if (expectedSize != 0)
+             return invalidCompressedData();
+@@ -746,6 +746,20 @@ QByteArray qUncompress(const uchar* data, qsizetype nbytes)
+     }
+ 
+     constexpr auto MaxDecompressedSize = size_t(QByteArray::maxSize());
++
++    // The header comes from the (possibly untrusted) input, so don't let it
++    // trigger a huge allocation: deflate can't produce more than ~1032 bytes
++    // out of one byte of input. If the hint is bigger than that, it's wrong
++    // anyway; the output buffer grows as needed.
++    constexpr size_t MaxCompressionRatio = 1032;
++    constexpr size_t Slack = 1024;
++    size_t maxPlausibleSize;
++    if (qMulOverflow(size_t(nbytes - HeaderSize), MaxCompressionRatio, &maxPlausibleSize)
++        || qAddOverflow(maxPlausibleSize, Slack, &maxPlausibleSize)) {
++        maxPlausibleSize = MaxDecompressedSize;
++    }
++    expectedSize = CompressSizeHint_t(std::min(size_t(expectedSize), maxPlausibleSize));
++
+     if constexpr (MaxDecompressedSize < std::numeric_limits<CompressSizeHint_t>::max()) {
+         if (expectedSize > MaxDecompressedSize)
+             return tooMuchData(ZLibOp::Decompression);
+diff --git a/tests/auto/corelib/text/qbytearray_large/tst_qbytearray_large.cpp b/tests/auto/corelib/text/qbytearray_large/tst_qbytearray_large.cpp
+index 92f953de..0f7d0b72 100644
+--- a/tests/auto/corelib/text/qbytearray_large/tst_qbytearray_large.cpp
++++ b/tests/auto/corelib/text/qbytearray_large/tst_qbytearray_large.cpp
+@@ -5,6 +5,7 @@
+ #include <QTest>
+ 
+ #include <qbytearray.h>
++#include <qendian.h>
+ 
+ #include <q20iterator.h>
+ #include <stdexcept>
+@@ -23,6 +24,8 @@ private slots:
+     void qCompress();
+     void qUncompressCorruptedData_data();
+     void qUncompressCorruptedData();
++    void qUncompressSizeHint_data();
++    void qUncompressSizeHint();
+     void qUncompress4GiBPlus();
+     void qCompressionZeroTermination();
+ #endif
+@@ -111,6 +114,28 @@ void tst_QByteArrayLarge::qUncompressCorruptedData()
+     QCOMPARE(res, QByteArray());
+ }
+ 
++void tst_QByteArrayLarge::qUncompressSizeHint_data()
++{
++    QTest::addColumn<quint32>("hint");
++
++    // The size hint in the header is only a hint: it must neither make the
++    // decompression fail, nor preallocate the size it declares.
++    QTest::newRow("too-small") << quint32(1);
++    QTest::newRow("exact") << quint32(4096);
++    QTest::newRow("above-ratio") << quint32(0x00100000);
++    QTest::newRow("max") << quint32(0xffffffff);
++}
++
++void tst_QByteArrayLarge::qUncompressSizeHint()
++{
++    QFETCH(quint32, hint);
++
++    const QByteArray original(4096, 'x');
++    QByteArray compressed = ::qCompress(original);
++    qToBigEndian(hint, compressed.data());
++    QCOMPARE(::qUncompress(compressed), original);
++}
++
+ void tst_QByteArrayLarge::qUncompress4GiBPlus()
+ {
+     // after three rounds, this decompresses to 4GiB + 1 'X' bytes:

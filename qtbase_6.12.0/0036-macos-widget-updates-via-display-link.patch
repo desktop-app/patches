@@ -1,0 +1,191 @@
+diff --git a/src/plugins/platforms/cocoa/qcocoascreen.h b/src/plugins/platforms/cocoa/qcocoascreen.h
+index 3cefde38..3e061839 100644
+--- a/src/plugins/platforms/cocoa/qcocoascreen.h
++++ b/src/plugins/platforms/cocoa/qcocoascreen.h
+@@ -97,7 +97,7 @@ private:
+     qreal m_rotation = 0;
+ 
+     CVDisplayLinkRef m_displayLink = nullptr;
+-    dispatch_source_t m_displayLinkSource = nullptr;
++    CFRunLoopSourceRef m_updateRunLoopSource = nullptr;
+     QAtomicInt m_pendingUpdateRequests;
+     QAtomicInt m_pendingDisplayLinkUpdates;
+ 
+diff --git a/src/plugins/platforms/cocoa/qcocoascreen.mm b/src/plugins/platforms/cocoa/qcocoascreen.mm
+index 1f8367e3..76e8b33b 100644
+--- a/src/plugins/platforms/cocoa/qcocoascreen.mm
++++ b/src/plugins/platforms/cocoa/qcocoascreen.mm
+@@ -199,8 +199,10 @@ QCocoaScreen::~QCocoaScreen()
+     delete m_cursor;
+ 
+     CVDisplayLinkRelease(m_displayLink);
+-    if (m_displayLinkSource)
+-         dispatch_release(m_displayLinkSource);
++    if (m_updateRunLoopSource) {
++        CFRunLoopSourceInvalidate(m_updateRunLoopSource);
++        CFRelease(m_updateRunLoopSource);
++    }
+ }
+ 
+ void QCocoaScreen::update(CGDirectDisplayID displayId)
+@@ -420,21 +422,29 @@ void QCocoaScreen::deliverUpdateRequests()
+             return;
+         }
+ 
+-        qDeferredDebug(screenUpdates) << "; signaling dispatch source";
+-
+-        if (!m_displayLinkSource) {
+-            m_displayLinkSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_DATA_ADD, 0, 0, dispatch_get_main_queue());
+-            dispatch_source_set_event_handler(m_displayLinkSource, ^{
+-                deliverUpdateRequests();
+-            });
+-            dispatch_resume(m_displayLinkSource);
++        // Patched: marshal via a version-0 CFRunLoopSource instead of a GCD
++        // source on the main dispatch queue. The dispatch queue is only
++        // drained when the main runloop goes to sleep, so a busy event loop
++        // (continuous timers/posted events) starves it for many frames;
++        // runloop sources are serviced on every iteration.
++        qDeferredDebug(screenUpdates) << "; signaling runloop source";
++        if (!m_updateRunLoopSource) {
++            CFRunLoopSourceContext context = {};
++            context.info = this;
++            context.perform = [](void *info) {
++                static_cast<QCocoaScreen *>(info)->deliverUpdateRequests();
++            };
++            m_updateRunLoopSource = CFRunLoopSourceCreate(
++                kCFAllocatorDefault, 0, &context);
++            CFRunLoopAddSource(CFRunLoopGetMain(),
++                m_updateRunLoopSource, kCFRunLoopCommonModes);
+         }
+-
+-        dispatch_source_merge_data(m_displayLinkSource, 1);
++        CFRunLoopSourceSignal(m_updateRunLoopSource);
++        CFRunLoopWakeUp(CFRunLoopGetMain());
+ 
+     } else {
+         DeferredDebugHelper screenUpdates(lcQpaScreenUpdates());
+-        qDeferredDebug(screenUpdates) << "gcd event handler on main thread";
++        qDeferredDebug(screenUpdates) << "runloop source callout on main thread";
+ 
+         const int pendingUpdates = m_pendingDisplayLinkUpdates;
+         if (pendingUpdates > 1)
+@@ -442,12 +452,29 @@ void QCocoaScreen::deliverUpdateRequests()
+ 
+         screenUpdates.flushOutput();
+ 
+-        int pendingUpdateRequests = 0;
+-
+-        auto windows = QGuiApplication::allWindows();
++        // Patched: deliverUpdateRequest() below runs application code that
++        // may destroy any other window in this snapshot, leaving its raw
++        // pointer dangling. Track the snapshot through QPointer and
++        // re-validate each window before dereferencing it.
++        // The same application code may also destroy this screen: Core
++        // Graphics delivers pending display reconfigurations from inside
++        // window server round trips made while painting, and removing a
++        // display makes handleScreenRemoved() delete the QScreen and then
++        // this QCocoaScreen. Everything after a delivery -- the screen
++        // comparisons, the recount pass, the member stores below -- would
++        // then run on freed memory. The QScreen is deleted first, so a
++        // stack QPointer to it detects the teardown without touching this.
++        const QPointer<QScreen> alive = screen();
++        const auto allWindows = QGuiApplication::allWindows();
++        QList<QPointer<QWindow>> windows;
++        windows.reserve(allWindows.size());
++        for (QWindow *window : allWindows)
++            windows.append(window);
+         for (int i = 0; i < windows.size(); ++i) {
+-            QWindow *window = windows.at(i);
+-            if (window->screen() != screen())
++            QWindow *window = windows.at(i).data();
++            if (!window)
++                continue;
++            if (window->screen() != alive.data())
+                 continue;
+ 
+             QPointer<QCocoaWindow> platformWindow = static_cast<QCocoaWindow*>(window->handle());
+@@ -463,15 +490,30 @@ void QCocoaScreen::deliverUpdateRequests()
+ 
+             platformWindow->deliverUpdateRequest();
+ 
+-            // platform window can be destroyed in deliverUpdateRequest()
++            if (!alive)
++                return;
++        }
++
++        // Patched: recount pending update requests in a separate pass after
++        // all deliveries. Counting each window right after its delivery lost
++        // requests made by an already-counted window during a later window's
++        // delivery: the store below clobbered their increments, leaving the
++        // window's updateRequestPending flag set (so its own requestUpdate()
++        // no-ops) while the display link sees zero pending requests and never
++        // signals delivery again -- a permanent paint freeze until some other
++        // window requests an update. This pass is straight-line reads, so no
++        // request can interleave between the count and the store.
++        int pendingUpdateRequests = 0;
++        for (QWindow *window : QGuiApplication::allWindows()) {
++            if (window->screen() != alive.data())
++                continue;
++            auto *platformWindow = static_cast<QCocoaWindow*>(window->handle());
+             if (!platformWindow)
+                 continue;
+-
+-            // The update request delivery could result in another request
+-            // from the window, or the platform window could decide to not
+-            // deliver the request at this time.
+-            if (platformWindow->hasPendingUpdateRequest())
++            if (platformWindow->hasPendingUpdateRequest()
++                    && platformWindow->updatesWithDisplayLink()) {
+                 ++pendingUpdateRequests;
++            }
+         }
+ 
+         m_pendingUpdateRequests = pendingUpdateRequests;
+diff --git a/src/widgets/kernel/qwidgetrepaintmanager.cpp b/src/widgets/kernel/qwidgetrepaintmanager.cpp
+index 90df68d4..5c587228 100644
+--- a/src/widgets/kernel/qwidgetrepaintmanager.cpp
++++ b/src/widgets/kernel/qwidgetrepaintmanager.cpp
+@@ -360,6 +360,21 @@ void QWidgetRepaintManager::sendUpdateRequest(QWidget *widget, UpdateTime update
+         // normal backingstore sync machinery.
+         if (!widget->d_func()->shouldPaintOnScreen())
+             updateRequestSent = true;
++#ifdef Q_OS_MACOS
++        // Pace backingstore updates by the platform update request
++        // mechanism (CVDisplayLink), so that frame production is
++        // phase-locked to the display. A posted event ticks on the
++        // event loop's own schedule instead, beating against the
++        // display clock, and the Metal drawable acquisition then
++        // blocks the main thread whenever the pool has not been
++        // replenished yet.
++        if (widget == tlw && !widget->d_func()->shouldPaintOnScreen()) {
++            if (QWindow *window = widget->windowHandle(); window && window->handle()) {
++                window->requestUpdate();
++                break;
++            }
++        }
++#endif
+         QCoreApplication::postEvent(widget, new QEvent(QEvent::UpdateRequest), Qt::LowEventPriority);
+         break;
+     case UpdateNow: {
+diff --git a/src/widgets/kernel/qwidgetwindow.cpp b/src/widgets/kernel/qwidgetwindow.cpp
+index 85ff9a50..1eeb818d 100644
+--- a/src/widgets/kernel/qwidgetwindow.cpp
++++ b/src/widgets/kernel/qwidgetwindow.cpp
+@@ -384,9 +384,17 @@ bool QWidgetWindow::event(QEvent *event)
+         break;
+ 
+     case QEvent::UpdateRequest:
++#ifdef Q_OS_MACOS
++        // Update requests routed through the platform window (display
++        // link paced) arrive here instead of at the QWidget. Sync the
++        // dirty state the repaint manager has tracked already, do not
++        // force a full repaint.
++        m_widget->d_func()->syncBackingStore();
++#else
+         // This is not the same as an UpdateRequest for a QWidget. That just
+         // syncs the backing store while here we also must mark as dirty.
+         m_widget->repaint();
++#endif
+         return true;
+ 
+     case QEvent::DevicePixelRatioChange:

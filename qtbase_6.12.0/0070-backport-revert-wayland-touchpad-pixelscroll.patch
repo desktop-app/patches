@@ -1,0 +1,29 @@
+From 8d5a9fbfca90a10ecc06291455985e24b2a11050 Mon Sep 17 00:00:00 2001
+From: 23rd <23rd@vivaldi.net>
+Date: Fri, 30 Oct 2026 04:54:43 +0000
+Subject: [PATCH 70/72] Backport Qt ddf0f49dc949 (revert Wayland touchpad pixel
+ scrolling).
+
+---
+ src/plugins/platforms/wayland/qwaylandinputdevice.cpp | 5 +----
+ 1 file changed, 1 insertion(+), 4 deletions(-)
+
+diff --git a/src/plugins/platforms/wayland/qwaylandinputdevice.cpp b/src/plugins/platforms/wayland/qwaylandinputdevice.cpp
+index 30da040e..ca4666db 100644
+--- a/src/plugins/platforms/wayland/qwaylandinputdevice.cpp
++++ b/src/plugins/platforms/wayland/qwaylandinputdevice.cpp
+@@ -414,13 +414,10 @@ void QWaylandInputDevice::seat_capabilities(uint32_t caps)
+ 
+         auto *pointerGestures = mQDisplay->pointerGestures();
+         if (pointerGestures) {
+-              QInputDevice::Capabilities  pointerCapabilities = QInputDevice::Capability::Position
+-                                                             | QInputDevice::Capability::PixelScroll
+-                                                             | QInputDevice::Capability::Scroll;
+             // NOTE: The name of the device and its system ID are not exposed on Wayland.
+             mTouchPadDevice = new QPointingDevice(
+                     QLatin1StringView("touchpad"), 0, QInputDevice::DeviceType::TouchPad,
+-                    QPointingDevice::PointerType::Finger, pointerCapabilities,
++                    QPointingDevice::PointerType::Finger, QInputDevice::Capability::Position,
+                     MaxTouchPoints, 0, mSeatName, QPointingDeviceUniqueId(), this);
+             QWindowSystemInterface::registerInputDevice(mTouchPadDevice);
+             mPointerGesturePinch.reset(pointerGestures->createPointerGesturePinch(this));

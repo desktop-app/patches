@@ -1,0 +1,213 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] preserve HTTP proxy authentication retries
+
+A proxy can finish a 407 response by closing the connection without a
+Content-Length header. The socket error queues a receive call, and the
+subsequent disconnect also receives synchronously. Once the first call
+completes the challenge and schedules authentication, the queued call sees
+an empty closed socket and reports an unexpected EOF. Non-idempotent
+requests then fail before their authenticated retry can start.
+
+Ignore the stale read only while a completed reply awaits its scheduled
+retry. Keep the unexpected-EOF policy for non-idempotent requests intact.
+The next send clears the reply state before processing its response.
+
+Add a local proxy regression test covering close-delimited challenges,
+framing controls, rejected credentials, and incomplete responses before
+and after authentication. Assert request counts and upload contents so
+successful authentication cannot hide an unintended POST replay.
+
+Origin: desktop-app; based on Qt 6.11.2.
+The interacting upstream changes are:
+949bebaec69d908ca842e8ef7d3e3800d8c2f7b5 (disconnect handling)
+4c9a4ecd358da3bf371a2441cccd8a66c86f2d3c (non-idempotent replay protection)
+Reference: https://github.com/telegramdesktop/tdesktop/issues/31474
+
+diff --git diff --git a/src/network/access/qhttpprotocolhandler.cpp b/src/network/access/qhttpprotocolhandler.cpp
+index d9d506e6..2cd495de 100644
+--- a/src/network/access/qhttpprotocolhandler.cpp
++++ b/src/network/access/qhttpprotocolhandler.cpp
+@@ -36,6 +36,12 @@ void QHttpProtocolHandler::_q_receiveReply()
+         return;
+     }
+ 
++    // A completed authentication challenge may still have a queued read.
++    if (m_channel->resendCurrent
++        && m_reply->d_func()->state == QHttpNetworkReplyPrivate::AllDoneState) {
++        return;
++    }
++
+     // connection might be closed to signal the end of data
+     if (QSocketAbstraction::socketState(m_socket) == QAbstractSocket::UnconnectedState) {
+         if (m_socket->bytesAvailable() <= 0) {
+diff --git a/tests/auto/network/access/qnetworkreply/tst_qnetworkreply.cpp b/tests/auto/network/access/qnetworkreply/tst_qnetworkreply.cpp
+index c22a623c..75318f28 100644
+--- a/tests/auto/network/access/qnetworkreply/tst_qnetworkreply.cpp
++++ b/tests/auto/network/access/qnetworkreply/tst_qnetworkreply.cpp
+@@ -608,6 +608,11 @@ private Q_SLOTS:
+     void resendRequest_data();
+     void resendRequest();
+ 
++#if QT_CONFIG(networkproxy)
++    void proxyAuthenticationClose_data();
++    void proxyAuthenticationClose();
++#endif
++
+     // NOTE: This test must be last!
+     void parentingRepliesToTheApp();
+ private:
+@@ -10991,6 +10996,154 @@ void tst_QNetworkReply::resendRequest()
+     }
+ }
+ 
++#if QT_CONFIG(networkproxy)
++void tst_QNetworkReply::proxyAuthenticationClose_data()
++{
++    QTest::addColumn<QByteArray>("version");
++    QTest::addColumn<bool>("lengthHeader");
++    QTest::addColumn<bool>("keepAlive");
++    QTest::addColumn<QByteArray>("failure");
++    QTest::addColumn<QByteArray>("method");
++    QTest::addColumn<int>("expectedError");
++    QTest::addColumn<int>("expectedRequests");
++    QTest::addColumn<int>("expectedAuthenticated");
++
++    const auto add = [](const char *name, const char *version, bool length, bool keepAlive,
++                       const char *failure, const char *method, QNetworkReply::NetworkError error,
++                       int requests, int authenticated) {
++        QTest::newRow(name) << QByteArray(version) << length << keepAlive << QByteArray(failure)
++                           << QByteArray(method) << int(error) << requests << authenticated;
++    };
++    add("http10-close-delimited-post", "HTTP/1.0", false, false, "", "POST",
++        QNetworkReply::NoError, 2, 1);
++    add("http11-close-delimited-post", "HTTP/1.1", false, false, "", "POST",
++        QNetworkReply::NoError, 2, 1);
++    add("content-length-post", "HTTP/1.0", true, false, "", "POST",
++        QNetworkReply::NoError, 2, 1);
++    add("keep-alive-post", "HTTP/1.1", true, true, "", "POST",
++        QNetworkReply::NoError, 2, 1);
++    add("close-delimited-get", "HTTP/1.0", false, false, "", "GET",
++        QNetworkReply::NoError, 2, 1);
++    add("close-delimited-custom", "HTTP/1.0", false, false, "", "CUSTOM",
++        QNetworkReply::NoError, 2, 1);
++    add("drop-post-before-response", "HTTP/1.0", false, false, "drop-first", "POST",
++        QNetworkReply::RemoteHostClosedError, 1, 0);
++    add("drop-custom-before-response", "HTTP/1.0", false, false, "drop-first", "CUSTOM",
++        QNetworkReply::RemoteHostClosedError, 1, 0);
++    add("truncated-challenge-header", "HTTP/1.0", false, false, "challenge-header", "POST",
++        QNetworkReply::RemoteHostClosedError, 1, 0);
++    add("truncated-challenge-body", "HTTP/1.0", true, false, "challenge-body", "POST",
++        QNetworkReply::RemoteHostClosedError, 1, 0);
++    add("drop-authenticated-post", "HTTP/1.0", false, false, "drop-authenticated", "POST",
++        QNetworkReply::RemoteHostClosedError, 2, 1);
++    add("truncated-authenticated-response", "HTTP/1.0", false, false, "response-body", "POST",
++        QNetworkReply::RemoteHostClosedError, 2, 1);
++    add("reject-credentials", "HTTP/1.0", false, false, "reject", "POST",
++        QNetworkReply::ProxyAuthenticationRequiredError, 2, 1);
++    add("no-authentication", "HTTP/1.0", false, false, "no-auth", "POST",
++        QNetworkReply::NoError, 1, 0);
++}
++
++void tst_QNetworkReply::proxyAuthenticationClose()
++{
++    QFETCH(QByteArray, version);
++    QFETCH(bool, lengthHeader);
++    QFETCH(bool, keepAlive);
++    QFETCH(QByteArray, failure);
++    QFETCH(QByteArray, method);
++    QFETCH(int, expectedError);
++    QFETCH(int, expectedRequests);
++    QFETCH(int, expectedAuthenticated);
++
++    const auto payload = method == "GET" ? QByteArray() : QByteArray(108, 'x');
++    auto requests = 0;
++    auto authenticatedRequests = 0;
++    auto validPayloads = true;
++    auto validCredentials = true;
++    auto server = QTcpServer();
++    QVERIFY(server.listen(QHostAddress::LocalHost));
++    connect(&server, &QTcpServer::newConnection, &server, [&] {
++        while (server.hasPendingConnections()) {
++            const auto socket = server.nextPendingConnection();
++            const auto buffer = QSharedPointer<QByteArray>::create();
++            connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
++            connect(socket, &QTcpSocket::readyRead, socket, [&, socket, buffer] {
++                buffer->append(socket->readAll());
++                const auto headerEnd = buffer->indexOf("\r\n\r\n");
++                if (headerEnd < 0)
++                    return;
++                const auto headers = buffer->left(headerEnd);
++                auto length = 0;
++                auto authorization = QByteArray();
++                for (const auto &line : headers.split('\n')) {
++                    if (line.toLower().startsWith("content-length:"))
++                        length = line.mid(15).trimmed().toInt();
++                    if (line.toLower().startsWith("proxy-authorization:"))
++                        authorization = line.mid(20).trimmed();
++                }
++                if (buffer->size() < headerEnd + 4 + length)
++                    return;
++                validPayloads &= buffer->mid(headerEnd + 4, length) == payload;
++                buffer->remove(0, headerEnd + 4 + length);
++                ++requests;
++                const auto authenticated = !authorization.isEmpty();
++                authenticatedRequests += authenticated;
++                validCredentials &= !authenticated || authorization == "Basic dGVzdDp0ZXN0";
++
++                if (failure == "drop-first"
++                    || (authenticated && failure == "drop-authenticated")) {
++                    socket->disconnectFromHost();
++                    return;
++                }
++                if ((authenticated && failure != "reject") || failure == "no-auth") {
++                    socket->write("HTTP/1.0 200 OK\r\nContent-Length: 8\r\n"
++                                  "Connection: close\r\n\r\n");
++                    socket->write(failure == "response-body" ? "1234" : "12345678");
++                    socket->disconnectFromHost();
++                    return;
++                }
++                auto response = version + " 407 Proxy Authentication Required\r\n"
++                                          "Proxy-Authenticate: Basic realm=\"proxy\"\r\n";
++                if (failure == "challenge-header") {
++                    socket->write(response);
++                    socket->disconnectFromHost();
++                    return;
++                }
++                response += keepAlive ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
++                if (lengthHeader)
++                    response += failure == "challenge-body" ? "Content-Length: 8\r\n"
++                                                            : "Content-Length: 4\r\n";
++                response += "Content-Type: text/html; charset=utf-8\r\n\r\nfail";
++                socket->write(response);
++                if (!keepAlive)
++                    socket->disconnectFromHost();
++            });
++        }
++    });
++
++    auto manager = QNetworkAccessManager();
++    manager.setProxy(QNetworkProxy(QNetworkProxy::HttpProxy, "127.0.0.1", server.serverPort(),
++                                   "test", "test"));
++    auto request = QNetworkRequest(QUrl("http://192.0.2.1:80/api"));
++    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
++    request.setHeader(QNetworkRequest::ContentLengthHeader, payload.size());
++    const auto reply = method == "POST" ? manager.post(request, payload)
++                     : method == "GET" ? manager.get(request)
++                                       : manager.sendCustomRequest(request, method, payload);
++    QTRY_VERIFY_WITH_TIMEOUT(reply->isFinished(), 5000);
++    QCOMPARE(int(reply->error()), expectedError);
++    if (expectedError == QNetworkReply::NoError) {
++        QCOMPARE(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 200);
++        QCOMPARE(reply->readAll(), QByteArray("12345678"));
++    }
++    QTest::qWait(100);
++    QCOMPARE(requests, expectedRequests);
++    QCOMPARE(authenticatedRequests, expectedAuthenticated);
++    QVERIFY(validPayloads);
++    QVERIFY(validCredentials);
++}
++#endif
++
+ // NOTE: This test must be last testcase in tst_qnetworkreply!
+ void tst_QNetworkReply::parentingRepliesToTheApp()
+ {
