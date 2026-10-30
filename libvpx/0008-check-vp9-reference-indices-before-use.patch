@@ -1,0 +1,130 @@
+Subject: Check VP9 reference indices before accessing buffers
+
+Upstream: https://chromium.googlesource.com/webm/libvpx/+/db2e2485279f61bbcfe688507c099f1cd39ed0f9
+Backport to v1.14.1; keep its bundled GoogleTest include path.
+
+diff --git a/test/decode_api_test.cc b/test/decode_api_test.cc
+index 44e4397..ab5b47e 100644
+--- a/test/decode_api_test.cc
++++ b/test/decode_api_test.cc
+@@ -8,6 +8,8 @@
+  *  be found in the AUTHORS file in the root of the source tree.
+  */
+ 
++#include <array>
++
+ #include "third_party/googletest/src/include/gtest/gtest.h"
+ 
+ #include "./vpx_config.h"
+@@ -193,6 +195,47 @@ TEST(DecodeAPI, Vp9PeekStreamInfoTruncated) {
+     TestPeekInfo(profile1_data, data_sz, 11);
+   }
+ }
++
++TEST(DecodeAPI, Buganizer499206650) {
++  vpx_codec_ctx_t dec;
++  ASSERT_EQ(vpx_codec_dec_init(&dec, vpx_codec_vp9_dx(), /*cfg=*/nullptr,
++                               /*flags=*/0),
++            VPX_CODEC_OK);
++
++  // Frame 1: VP9 intra_only, profile 0, 8x8, error_resilient=1,
++  // refresh_frame_flags=0x00. Clears need_resync without updating ref slots.
++  static constexpr std::array<uint8_t, 83> frame1 = {
++    0x85, 0xa4, 0xc1, 0xa1, 0x00, 0x00, 0x03, 0x80, 0x03, 0x80, 0x00, 0x40,
++    0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++  };
++  EXPECT_EQ(vpx_codec_decode(&dec, frame1.data(), frame1.size(),
++                             /*user_priv=*/nullptr, /*deadline=*/0),
++            VPX_CODEC_OK)
++      << vpx_codec_error_detail(&dec);
++
++  vpx_codec_iter_t it = nullptr;
++  while (vpx_codec_get_frame(&dec, &it)) {
++  }
++
++  // Frame 2: VP9 inter, profile 0, show_frame=1, error_resilient=1,
++  // refresh=0xFF, references slot 0 (ref_frame_map[0] == -1).
++  static constexpr std::array<uint8_t, 16> frame2 = {
++    0x87, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++  };
++  // Ensure there is no out of bounds read using the invalid index and that the
++  // decoder reports an error.
++  EXPECT_EQ(vpx_codec_decode(&dec, frame2.data(), frame2.size(),
++                             /*user_priv=*/nullptr, /*deadline=*/0),
++            VPX_CODEC_CORRUPT_FRAME);
++
++  EXPECT_EQ(vpx_codec_destroy(&dec), VPX_CODEC_OK);
++}
+ #endif  // CONFIG_VP9_DECODER
+ 
+ TEST(DecodeAPI, HighBitDepthCapability) {
+diff --git a/vp9/decoder/vp9_decodeframe.c b/vp9/decoder/vp9_decodeframe.c
+index c589215..934f00a 100644
+--- a/vp9/decoder/vp9_decodeframe.c
++++ b/vp9/decoder/vp9_decodeframe.c
+@@ -1558,16 +1558,13 @@ static void setup_frame_size_with_refs(VP9_COMMON *cm,
+   BufferPool *const pool = cm->buffer_pool;
+   for (i = 0; i < REFS_PER_FRAME; ++i) {
+     if (vpx_rb_read_bit(rb)) {
+-      if (cm->frame_refs[i].idx != INVALID_IDX) {
+-        YV12_BUFFER_CONFIG *const buf = cm->frame_refs[i].buf;
+-        width = buf->y_crop_width;
+-        height = buf->y_crop_height;
+-        found = 1;
+-        break;
+-      } else {
+-        vpx_internal_error(&cm->error, VPX_CODEC_CORRUPT_FRAME,
+-                           "Failed to decode frame size");
+-      }
++      assert(cm->frame_refs[i].idx >= 0 &&
++             cm->frame_refs[i].idx < FRAME_BUFFERS);
++      YV12_BUFFER_CONFIG *const buf = cm->frame_refs[i].buf;
++      width = buf->y_crop_width;
++      height = buf->y_crop_height;
++      found = 1;
++      break;
+     }
+   }
+ 
+@@ -1581,18 +1578,18 @@ static void setup_frame_size_with_refs(VP9_COMMON *cm,
+   // has valid dimensions.
+   for (i = 0; i < REFS_PER_FRAME; ++i) {
+     RefBuffer *const ref_frame = &cm->frame_refs[i];
++    assert(ref_frame->idx >= 0 && ref_frame->idx < FRAME_BUFFERS);
+     has_valid_ref_frame |=
+-        (ref_frame->idx != INVALID_IDX &&
+-         valid_ref_frame_size(ref_frame->buf->y_crop_width,
+-                              ref_frame->buf->y_crop_height, width, height));
++        valid_ref_frame_size(ref_frame->buf->y_crop_width,
++                             ref_frame->buf->y_crop_height, width, height);
+   }
+   if (!has_valid_ref_frame)
+     vpx_internal_error(&cm->error, VPX_CODEC_CORRUPT_FRAME,
+                        "Referenced frame has invalid size");
+   for (i = 0; i < REFS_PER_FRAME; ++i) {
+     RefBuffer *const ref_frame = &cm->frame_refs[i];
+-    if (ref_frame->idx == INVALID_IDX ||
+-        !valid_ref_frame_img_fmt(ref_frame->buf->bit_depth,
++    assert(ref_frame->idx >= 0 && ref_frame->idx < FRAME_BUFFERS);
++    if (!valid_ref_frame_img_fmt(ref_frame->buf->bit_depth,
+                                  ref_frame->buf->subsampling_x,
+                                  ref_frame->buf->subsampling_y, cm->bit_depth,
+                                  cm->subsampling_x, cm->subsampling_y))
+@@ -2738,6 +2735,11 @@ static size_t read_uncompressed_header(VP9Decoder *pbi,
+       for (i = 0; i < REFS_PER_FRAME; ++i) {
+         const int ref = vpx_rb_read_literal(rb, REF_FRAMES_LOG2);
+         const int idx = cm->ref_frame_map[ref];
++        if (idx == INVALID_IDX) {
++          vpx_internal_error(&cm->error, VPX_CODEC_CORRUPT_FRAME,
++                             "Invalid reference frame index");
++        }
++        assert(idx >= 0 && idx < FRAME_BUFFERS);
+         RefBuffer *const ref_frame = &cm->frame_refs[i];
+         ref_frame->idx = idx;
+         ref_frame->buf = &frame_bufs[idx].buf;
