@@ -1,4 +1,5 @@
-mtproto-engine: build and pass its tests on Windows, Windows 7 included.
+mtproto-engine: build and pass its tests on Windows, Windows 7 included,
+and abort on a panic on an engine thread.
 
 Upstream: https://github.com/TelegramMessenger/mtproto-engine
 Branch: main
@@ -8,7 +9,15 @@ Apply with `git apply` right after checking out that revision.
 
 Builds for i686-win7-windows-msvc and x86_64-win7-windows-msvc (std built
 from source with -Z build-std and +crt-static) and aarch64-pc-windows-msvc.
-Every hunk is Windows-gated, or moves a test helper unchanged off Windows.
+Every hunk is Windows-gated, or moves a test helper unchanged off Windows,
+except one change, made for every platform: the engine's threads
+(mtproto-main, mtproto-worker-N, mtproto-resolver) run under an
+abort-on-panic guard, so a host built with panic = "unwind" ends the
+process on a panic there, as the engine's own panic = "abort" profile does,
+instead of going on without the thread. Where the engine already aborts on
+panic nothing changes. Tests:
+mtproto-engine engine_thread::tests::a_panic_on_an_engine_thread_aborts_the_process,
+mtproto-engine engine_thread::tests::a_panic_payload_that_panics_on_drop_still_aborts_the_process.
 On Windows run the suites with libtest's serial mode:
   cargo test -p mtproto-core -p mtproto-engine -p mtproto-ffi -- --test-threads=1
 
@@ -529,6 +538,91 @@ index 1e7ed2e..03a2620 100644
 +        assert_eq!(drained(&observed, Duration::from_secs(5)), Some(0), "the peer read everything");
 +    }
  }
+diff --git a/crates/mtproto-engine/src/engine_thread.rs b/crates/mtproto-engine/src/engine_thread.rs
+new file mode 100644
+index 0000000..8d163b0
+--- /dev/null
++++ b/crates/mtproto-engine/src/engine_thread.rs
+@@ -0,0 +1,79 @@
++use std::io;
++use std::thread::{Builder, JoinHandle};
++
++/// Starts one of the engine's threads. A panic on it ends the process, as the engine's own `panic = "abort"`
++/// profile does: in a host built with `panic = "unwind"` the thread would otherwise end alone and leave the engine
++/// without its worker or resolver, with requests that never complete.
++pub fn spawn(builder: Builder, body: impl FnOnce() + Send + 'static) -> io::Result<JoinHandle<()>> {
++    builder.spawn(move || {
++        // Kept until the abort: a payload whose drop panics would otherwise end only this thread.
++        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
++        if result.is_err() {
++            std::process::abort();
++        }
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use std::process::Command;
++
++    const CHILD: &str = "MTPROTO_ENGINE_THREAD_PANIC_CHILD";
++
++    /// Re-runs this binary on `test` alone, with `CHILD` set to that name: the child runs `body` on an engine thread
++    /// and exits zero if it outlives the thread. Its stderr must hold `panicked`, and it must abort.
++    fn assert_child_aborts(test: &str, body: fn(), panicked: &str) {
++        if std::env::var_os(CHILD).is_some_and(|child| child == test) {
++            let thread = super::spawn(std::thread::Builder::new().name("mtproto-test".into()), body).unwrap();
++            // Not dropped: a payload that panics on drop would fail the child here, before its exit(0).
++            let _result = thread.join();
++            std::process::exit(0);
++        }
++        let output = Command::new(std::env::current_exe().unwrap())
++            .args(["--exact", test, "--nocapture"])
++            .env(CHILD, test)
++            .output()
++            .unwrap();
++        let stderr = String::from_utf8_lossy(&output.stderr);
++        assert!(stderr.contains(panicked), "the child's thread did not panic: {stderr}");
++        #[cfg(unix)]
++        {
++            use std::os::unix::process::ExitStatusExt;
++            assert_eq!(output.status.signal(), Some(libc::SIGABRT), "{:?}: {stderr}", output.status);
++        }
++        // std::process::abort is __fastfail: STATUS_STACK_BUFFER_OVERRUN, but an access violation on Windows 7.
++        #[cfg(windows)]
++        assert!(
++            [Some(0xC000_0409_u32 as i32), Some(0xC000_0005_u32 as i32)].contains(&output.status.code()),
++            "the child did not abort: {:?}: {stderr}",
++            output.status
++        );
++    }
++
++    #[test]
++    fn a_panic_on_an_engine_thread_aborts_the_process() {
++        assert_child_aborts(
++            "engine_thread::tests::a_panic_on_an_engine_thread_aborts_the_process",
++            || panic!("engine thread panic"),
++            "engine thread panic",
++        );
++    }
++
++    struct PanicOnDrop;
++
++    impl Drop for PanicOnDrop {
++        fn drop(&mut self) {
++            panic!("payload drop");
++        }
++    }
++
++    #[test]
++    fn a_panic_payload_that_panics_on_drop_still_aborts_the_process() {
++        assert_child_aborts(
++            "engine_thread::tests::a_panic_payload_that_panics_on_drop_still_aborts_the_process",
++            || std::panic::panic_any(PanicOnDrop),
++            // The default hook prints no message for this payload, only where it panicked.
++            &format!("panicked at {}:", file!()),
++        );
++    }
++}
 diff --git a/crates/mtproto-engine/src/http_link.rs b/crates/mtproto-engine/src/http_link.rs
 index 48478a6..a302c12 100644
 --- a/crates/mtproto-engine/src/http_link.rs
@@ -671,6 +765,35 @@ index 09abb61..5945a6d 100644
 +        assert!(is_cellular_interface("pdp_ip0"));
 +    }
  }
+diff --git a/crates/mtproto-engine/src/lib.rs b/crates/mtproto-engine/src/lib.rs
+index 774f5a2..1889fa1 100644
+--- a/crates/mtproto-engine/src/lib.rs
++++ b/crates/mtproto-engine/src/lib.rs
+@@ -2,6 +2,7 @@
+ 
+ mod clock;
+ mod connection;
++mod engine_thread;
+ mod host_stream;
+ mod http_link;
+ mod interface;
+@@ -97,10 +98,12 @@ impl Engine {
+             .sharing_uploads(uploads.clone())
+             .sharing_route_hints(hints.clone())
+             .sharing_host_streams(streams.clone(), Arc::new(host_stream::WorkerSignal::new(waker.clone())));
+-            let thread = std::thread::Builder::new()
+-                .name(if index == 0 { "mtproto-main".into() } else { format!("mtproto-worker-{index}") })
+-                .stack_size(512 * 1024)
+-                .spawn(move || worker.run())?;
++            let thread = engine_thread::spawn(
++                std::thread::Builder::new()
++                    .name(if index == 0 { "mtproto-main".into() } else { format!("mtproto-worker-{index}") })
++                    .stack_size(512 * 1024),
++                move || worker.run(),
++            )?;
+             inner.workers.push(WorkerHandle {
+                 sender: Mutex::new(sender),
+                 waker,
 diff --git a/crates/mtproto-engine/src/session_explorer_tests.rs b/crates/mtproto-engine/src/session_explorer_tests.rs
 index a61264a..46b507d 100644
 --- a/crates/mtproto-engine/src/session_explorer_tests.rs
@@ -777,6 +900,27 @@ index 69a7dc6..d435a6c 100644
              if self.http.is_some() {
                  self.switch_back_to_tcp(registry, now, callbacks);
              } else if self.auto.on_websocket {
+diff --git a/crates/mtproto-engine/src/worker.rs b/crates/mtproto-engine/src/worker.rs
+index b0e3986..ef2e17b 100644
+--- a/crates/mtproto-engine/src/worker.rs
++++ b/crates/mtproto-engine/src/worker.rs
+@@ -9,6 +9,7 @@ use mtproto_core::crypto::OsRandom;
+ use mtproto_core::rpc::{ApiEnvironment, RequestId, RpcRequest, Verification};
+ 
+ use crate::clock;
++use crate::engine_thread;
+ use crate::http_link::TOKENS_PER_SESSION;
+ use crate::resolver::resolve_blocking;
+ use crate::session_runtime::{Resolution, Resolve, SessionRuntime};
+@@ -81,7 +82,7 @@ impl Resolve for ThreadResolver {
+         let waker = self.waker.clone();
+         let host = host.to_string();
+         let lookup_host = host.clone();
+-        let spawned = std::thread::Builder::new().name("mtproto-resolver".into()).spawn(move || {
++        let spawned = engine_thread::spawn(std::thread::Builder::new().name("mtproto-resolver".into()), move || {
+             let addresses = resolve_blocking(&lookup_host, port);
+             let _ = sender.send(Command::Resolved { host: lookup_host, port, addresses });
+             let _ = waker.wake();
 diff --git a/crates/mtproto-engine/tests/engine.rs b/crates/mtproto-engine/tests/engine.rs
 index 38a9daa..b38de0c 100644
 --- a/crates/mtproto-engine/tests/engine.rs
