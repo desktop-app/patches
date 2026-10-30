@@ -1,0 +1,1693 @@
+mtproto-engine: build and pass its tests on Windows, Windows 7 included.
+
+Upstream: https://github.com/TelegramMessenger/mtproto-engine
+Branch: main
+Revision: da4b2170210aab0430c4ff18c032991f3030cf45
+
+Apply with `git apply` right after checking out that revision.
+
+Builds for i686-win7-windows-msvc and x86_64-win7-windows-msvc (std built
+from source with -Z build-std and +crt-static) and aarch64-pc-windows-msvc.
+Every hunk is Windows-gated, or moves a test helper unchanged off Windows.
+On Windows run the suites with libtest's serial mode:
+  cargo test -p mtproto-core -p mtproto-engine -p mtproto-ffi -- --test-threads=1
+
+Tests gated off on Windows, each with its reason in the source:
+- mtproto-engine interface::tests::loopback_resolves_to_lo0 (Windows):
+  Windows names no interface for an address, and its loopback is not lo0.
+- mtproto-core sec_rows_zeroize::obfuscation_keys_and_keystreams_leave_no_copy_in_freed_memory,
+  mtproto-core sec_rows_zeroize::a_transport_stream_leaves_no_proxy_secret_or_obfuscation_key_in_freed_memory,
+  mtproto-core sec_rows_zeroize::a_fake_tls_stream_leaves_no_proxy_key_in_freed_memory,
+  mtproto-engine sec_rows_zeroize::a_session_with_an_address_secret_leaves_no_secret_in_freed_memory,
+  mtproto-engine sec_rows_zeroize::a_session_through_a_fake_tls_mtproxy_leaves_no_proxy_key_in_freed_memory
+  (Windows x86_64 only): aes 0.8.4's autodetect Aes256 writes and wipes only
+  the 480-byte AES-NI half of its 960-byte union on x86_64, so the unused
+  half keeps stack bytes holding key material. They run on i686.
+
+diff --git a/Cargo.lock b/Cargo.lock
+index bab02ba..6aec7fb 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -301,6 +301,7 @@ dependencies = [
+  "sha1",
+  "sha2",
+  "thiserror",
++ "windows-sys 0.61.2",
+  "zeroize",
+ ]
+ 
+@@ -314,15 +315,18 @@ dependencies = [
+  "mtproto-netsim",
+  "mtproto-testserver",
+  "rustls",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+ name = "mtproto-ffi"
+ version = "0.1.0"
+ dependencies = [
++ "find-msvc-tools",
+  "mtproto-engine",
+  "mtproto-testserver",
+  "rustls",
++ "windows-sys 0.61.2",
+  "zeroize",
+ ]
+ 
+@@ -338,6 +342,7 @@ name = "mtproto-netsim"
+ version = "0.1.0"
+ dependencies = [
+  "libc",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+diff --git a/crates/mtproto-core/Cargo.toml b/crates/mtproto-core/Cargo.toml
+index 110eeb7..8e52321 100644
+--- a/crates/mtproto-core/Cargo.toml
++++ b/crates/mtproto-core/Cargo.toml
+@@ -21,7 +21,8 @@ thiserror.workspace = true
+ 
+ base64 = "=0.22.1"
+ 
+-[target.'cfg(target_arch = "aarch64")'.dependencies]
++# sha2-asm refuses Windows targets, and MSVC cannot assemble its GNU-syntax source.
++[target.'cfg(all(target_arch = "aarch64", not(windows)))'.dependencies]
+ sha2 = { workspace = true, features = ["asm"] }
+ 
+ [features]
+@@ -32,5 +33,9 @@ mtproto-core = { path = ".", features = ["test-support"] }
+ hex.workspace = true
+ proptest.workspace = true
+ 
++# The freed-memory scanner's thread names.
++[target.'cfg(windows)'.dev-dependencies]
++windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
++
+ [lints]
+ workspace = true
+diff --git a/crates/mtproto-core/tests/sec_rows_zeroize.rs b/crates/mtproto-core/tests/sec_rows_zeroize.rs
+index 7b8e802..540a4cc 100644
+--- a/crates/mtproto-core/tests/sec_rows_zeroize.rs
++++ b/crates/mtproto-core/tests/sec_rows_zeroize.rs
+@@ -59,6 +59,33 @@ fn the_freed_memory_scanner_finds_secrets_freed_without_wiping() {
+     drop(live);
+ }
+ 
++/// Windows' heap gives a block back as it was freed. A copy freed where nothing scans, as fixture threads free
++/// theirs, is not found in the next owner of its block, which never wrote it.
++#[cfg(windows)]
++#[test]
++fn a_reused_block_is_not_blamed_for_what_its_previous_owner_left() {
++    let secret: [u8; 32] = pattern(6);
++    let mut watch = freed_memory::watch();
++    watch.secret("secret", &secret);
++    let mut reused = 0;
++    for _ in 0..10_000 {
++        let left = secret.to_vec();
++        let address = left.as_ptr() as usize;
++        drop(left);
++        watch.arm();
++        let mut next = Vec::<u64>::with_capacity(4);
++        next.push(1);
++        reused += usize::from(next.as_ptr() as usize == address);
++        drop(next);
++        watch.stop();
++        if reused == 8 {
++            break;
++        }
++    }
++    assert_eq!(reused, 8, "the heap handed no freed block back");
++    assert!(watch.found().is_empty(), "a block was blamed for its previous owner's copy: {:?}", watch.found());
++}
++
+ fn proxy_key_leaks(forms: &[(&'static str, String)], key: &[u8; 16]) -> Vec<&'static str> {
+     let mut leaks = Vec::new();
+     for (form, text) in forms {
+@@ -109,6 +136,11 @@ fn a_standard_base64_proxy_secret_leaves_no_partial_decoding_in_freed_memory() {
+ }
+ 
+ #[test]
++#[cfg_attr(
++    all(windows, target_arch = "x86_64"),
++    ignore = "aes 0.8.4's autodetect Aes256 writes and wipes only the 480-byte AES-NI half of its 960-byte \
++              union on x86_64: the unused half in each AesCtr keeps stack bytes holding the derived keys"
++)]
+ fn obfuscation_keys_and_keystreams_leave_no_copy_in_freed_memory() {
+     let secret: [u8; 16] = pattern(3);
+     let mut rng = XorShiftRandom::new(3);
+@@ -130,6 +162,11 @@ fn obfuscation_keys_and_keystreams_leave_no_copy_in_freed_memory() {
+ }
+ 
+ #[test]
++#[cfg_attr(
++    all(windows, target_arch = "x86_64"),
++    ignore = "aes 0.8.4's autodetect Aes256 writes and wipes only the 480-byte AES-NI half of its 960-byte \
++              union on x86_64: the unused half in each AesCtr keeps stack bytes holding the secret and a derived key"
++)]
+ fn a_transport_stream_leaves_no_proxy_secret_or_obfuscation_key_in_freed_memory() {
+     let secret: [u8; 16] = pattern(5);
+     let mut rng = XorShiftRandom::new(5);
+@@ -158,6 +195,11 @@ fn a_transport_stream_leaves_no_proxy_secret_or_obfuscation_key_in_freed_memory(
+ }
+ 
+ #[test]
++#[cfg_attr(
++    all(windows, target_arch = "x86_64"),
++    ignore = "aes 0.8.4's autodetect Aes256 writes and wipes only the 480-byte AES-NI half of its 960-byte \
++              union on x86_64: the unused half in each AesCtr keeps stack bytes holding the proxy key"
++)]
+ fn a_fake_tls_stream_leaves_no_proxy_key_in_freed_memory() {
+     let key: [u8; 16] = pattern(4);
+     let mut raw = vec![0xeeu8];
+diff --git a/crates/mtproto-core/tests/support/freed_memory.rs b/crates/mtproto-core/tests/support/freed_memory.rs
+index a442e0a..ba6ae3e 100644
+--- a/crates/mtproto-core/tests/support/freed_memory.rs
++++ b/crates/mtproto-core/tests/support/freed_memory.rs
+@@ -39,18 +39,37 @@ pub fn only_threads(filter: fn() -> bool) {
+     let _ = THREAD_FILTER.set(filter);
+ }
+ 
++#[cfg(not(windows))]
+ unsafe extern "C" {
+     fn pthread_self() -> usize;
+     fn pthread_getname_np(thread: usize, name: *mut core::ffi::c_char, length: usize) -> core::ffi::c_int;
+ }
+ 
+ /// The engine names its threads `mtproto-main`, `mtproto-worker-N` and `mtproto-resolver`.
++#[cfg(not(windows))]
+ pub fn is_engine_thread() -> bool {
+     let mut name = [0 as core::ffi::c_char; 64];
+     let read = unsafe { pthread_getname_np(pthread_self(), name.as_mut_ptr(), name.len()) };
+     read == 0 && name[..8].iter().map(|byte| *byte as u8).eq(*b"mtproto-")
+ }
+ 
++/// The engine names its threads `mtproto-main`, `mtproto-worker-N` and `mtproto-resolver`, and std makes
++/// a name the thread's description. Windows allocates the copy it hands back, outside the Rust allocator.
++#[cfg(windows)]
++pub fn is_engine_thread() -> bool {
++    use windows_sys::Win32::Foundation::LocalFree;
++    use windows_sys::Win32::System::Threading::{GetCurrentThread, GetThreadDescription};
++    let mut description: *mut u16 = core::ptr::null_mut();
++    if unsafe { GetThreadDescription(GetCurrentThread(), &mut description) } < 0 || description.is_null() {
++        return false;
++    }
++    // The description ends with a NUL, which differs from every prefix byte, so the comparison stops there.
++    let engine =
++        b"mtproto-".iter().enumerate().all(|(index, byte)| unsafe { *description.add(index) } == u16::from(*byte));
++    unsafe { LocalFree(description.cast()) };
++    engine
++}
++
+ unsafe fn scan(pointer: *const u8, length: usize) {
+     if length < NEEDLE_LEN || !armed() {
+         return;
+@@ -72,9 +91,22 @@ unsafe fn scan(pointer: *const u8, length: usize) {
+     }
+ }
+ 
++/// The block for a new allocation. Windows' heap hands a freed block to the next request of its size as it was, so a
++/// copy a fixture thread freed unwiped, unscanned, would turn up again in an engine block that never held it: there a
++/// new block starts zeroed, and holds only what its owner writes.
++#[cfg(windows)]
++unsafe fn fresh(layout: Layout) -> *mut u8 {
++    unsafe { System.alloc_zeroed(layout) }
++}
++
++#[cfg(not(windows))]
++unsafe fn fresh(layout: Layout) -> *mut u8 {
++    unsafe { System.alloc(layout) }
++}
++
+ unsafe impl GlobalAlloc for FreedMemoryScanner {
+     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+-        unsafe { System.alloc(layout) }
++        unsafe { fresh(layout) }
+     }
+ 
+     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+@@ -90,7 +122,7 @@ unsafe impl GlobalAlloc for FreedMemoryScanner {
+ 
+     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+         unsafe {
+-            let moved = System.alloc(Layout::from_size_align_unchecked(new_size, layout.align()));
++            let moved = fresh(Layout::from_size_align_unchecked(new_size, layout.align()));
+             if !moved.is_null() {
+                 core::ptr::copy_nonoverlapping(pointer, moved, layout.size().min(new_size));
+                 scan(pointer, layout.size());
+diff --git a/crates/mtproto-engine/Cargo.toml b/crates/mtproto-engine/Cargo.toml
+index d80a2b0..7d540e7 100644
+--- a/crates/mtproto-engine/Cargo.toml
++++ b/crates/mtproto-engine/Cargo.toml
+@@ -11,6 +11,10 @@ mtproto-core = { path = "../mtproto-core" }
+ mio = { version = "=1.2.2", features = ["os-poll", "net"] }
+ libc = "=0.2.189"
+ 
++# The kernel send queue through SIO_TCP_INFO.
++[target.'cfg(windows)'.dependencies]
++windows-sys = { version = "=0.61.2", features = ["Win32_Networking_WinSock", "Win32_System_IO"] }
++
+ [features]
+ # Exposes internal parsers to the cargo-fuzz targets in fuzz/.
+ fuzzing = []
+@@ -21,5 +25,9 @@ mtproto-testserver = { path = "../mtproto-testserver" }
+ mtproto-netsim = { path = "../mtproto-netsim" }
+ rustls = { workspace = true }
+ 
++# The freed-memory scanner's thread names, the conditional-accept blackhole and the CPU time of tests.
++[target.'cfg(windows)'.dev-dependencies]
++windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }
++
+ [lints]
+ workspace = true
+diff --git a/crates/mtproto-engine/src/clock.rs b/crates/mtproto-engine/src/clock.rs
+index 2315c16..a31c4cd 100644
+--- a/crates/mtproto-engine/src/clock.rs
++++ b/crates/mtproto-engine/src/clock.rs
+@@ -2,6 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
+ 
+ use mtproto_core::session::Now;
+ 
++#[cfg(not(windows))]
+ #[allow(unsafe_code)]
+ pub fn monotonic_seconds() -> f64 {
+     let mut spec = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+@@ -12,6 +13,16 @@ pub fn monotonic_seconds() -> f64 {
+     spec.tv_sec as f64 + spec.tv_nsec as f64 * 1e-9
+ }
+ 
++/// std's `Instant` (the performance counter) from one origin for the whole process, counted on from the
++/// wall clock at that origin. Like a boot epoch, that base keeps a zero time long past and a zero deadline
++/// due; later changes to the wall clock leave it alone.
++#[cfg(windows)]
++pub fn monotonic_seconds() -> f64 {
++    static ORIGIN: std::sync::OnceLock<(std::time::Instant, f64)> = std::sync::OnceLock::new();
++    let (origin, base) = ORIGIN.get_or_init(|| (std::time::Instant::now(), unix_seconds().max(1.0)));
++    base + origin.elapsed().as_secs_f64()
++}
++
+ pub fn unix_seconds() -> f64 {
+     SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_secs_f64()).unwrap_or(0.0)
+ }
+@@ -31,4 +42,76 @@ mod tests {
+         assert!(b >= a);
+         assert!(unix_seconds() > 1_600_000_000.0);
+     }
++
++    #[cfg(windows)]
++    #[test]
++    fn monotonic_time_is_one_clock_for_all_threads_and_advances_as_instant_does() {
++        let first = monotonic_seconds();
++        assert!(first > 1_600_000_000.0, "counts on from the wall clock, so a zero time is long past: {first}");
++        let on_another_thread = std::thread::spawn(monotonic_seconds).join().unwrap();
++        let after = monotonic_seconds();
++        assert!(first <= on_another_thread && on_another_thread <= after, "{first} {on_another_thread} {after}");
++        let outer = std::time::Instant::now();
++        let before = monotonic_seconds();
++        let inner = std::time::Instant::now();
++        std::thread::sleep(std::time::Duration::from_millis(100));
++        let slept = inner.elapsed().as_secs_f64();
++        let later = monotonic_seconds();
++        let window = outer.elapsed().as_secs_f64();
++        let advanced = later - before;
++        assert!(
++            advanced >= slept - 1e-6 && advanced <= window + 1e-6,
++            "advanced {advanced} s over a {slept} s sleep inside {window} s"
++        );
++    }
++
++    /// A new session's first connection is due when the session is made, so the worker starts it at once.
++    #[cfg(windows)]
++    #[test]
++    fn a_new_engine_connects_a_new_session_at_once() {
++        use std::sync::Arc;
++        use std::time::{Duration, Instant};
++
++        use mtproto_core::auth_key::AuthKey;
++        use mtproto_core::rpc::SessionRole;
++        use mtproto_core::session::ServerSalt;
++
++        use crate::{
++            AuthKeyMaterial, DcAddress, Engine, EngineCallbacks, EngineConfig, EngineEvent, SessionHandle, SessionSetup,
++        };
++
++        struct Ignored;
++        impl EngineCallbacks for Ignored {
++            fn on_event(&self, _session: SessionHandle, _event: EngineEvent) {}
++        }
++        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
++        listener.set_nonblocking(true).unwrap();
++        let port = listener.local_addr().unwrap().port();
++        let engine =
++            Engine::new(EngineConfig { worker_threads: 1, ..EngineConfig::default() }, Arc::new(Ignored)).unwrap();
++        let unix = unix_seconds();
++        let address = DcAddress { host: "127.0.0.1".into(), port, secret: None };
++        let mut setup = SessionSetup::new(2, SessionRole::Main, vec![address]);
++        setup.auth_key = Some(AuthKeyMaterial {
++            key: AuthKey::new([7u8; 256]),
++            salts: vec![ServerSalt { salt: 1, valid_since: unix - 60.0, valid_until: unix + 3600.0 }],
++            init_hash: None,
++        });
++        let started = Instant::now();
++        engine.create_session(setup);
++        let connected = loop {
++            match listener.accept() {
++                Ok(_) => break true,
++                Err(error)
++                    if error.kind() == std::io::ErrorKind::WouldBlock && started.elapsed() < Duration::from_secs(5) =>
++                {
++                    std::thread::sleep(Duration::from_millis(5));
++                }
++                Err(_) => break false,
++            }
++        };
++        let waited = started.elapsed();
++        engine.shutdown();
++        assert!(connected, "no connection {waited:?} after the session was made");
++    }
+ }
+diff --git a/crates/mtproto-engine/src/connection.rs b/crates/mtproto-engine/src/connection.rs
+index 1e7ed2e..03a2620 100644
+--- a/crates/mtproto-engine/src/connection.rs
++++ b/crates/mtproto-engine/src/connection.rs
+@@ -365,6 +365,13 @@ impl Connection {
+         Ok(())
+     }
+ 
++    /// mio on Windows reports a socket again only once a read or write hit `WouldBlock` or it is registered
++    /// anew: a reader that stopped early registers it again, with the same token and interest.
++    #[cfg(windows)]
++    pub fn rearm(&mut self, registry: &Registry) -> io::Result<()> {
++        self.pipe.set_writable_interest(registry, self.token, self.writable_interest)
++    }
++
+     pub fn acknowledged_bytes(&self) -> Option<u64> {
+         self.pipe.send_queue().map(|queued| self.written_total.saturating_sub(queued as u64))
+     }
+@@ -524,11 +531,38 @@ pub(crate) fn kernel_send_queue(socket: &mio::net::TcpStream) -> Option<usize> {
+     (result == 0 && value >= 0).then_some(value as usize)
+ }
+ 
+-#[cfg(not(target_vendor = "apple"))]
++#[cfg(not(any(target_vendor = "apple", windows)))]
+ pub(crate) fn kernel_send_queue(_socket: &mio::net::TcpStream) -> Option<usize> {
+     None
+ }
+ 
++/// Bytes sent that the peer has not acknowledged, from `SIO_TCP_INFO` (Windows 10 1703 and later; None
++/// before, where the call fails). Unlike Darwin's `SO_NWRITE` it leaves out what Winsock holds unsent.
++#[cfg(windows)]
++#[allow(unsafe_code)]
++pub(crate) fn kernel_send_queue(socket: &mio::net::TcpStream) -> Option<usize> {
++    use std::os::windows::io::AsRawSocket;
++    use windows_sys::Win32::Networking::WinSock::{SIO_TCP_INFO, SOCKET, TCP_INFO_v0, WSAIoctl};
++    let version: u32 = 0;
++    let mut info = TCP_INFO_v0::default();
++    let mut returned: u32 = 0;
++    let result = unsafe {
++        WSAIoctl(
++            socket.as_raw_socket() as SOCKET,
++            SIO_TCP_INFO,
++            (&version as *const u32).cast(),
++            std::mem::size_of::<u32>() as u32,
++            (&mut info as *mut TCP_INFO_v0).cast(),
++            std::mem::size_of::<TCP_INFO_v0>() as u32,
++            &mut returned,
++            std::ptr::null_mut(),
++            None,
++        )
++    };
++    let needed = std::mem::offset_of!(TCP_INFO_v0, BytesInFlight) + std::mem::size_of::<u32>();
++    (result == 0 && returned as usize >= needed).then_some(info.BytesInFlight as usize)
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -567,4 +601,103 @@ mod tests {
+         compact_written_prefix(&mut small, &mut small_offset);
+         assert_eq!((small.len(), small_offset), (1000, 10), "small prefixes are left alone");
+     }
++
++    /// Waits up to `limit` for the reading to be `Some(0)`, the peer having acknowledged everything.
++    #[cfg(windows)]
++    fn drained(socket: &mio::net::TcpStream, limit: std::time::Duration) -> Option<usize> {
++        let started = std::time::Instant::now();
++        loop {
++            let queued = kernel_send_queue(socket);
++            if queued == Some(0) || started.elapsed() >= limit {
++                return queued;
++            }
++            std::thread::sleep(std::time::Duration::from_millis(1));
++        }
++    }
++
++    /// `SIO_TCP_INFO` needs Windows 10 1703 or later, as the test host is.
++    #[cfg(windows)]
++    #[test]
++    fn the_kernel_send_queue_counts_bytes_in_flight_and_drains_once_the_peer_read_them() {
++        use std::time::Duration;
++        const TOTAL: usize = 32 * 1024 * 1024;
++        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
++        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
++        let (mut peer, _) = listener.accept().unwrap();
++        let observed = mio::net::TcpStream::from_std(client.try_clone().unwrap());
++        assert_eq!(kernel_send_queue(&observed), Some(0), "nothing sent yet");
++        peer.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
++        let reader = std::thread::spawn(move || {
++            let mut buffer = vec![0u8; 64 * 1024];
++            let mut received = 0;
++            while received < TOTAL {
++                match peer.read(&mut buffer) {
++                    Ok(0) => break,
++                    Ok(read) => received += read,
++                    Err(error) => panic!("peer read failed after {received} bytes: {error}"),
++                }
++            }
++            received
++        });
++        let writer = std::thread::spawn(move || client.write_all(&vec![7u8; TOTAL]));
++        let (mut samples, mut in_flight) = (0, 0);
++        while !writer.is_finished() {
++            samples += 1;
++            in_flight += usize::from(kernel_send_queue(&observed).is_some_and(|queued| queued > 0));
++        }
++        writer.join().unwrap().unwrap();
++        assert_eq!(reader.join().unwrap(), TOTAL);
++        assert!(in_flight > 0, "no bytes in flight in {samples} readings while {TOTAL} bytes crossed");
++        let queued = drained(&observed, Duration::from_secs(5));
++        assert_eq!(queued, Some(0), "the peer read all {TOTAL} bytes");
++    }
++
++    /// The count leaves out what Winsock accepted and holds unsent, so a peer that stops reading leaves
++    /// more accepted than it reports; once the peer reads it all the count drains.
++    #[cfg(windows)]
++    #[test]
++    fn bytes_accepted_for_a_peer_that_stops_reading_exceed_the_kernel_send_queue() {
++        use std::time::{Duration, Instant};
++        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
++        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
++        let (mut peer, _) = listener.accept().unwrap();
++        let observed = mio::net::TcpStream::from_std(client.try_clone().unwrap());
++        client.set_nonblocking(true).unwrap();
++        let chunk = vec![7u8; 64 * 1024];
++        let mut accepted = 0usize;
++        let started = Instant::now();
++        loop {
++            match client.write(&chunk) {
++                Ok(written) => accepted += written,
++                Err(error) if error.kind() == ErrorKind::WouldBlock => break,
++                Err(error) => panic!("write failed after {accepted} bytes: {error}"),
++            }
++            assert!(started.elapsed() < Duration::from_secs(10) && accepted < 1 << 30, "{accepted} bytes taken");
++        }
++        let mut reported = kernel_send_queue(&observed);
++        let settle = Instant::now();
++        while settle.elapsed() < Duration::from_secs(2) {
++            std::thread::sleep(Duration::from_millis(50));
++            let again = kernel_send_queue(&observed);
++            if again == reported {
++                break;
++            }
++            reported = again;
++        }
++        eprintln!("accepted {accepted} bytes for a peer that stopped reading; kernel send queue {reported:?}");
++        let reported = reported.expect("SIO_TCP_INFO answers on Windows 10 1703 and later");
++        assert!(accepted > reported, "accepted {accepted}, reported {reported}");
++        peer.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
++        let mut buffer = vec![0u8; 64 * 1024];
++        let mut received = 0;
++        while received < accepted {
++            match peer.read(&mut buffer) {
++                Ok(0) => break,
++                Ok(read) => received += read,
++                Err(error) => panic!("peer read failed after {received} of {accepted} bytes: {error}"),
++            }
++        }
++        assert_eq!(received, accepted);
++        assert_eq!(drained(&observed, Duration::from_secs(5)), Some(0), "the peer read everything");
++    }
+ }
+diff --git a/crates/mtproto-engine/src/http_link.rs b/crates/mtproto-engine/src/http_link.rs
+index 48478a6..a302c12 100644
+--- a/crates/mtproto-engine/src/http_link.rs
++++ b/crates/mtproto-engine/src/http_link.rs
+@@ -415,6 +415,12 @@ impl HttpConn {
+         let mut read_total = 0usize;
+         loop {
+             if read_total >= budget {
++                // mio on Windows reports the socket again only once a read hit `WouldBlock` or it is registered
++                // anew, and a caller may leave the rest for later.
++                #[cfg(windows)]
++                self.pipe
++                    .set_writable_interest(registry, self.token, self.writable_interest)
++                    .map_err(HttpConnError::Io)?;
+                 return Ok(true);
+             }
+             let read = match self.pipe.read(scratch) {
+@@ -550,3 +556,71 @@ fn compact(buffer: &mut Vec<u8>, offset: &mut usize) {
+         *offset = 0;
+     }
+ }
++
++#[cfg(all(test, windows))]
++mod tests {
++    use super::*;
++
++    /// Each read stops at a small budget with bytes left, and the caller drops the continuation, as a
++    /// probe does: the rest arrives through poll events alone, with nothing written or timed to wake it.
++    #[test]
++    fn reads_cut_short_by_the_budget_hear_the_rest_through_the_poll() {
++        use std::time::{Duration, Instant};
++        const BUDGET: usize = 64;
++        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
++        let mut poll = mio::Poll::new().unwrap();
++        let mut events = mio::Events::with_capacity(16);
++        let token = Token(3);
++        let route = HttpRoute::Direct { authority: "127.0.0.1".into() };
++        let address = listener.local_addr().unwrap();
++        let mut conn = HttpConn::connect(poll.registry(), token, address, route, None, 0, 0.0).unwrap();
++        let (mut server, _) = listener.accept().unwrap();
++        let started = Instant::now();
++        while !conn.is_ready() {
++            assert!(started.elapsed() < Duration::from_secs(5), "never connected");
++            poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
++            if events.iter().any(|event| event.token() == token && event.is_writable()) {
++                conn.handle_writable(poll.registry(), 0.0).unwrap();
++            }
++        }
++        let meta = RequestMeta {
++            packet_seq: Some(1),
++            max_wait: 0.0,
++            slot: false,
++            queued_at: 0.0,
++            bytes: 0,
++            probe: true,
++            generation: 0,
++        };
++        conn.submit(poll.registry(), b"request", meta, 0.0).unwrap();
++        let body: Vec<u8> = (0..4096u32).map(|value| value as u8).collect();
++        let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
++        server.write_all(&[head.as_bytes(), &body[..1024]].concat()).unwrap();
++        let mut scratch = [0u8; BUDGET];
++        let mut out = Vec::new();
++        let mut reads = 0;
++        let mut first = None;
++        let mut answer = None;
++        let started = Instant::now();
++        while answer.is_none() && started.elapsed() < Duration::from_secs(3) {
++            poll.poll(&mut events, Some(Duration::from_millis(10))).unwrap();
++            if !events.iter().any(|event| event.token() == token && event.is_readable()) {
++                continue;
++            }
++            let spent = conn.read(poll.registry(), &mut scratch, BUDGET, 0.0, &mut out).unwrap();
++            reads += 1;
++            if first.is_none() {
++                first = Some(spent);
++                server.write_all(&body[1024..]).unwrap();
++            }
++            answer = out.drain(..).find_map(|io| match io {
++                HttpIo::Response { response, .. } => Some(response),
++                HttpIo::Connected => None,
++            });
++        }
++        assert_eq!(first, Some(true), "the first read stopped at the budget with bytes left");
++        let answer = answer.unwrap_or_else(|| panic!("the rest never came: {reads} reads through poll events"));
++        assert_eq!((answer.status, &answer.body), (200, &body));
++        assert!(reads > (head.len() + body.len()) / BUDGET, "{reads} reads of {BUDGET} bytes");
++    }
++}
+diff --git a/crates/mtproto-engine/src/interface.rs b/crates/mtproto-engine/src/interface.rs
+index 09abb61..5945a6d 100644
+--- a/crates/mtproto-engine/src/interface.rs
++++ b/crates/mtproto-engine/src/interface.rs
+@@ -1,6 +1,10 @@
++#[cfg(not(windows))]
+ use std::ffi::CStr;
+-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
++use std::net::IpAddr;
++#[cfg(not(windows))]
++use std::net::{Ipv4Addr, Ipv6Addr};
+ 
++#[cfg(not(windows))]
+ #[allow(unsafe_code)]
+ pub fn interface_name_for(address: IpAddr) -> Option<String> {
+     let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+@@ -36,6 +40,12 @@ pub fn interface_name_for(address: IpAddr) -> Option<String> {
+     found
+ }
+ 
++/// Windows has no `getifaddrs`, and none of its interfaces carries Apple's cellular `pdp_ip` name.
++#[cfg(windows)]
++pub fn interface_name_for(_address: IpAddr) -> Option<String> {
++    None
++}
++
+ pub fn is_cellular_interface(name: &str) -> bool {
+     name.starts_with("pdp_ip")
+ }
+@@ -44,10 +54,23 @@ pub fn is_cellular_interface(name: &str) -> bool {
+ mod tests {
+     use super::*;
+ 
++    #[cfg(windows)]
++    use std::net::{Ipv4Addr, Ipv6Addr};
++
+     #[test]
++    #[cfg_attr(windows, ignore = "Windows names no interface for an address, and its loopback is not lo0")]
+     fn loopback_resolves_to_lo0() {
+         assert_eq!(interface_name_for(IpAddr::V4(Ipv4Addr::LOCALHOST)).as_deref(), Some("lo0"));
+         assert!(!is_cellular_interface("lo0"));
+         assert!(is_cellular_interface("pdp_ip0"));
+     }
++
++    #[cfg(windows)]
++    #[test]
++    fn windows_names_no_interface_so_no_socket_counts_as_cellular() {
++        assert_eq!(interface_name_for(IpAddr::V4(Ipv4Addr::LOCALHOST)), None);
++        assert_eq!(interface_name_for(IpAddr::V6(Ipv6Addr::LOCALHOST)), None);
++        assert!(!is_cellular_interface("lo0"));
++        assert!(is_cellular_interface("pdp_ip0"));
++    }
+ }
+diff --git a/crates/mtproto-engine/src/session_explorer_tests.rs b/crates/mtproto-engine/src/session_explorer_tests.rs
+index a61264a..46b507d 100644
+--- a/crates/mtproto-engine/src/session_explorer_tests.rs
++++ b/crates/mtproto-engine/src/session_explorer_tests.rs
+@@ -3638,3 +3638,81 @@ fn enable_pfs_during_answered_destroy_runs_the_call_in_flight_once() {
+     fixed_report("answered destroy then enable_pfs", &plan, &outcome);
+     assert!(!outcome.violations.iter().any(|v| v.kind().starts_with("duplicate")), "the call in flight ran twice");
+ }
++
++/// A racer reads only until its `res_pq` verifies it, short of `WouldBlock`, and mio on Windows reports
++/// nothing more for a socket until a read or write hits `WouldBlock` or it is registered anew. Promoted,
++/// it has to hear the answer to the request it resends through a poll event of its own: from the turn
++/// that sends the request on, nothing is driven, written or timed to wake it.
++#[cfg(windows)]
++#[test]
++fn a_promoted_racer_hears_the_answer_to_the_resent_request_through_the_poll() {
++    let key = random_key(9003);
++    let server = TestServer::start(vec![key.clone()], ServerOptions::default());
++    let silent = TcpListener::bind("127.0.0.1:0").unwrap();
++    let mut poll = mio::Poll::new().unwrap();
++    let mut events = mio::Events::with_capacity(64);
++    let mut scratch = vec![0u8; 256 * 1024];
++    let mut rng = OsRandom::new();
++    let start = crate::clock::now();
++    let addresses = [silent.local_addr().unwrap(), server.address]
++        .iter()
++        .map(|address| DcAddress { host: address.ip().to_string(), port: address.port(), secret: None })
++        .collect();
++    let mut setup = SessionSetup::new(2, SessionRole::Main, addresses);
++    setup.transport = TransportPreference::Tcp;
++    setup.http_port = None;
++    setup.auth_key = Some(material(&key, start));
++    let mut runtime = SessionRuntime::new(SessionHandle(1), setup, Token(16), start, &mut rng);
++    let recorder = Arc::new(Recorder::default());
++    let callbacks: Arc<dyn EngineCallbacks> = recorder.clone();
++    let config = EngineConfig::default();
++    let racer = runtime.race_token();
++    let mut racer_events = 0;
++    let mut turn = |runtime: &mut SessionRuntime, drive: bool| {
++        poll.poll(&mut events, Some(Duration::from_millis(2))).unwrap();
++        let now = crate::clock::now();
++        for event in events.iter() {
++            let readable = event.is_readable() || event.is_read_closed() || event.is_error();
++            let writable = event.is_writable() || event.is_write_closed();
++            racer_events += usize::from(event.token() == racer);
++            runtime.handle_io(
++                event.token(),
++                readable,
++                writable,
++                poll.registry(),
++                &mut scratch,
++                now,
++                &callbacks,
++                &mut rng,
++            );
++        }
++        if drive {
++            runtime.drive(poll.registry(), now, &mut NoLookups, &config, &callbacks, &mut rng);
++        }
++    };
++    let completed = || {
++        recorder.events.lock().unwrap().iter().any(|(_, event)| {
++            matches!(event, EngineEvent::Rpc(RpcEvent::Completed { id, .. }) if *id == RequestId(1))
++        })
++    };
++    runtime.send(plain_request(1), start);
++    let real = Instant::now();
++    while runtime.connection.as_ref().is_none_or(|connection| connection.token() != racer)
++        && real.elapsed() < Duration::from_secs(10)
++    {
++        turn(&mut runtime, true);
++    }
++    let promoted = runtime.connection.as_ref().filter(|connection| connection.token() == racer);
++    let sent = promoted.map_or(0, |connection| connection.bytes_out);
++    assert!(sent > 0 && runtime.racer.is_none(), "no promoted racer that resent the request ({sent} bytes)");
++    assert!(!completed(), "the silent primary answered");
++    let waited = Instant::now();
++    while !completed() && waited.elapsed() < Duration::from_secs(3) {
++        turn(&mut runtime, false);
++    }
++    let answered = completed();
++    let waited = waited.elapsed();
++    runtime.shutdown(poll.registry(), crate::clock::now());
++    assert!(answered, "no answer {waited:?} after the promotion; {racer_events} poll events for the racer's socket");
++    assert_eq!(server.executions(1), 1);
++}
+diff --git a/crates/mtproto-engine/src/session_runtime.rs b/crates/mtproto-engine/src/session_runtime.rs
+index 69a7dc6..d435a6c 100644
+--- a/crates/mtproto-engine/src/session_runtime.rs
++++ b/crates/mtproto-engine/src/session_runtime.rs
+@@ -1606,6 +1606,15 @@ impl SessionRuntime {
+             return;
+         }
+         if verified {
++            // The loop stopped at the answer, short of `WouldBlock`.
++            #[cfg(windows)]
++            if let Some(racer) = self.racer.as_mut()
++                && let Err(error) = racer.rearm(registry)
++            {
++                self.fail_racer(registry, now, callbacks);
++                self.log(callbacks, LogLevel::Debug, &format!("connection race lost: {error}"));
++                return;
++            }
+             if self.http.is_some() {
+                 self.switch_back_to_tcp(registry, now, callbacks);
+             } else if self.auto.on_websocket {
+diff --git a/crates/mtproto-engine/tests/engine.rs b/crates/mtproto-engine/tests/engine.rs
+index 38a9daa..b38de0c 100644
+--- a/crates/mtproto-engine/tests/engine.rs
++++ b/crates/mtproto-engine/tests/engine.rs
+@@ -12,6 +12,10 @@ use mtproto_engine::{
+ };
+ use mtproto_testserver::*;
+ 
++#[path = "support/cpu_time.rs"]
++mod cpu_time;
++use cpu_time::cpu_seconds as process_cpu_seconds;
++
+ #[derive(Default)]
+ struct Collector {
+     events: Mutex<Vec<(SessionHandle, EngineEvent)>>,
+@@ -919,15 +923,6 @@ fn verified_race_leaves_an_address_that_accepts_but_never_answers() {
+     drop(keeper);
+ }
+ 
+-#[allow(unsafe_code)]
+-fn process_cpu_seconds() -> f64 {
+-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+-    let user = usage.ru_utime.tv_sec as f64 + usage.ru_utime.tv_usec as f64 * 1e-6;
+-    let system = usage.ru_stime.tv_sec as f64 + usage.ru_stime.tv_usec as f64 * 1e-6;
+-    user + system
+-}
+-
+ #[test]
+ fn unresolvable_proxy_host_backs_off_instead_of_spinning() {
+     let key = random_key(41);
+diff --git a/crates/mtproto-engine/tests/http_drain_reset_cost.rs b/crates/mtproto-engine/tests/http_drain_reset_cost.rs
+index 6c46f9d..5e4f7e3 100644
+--- a/crates/mtproto-engine/tests/http_drain_reset_cost.rs
++++ b/crates/mtproto-engine/tests/http_drain_reset_cost.rs
+@@ -13,6 +13,10 @@ use mtproto_engine::{
+ };
+ use mtproto_testserver::*;
+ 
++#[path = "support/cpu_time.rs"]
++mod cpu_time;
++use cpu_time::cpu_seconds;
++
+ #[derive(Default)]
+ struct Collector {
+     completed: Mutex<HashMap<u64, Instant>>,
+@@ -51,13 +55,6 @@ impl Collector {
+     }
+ }
+ 
+-fn cpu_seconds() -> f64 {
+-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+-    let seconds = |time: libc::timeval| time.tv_sec as f64 + time.tv_usec as f64 / 1e6;
+-    seconds(usage.ru_utime) + seconds(usage.ru_stime)
+-}
+-
+ /// A call the server never answers is in flight; the server answers another with bad_msg_notification
+ /// 17 (msg_id too high): the session drains the old session's answers for a grace of 1 s or so, then starts a new one and sends the call again.
+ /// Returns the engine's CPU over the 4 s after the 17 and how long the call took.
+diff --git a/crates/mtproto-engine/tests/http_handshake_failures.rs b/crates/mtproto-engine/tests/http_handshake_failures.rs
+index c6d2cbb..078fadb 100644
+--- a/crates/mtproto-engine/tests/http_handshake_failures.rs
++++ b/crates/mtproto-engine/tests/http_handshake_failures.rs
+@@ -12,6 +12,10 @@ use mtproto_engine::{
+ };
+ use mtproto_testserver::*;
+ 
++#[path = "support/cpu_time.rs"]
++mod cpu_time;
++use cpu_time::cpu_seconds;
++
+ #[derive(Default)]
+ struct Collector {
+     events: Mutex<Vec<(SessionHandle, EngineEvent)>>,
+@@ -31,13 +35,6 @@ impl EngineCallbacks for Collector {
+     }
+ }
+ 
+-fn cpu_seconds() -> f64 {
+-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+-    let seconds = |time: libc::timeval| time.tv_sec as f64 + time.tv_usec as f64 / 1e6;
+-    seconds(usage.ru_utime) + seconds(usage.ru_stime)
+-}
+-
+ /// The server's RSA key is not among the client's (an outdated key list, a test DC given prod keys):
+ /// every res_pq fails the handshake. Counts failed key creations in 5 s.
+ fn failed_handshakes(transport: TransportPreference, at_dh_params: bool) -> (usize, usize, f64) {
+diff --git a/crates/mtproto-engine/tests/http_idle_cost.rs b/crates/mtproto-engine/tests/http_idle_cost.rs
+index b39d543..810d0c7 100644
+--- a/crates/mtproto-engine/tests/http_idle_cost.rs
++++ b/crates/mtproto-engine/tests/http_idle_cost.rs
+@@ -12,6 +12,11 @@ use mtproto_engine::{
+ };
+ use mtproto_testserver::*;
+ 
++#[path = "support/cpu_time.rs"]
++mod cpu_time;
++#[cfg(not(windows))]
++use cpu_time::cpu_seconds;
++
+ #[derive(Default)]
+ struct Collector {
+     completed: Mutex<usize>,
+@@ -42,13 +47,6 @@ impl Collector {
+     }
+ }
+ 
+-fn cpu_seconds() -> f64 {
+-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+-    let seconds = |time: libc::timeval| time.tv_sec as f64 + time.tv_usec as f64 / 1e6;
+-    seconds(usage.ru_utime) + seconds(usage.ru_stime)
+-}
+-
+ fn request(id: u64, tag: u32) -> RpcRequest {
+     RpcRequest {
+         id: RequestId(id),
+@@ -77,6 +75,13 @@ fn session_setup(
+     setup
+ }
+ 
++/// On Windows the CPU time of the engine's one reactor thread: the idle test server's own polling costs more
++/// than these budgets there. Every window has one engine, its worker running throughout, and IP literals only.
++#[cfg(windows)]
++fn cpu_seconds() -> f64 {
++    cpu_time::reactor_cpu_seconds(1)
++}
++
+ fn measure(seconds: f64) -> f64 {
+     let started = cpu_seconds();
+     std::thread::sleep(Duration::from_secs_f64(seconds));
+diff --git a/crates/mtproto-engine/tests/http_middlebox.rs b/crates/mtproto-engine/tests/http_middlebox.rs
+index c11796f..93e5e67 100644
+--- a/crates/mtproto-engine/tests/http_middlebox.rs
++++ b/crates/mtproto-engine/tests/http_middlebox.rs
+@@ -16,6 +16,10 @@ use mtproto_engine::{
+ };
+ use mtproto_testserver::*;
+ 
++#[path = "support/cpu_time.rs"]
++mod cpu_time;
++use cpu_time::cpu_seconds;
++
+ #[derive(Default)]
+ struct Collector {
+     events: Mutex<Vec<(SessionHandle, EngineEvent)>>,
+@@ -42,14 +46,6 @@ impl EngineCallbacks for Collector {
+     }
+ }
+ 
+-#[allow(unsafe_code)]
+-fn cpu_seconds() -> f64 {
+-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+-    let tv = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 * 1e-6;
+-    tv(usage.ru_utime) + tv(usage.ru_stime)
+-}
+-
+ impl Collector {
+     fn wait<F: Fn(&[(SessionHandle, EngineEvent)]) -> bool>(&self, timeout: Duration, predicate: F) -> bool {
+         let deadline = Instant::now() + timeout;
+diff --git a/crates/mtproto-engine/tests/http_named_addresses.rs b/crates/mtproto-engine/tests/http_named_addresses.rs
+index c2af49c..6272853 100644
+--- a/crates/mtproto-engine/tests/http_named_addresses.rs
++++ b/crates/mtproto-engine/tests/http_named_addresses.rs
+@@ -53,6 +53,7 @@ impl Collector {
+ }
+ 
+ /// A listener whose accept queue is full: SYNs to it are dropped, as on a route that goes nowhere.
++#[cfg(not(windows))]
+ fn blackhole(port: u16) -> (i32, Vec<TcpStream>) {
+     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+     assert!(fd >= 0);
+@@ -81,6 +82,52 @@ fn blackhole(port: u16) -> (i32, Vec<TcpStream>) {
+     panic!("the accept queue never filled");
+ }
+ 
++/// Windows refuses SYNs to a full accept queue. A conditional-accept listener nothing accepts from leaves
++/// them unanswered instead, as on a route that goes nowhere.
++#[cfg(windows)]
++fn blackhole(port: u16) -> (TcpListener, Vec<TcpStream>) {
++    use std::os::windows::io::{AsRawSocket, FromRawSocket, RawSocket};
++    use windows_sys::Win32::Networking::WinSock::{
++        AF_INET, IN_ADDR, IN_ADDR_0, INVALID_SOCKET, IPPROTO_TCP, SO_CONDITIONAL_ACCEPT, SOCK_STREAM, SOCKADDR,
++        SOCKADDR_IN, SOCKET, SOL_SOCKET, WSAGetLastError, bind, listen, setsockopt, socket,
++    };
++    let last_error = || std::io::Error::from_raw_os_error(unsafe { WSAGetLastError() });
++    std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("std starts Winsock");
++    let raw = unsafe { socket(AF_INET.into(), SOCK_STREAM, IPPROTO_TCP) };
++    assert_ne!(raw, INVALID_SOCKET, "socket: {}", last_error());
++    let listener = unsafe { TcpListener::from_raw_socket(raw as RawSocket) };
++    let raw = listener.as_raw_socket() as SOCKET;
++    let on: i32 = 1;
++    let set = unsafe {
++        setsockopt(
++            raw,
++            SOL_SOCKET,
++            SO_CONDITIONAL_ACCEPT,
++            &on as *const i32 as *const u8,
++            std::mem::size_of::<i32>() as i32,
++        )
++    };
++    assert_eq!(set, 0, "SO_CONDITIONAL_ACCEPT: {}", last_error());
++    let address = SOCKADDR_IN {
++        sin_family: AF_INET,
++        sin_port: port.to_be(),
++        sin_addr: IN_ADDR { S_un: IN_ADDR_0 { S_addr: u32::from(Ipv4Addr::LOCALHOST).to_be() } },
++        sin_zero: [0; 8],
++    };
++    let bound = unsafe {
++        bind(raw, &address as *const SOCKADDR_IN as *const SOCKADDR, std::mem::size_of::<SOCKADDR_IN>() as i32)
++    };
++    assert_eq!(bound, 0, "bind 127.0.0.1:{port}: {}", last_error());
++    assert_eq!(unsafe { listen(raw, 200) }, 0, "listen: {}", last_error());
++    let target = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
++    let probe = TcpStream::connect_timeout(&target, Duration::from_millis(300));
++    assert!(
++        probe.as_ref().is_err_and(|error| error.kind() == std::io::ErrorKind::TimedOut),
++        "127.0.0.1:{port} answered: {probe:?}"
++    );
++    (listener, Vec::new())
++}
++
+ /// Forwards every connection on [::1]:port to the server, byte for byte.
+ fn forwarder(upstream: SocketAddr) -> u16 {
+     let listener = TcpListener::bind("[::1]:0").unwrap();
+diff --git a/crates/mtproto-engine/tests/http_named_proxy_cost.rs b/crates/mtproto-engine/tests/http_named_proxy_cost.rs
+index c6aa21b..fc4521a 100644
+--- a/crates/mtproto-engine/tests/http_named_proxy_cost.rs
++++ b/crates/mtproto-engine/tests/http_named_proxy_cost.rs
+@@ -14,6 +14,10 @@ use mtproto_engine::{
+ };
+ use mtproto_testserver::*;
+ 
++#[path = "support/cpu_time.rs"]
++mod cpu_time;
++use cpu_time::cpu_seconds;
++
+ type Upstream = (std::net::TcpStream, Vec<u8>);
+ 
+ mod middlebox;
+@@ -91,13 +95,6 @@ fn engine(collector: &Arc<Collector>) -> Engine {
+     Engine::new(EngineConfig { worker_threads: 1, ..EngineConfig::default() }, collector.clone()).unwrap()
+ }
+ 
+-fn cpu_seconds() -> f64 {
+-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+-    let seconds = |time: libc::timeval| time.tv_sec as f64 + time.tv_usec as f64 / 1e6;
+-    seconds(usage.ru_utime) + seconds(usage.ru_stime)
+-}
+-
+ fn proxy_named(server: &TestServer, host: &str) -> ProxyConfig {
+     ProxyConfig::Http { host: host.into(), port: server.address.port(), username: None, password: None }
+ }
+diff --git a/crates/mtproto-engine/tests/http_offline_cost.rs b/crates/mtproto-engine/tests/http_offline_cost.rs
+index 9061f04..77438d9 100644
+--- a/crates/mtproto-engine/tests/http_offline_cost.rs
++++ b/crates/mtproto-engine/tests/http_offline_cost.rs
+@@ -12,6 +12,10 @@ use mtproto_engine::{
+ };
+ use mtproto_testserver::*;
+ 
++#[path = "support/cpu_time.rs"]
++mod cpu_time;
++use cpu_time::cpu_seconds;
++
+ #[derive(Default)]
+ struct Collector {
+     events: Mutex<Vec<(SessionHandle, EngineEvent)>>,
+@@ -31,13 +35,6 @@ impl EngineCallbacks for Collector {
+     }
+ }
+ 
+-fn cpu_seconds() -> f64 {
+-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+-    let seconds = |time: libc::timeval| time.tv_sec as f64 + time.tv_usec as f64 / 1e6;
+-    seconds(usage.ru_utime) + seconds(usage.ru_stime)
+-}
+-
+ fn start_cutter() -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
+     use std::io::Read;
+     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+diff --git a/crates/mtproto-engine/tests/http_route_check_cost.rs b/crates/mtproto-engine/tests/http_route_check_cost.rs
+index ee0890d..8ad67f4 100644
+--- a/crates/mtproto-engine/tests/http_route_check_cost.rs
++++ b/crates/mtproto-engine/tests/http_route_check_cost.rs
+@@ -14,6 +14,10 @@ use mtproto_engine::{
+ };
+ use mtproto_testserver::*;
+ 
++#[path = "support/cpu_time.rs"]
++mod cpu_time;
++use cpu_time::cpu_seconds;
++
+ struct Quiet;
+ 
+ impl EngineCallbacks for Quiet {
+@@ -25,13 +29,6 @@ impl EngineCallbacks for Quiet {
+     }
+ }
+ 
+-fn cpu_seconds() -> f64 {
+-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+-    let seconds = |time: libc::timeval| time.tv_sec as f64 + time.tv_usec as f64 / 1e6;
+-    seconds(usage.ru_utime) + seconds(usage.ru_stime)
+-}
+-
+ fn measure(seconds: f64) -> f64 {
+     let started = cpu_seconds();
+     std::thread::sleep(Duration::from_secs_f64(seconds));
+diff --git a/crates/mtproto-engine/tests/http_routes.rs b/crates/mtproto-engine/tests/http_routes.rs
+index 3011728..891af4c 100644
+--- a/crates/mtproto-engine/tests/http_routes.rs
++++ b/crates/mtproto-engine/tests/http_routes.rs
+@@ -12,6 +12,10 @@ use mtproto_engine::{
+ };
+ use mtproto_testserver::*;
+ 
++#[path = "support/cpu_time.rs"]
++mod cpu_time;
++use cpu_time::cpu_seconds;
++
+ type Upstream = (std::net::TcpStream, Vec<u8>);
+ 
+ mod middlebox;
+@@ -89,13 +93,6 @@ fn engine(collector: &Arc<Collector>) -> Engine {
+     Engine::new(EngineConfig { worker_threads: 1, ..EngineConfig::default() }, collector.clone()).unwrap()
+ }
+ 
+-fn cpu_seconds() -> f64 {
+-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+-    let seconds = |time: libc::timeval| time.tv_sec as f64 + time.tv_usec as f64 / 1e6;
+-    seconds(usage.ru_utime) + seconds(usage.ru_stime)
+-}
+-
+ fn proxy_named(server: &TestServer, host: &str) -> ProxyConfig {
+     ProxyConfig::Http { host: host.into(), port: server.address.port(), username: None, password: None }
+ }
+diff --git a/crates/mtproto-engine/tests/http_stranded_handshake_cost.rs b/crates/mtproto-engine/tests/http_stranded_handshake_cost.rs
+index 56cf451..4429081 100644
+--- a/crates/mtproto-engine/tests/http_stranded_handshake_cost.rs
++++ b/crates/mtproto-engine/tests/http_stranded_handshake_cost.rs
+@@ -15,6 +15,10 @@ use mtproto_engine::{
+ };
+ use mtproto_testserver::*;
+ 
++#[path = "support/cpu_time.rs"]
++mod cpu_time;
++use cpu_time::cpu_seconds;
++
+ #[derive(Default)]
+ struct Collector {
+     events: Mutex<Vec<(Instant, EngineEvent)>>,
+@@ -32,13 +36,6 @@ impl EngineCallbacks for Collector {
+     }
+ }
+ 
+-fn cpu_seconds() -> f64 {
+-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+-    let seconds = |time: libc::timeval| time.tv_sec as f64 + time.tv_usec as f64 / 1e6;
+-    seconds(usage.ru_utime) + seconds(usage.ru_stime)
+-}
+-
+ fn read_message(stream: &mut TcpStream, buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
+     let mut scratch = vec![0u8; 65536];
+     loop {
+diff --git a/crates/mtproto-engine/tests/idle_cost.rs b/crates/mtproto-engine/tests/idle_cost.rs
+index c955e82..8a36ec1 100644
+--- a/crates/mtproto-engine/tests/idle_cost.rs
++++ b/crates/mtproto-engine/tests/idle_cost.rs
+@@ -12,6 +12,11 @@ use mtproto_engine::{
+ };
+ use mtproto_testserver::*;
+ 
++#[path = "support/cpu_time.rs"]
++mod cpu_time;
++#[cfg(not(windows))]
++use cpu_time::cpu_seconds;
++
+ #[derive(Default)]
+ struct Collector {
+     completed: Mutex<usize>,
+@@ -44,11 +49,11 @@ impl Collector {
+     }
+ }
+ 
++/// On Windows the CPU time of the engine's one reactor thread: the polling of the test server and netsim alone
++/// costs more than the budget there. The window has one engine, its worker running throughout, and IP literals only.
++#[cfg(windows)]
+ fn cpu_seconds() -> f64 {
+-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+-    let seconds = |time: libc::timeval| time.tv_sec as f64 + time.tv_usec as f64 / 1e6;
+-    seconds(usage.ru_utime) + seconds(usage.ru_stime)
++    cpu_time::reactor_cpu_seconds(1)
+ }
+ 
+ fn request(id: u64, timeout_timer: bool) -> RpcRequest {
+diff --git a/crates/mtproto-engine/tests/paused_cost.rs b/crates/mtproto-engine/tests/paused_cost.rs
+index e97eb44..064b9da 100644
+--- a/crates/mtproto-engine/tests/paused_cost.rs
++++ b/crates/mtproto-engine/tests/paused_cost.rs
+@@ -14,6 +14,11 @@ use mtproto_engine::{
+ };
+ use mtproto_testserver::*;
+ 
++#[path = "support/cpu_time.rs"]
++mod cpu_time;
++#[cfg(not(windows))]
++use cpu_time::cpu_seconds;
++
+ mod middlebox;
+ 
+ #[derive(Default)]
+@@ -62,11 +67,11 @@ fn failed(events: &[(SessionHandle, EngineEvent)], id: u64) -> bool {
+     events.iter().any(|(_, event)| matches!(event, EngineEvent::Rpc(RpcEvent::Failed { id: done, .. }) if done.0 == id))
+ }
+ 
++/// On Windows the CPU time of the engine's one reactor thread: the test server's own polling costs about the
++/// lost-destroy budget there. Every window has one engine, its worker running throughout, and IP literals only.
++#[cfg(windows)]
+ fn cpu_seconds() -> f64 {
+-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+-    let seconds = |time: libc::timeval| time.tv_sec as f64 + time.tv_usec as f64 / 1e6;
+-    seconds(usage.ru_utime) + seconds(usage.ru_stime)
++    cpu_time::reactor_cpu_seconds(1)
+ }
+ 
+ fn measure(seconds: f64) -> f64 {
+diff --git a/crates/mtproto-engine/tests/pfs_idle_cost.rs b/crates/mtproto-engine/tests/pfs_idle_cost.rs
+index 7cfa30c..c3d31af 100644
+--- a/crates/mtproto-engine/tests/pfs_idle_cost.rs
++++ b/crates/mtproto-engine/tests/pfs_idle_cost.rs
+@@ -13,6 +13,10 @@ use mtproto_engine::{
+ };
+ use mtproto_testserver::*;
+ 
++#[path = "support/cpu_time.rs"]
++mod cpu_time;
++use cpu_time::cpu_seconds;
++
+ #[derive(Default)]
+ struct Quiet {
+     events: Mutex<Vec<EngineEvent>>,
+@@ -29,13 +33,6 @@ impl EngineCallbacks for Quiet {
+     }
+ }
+ 
+-fn cpu_seconds() -> f64 {
+-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+-    let seconds = |time: libc::timeval| time.tv_sec as f64 + time.tv_usec as f64 / 1e6;
+-    seconds(usage.ru_utime) + seconds(usage.ru_stime)
+-}
+-
+ fn measure(seconds: f64) -> f64 {
+     let started = cpu_seconds();
+     std::thread::sleep(Duration::from_secs_f64(seconds));
+diff --git a/crates/mtproto-engine/tests/pfs_review_cost.rs b/crates/mtproto-engine/tests/pfs_review_cost.rs
+index c7a7906..6d29a83 100644
+--- a/crates/mtproto-engine/tests/pfs_review_cost.rs
++++ b/crates/mtproto-engine/tests/pfs_review_cost.rs
+@@ -13,6 +13,11 @@ use mtproto_engine::{
+ };
+ use mtproto_testserver::*;
+ 
++#[path = "support/cpu_time.rs"]
++mod cpu_time;
++#[cfg(not(windows))]
++use cpu_time::cpu_seconds;
++
+ struct Quiet;
+ 
+ impl EngineCallbacks for Quiet {
+@@ -24,11 +29,12 @@ impl EngineCallbacks for Quiet {
+     }
+ }
+ 
++/// On Windows the CPU time of the engine's one reactor thread: the test server's polling and its answers to the
++/// handshakes and binds cost about the budget there. The window has one engine, its worker running throughout,
++/// and IP literals only.
++#[cfg(windows)]
+ fn cpu_seconds() -> f64 {
+-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+-    let seconds = |time: libc::timeval| time.tv_sec as f64 + time.tv_usec as f64 / 1e6;
+-    seconds(usage.ru_utime) + seconds(usage.ru_stime)
++    cpu_time::reactor_cpu_seconds(1)
+ }
+ 
+ fn measure(seconds: f64) -> f64 {
+diff --git a/crates/mtproto-engine/tests/sec_audit_runtime.rs b/crates/mtproto-engine/tests/sec_audit_runtime.rs
+index 78b7771..72eb81d 100644
+--- a/crates/mtproto-engine/tests/sec_audit_runtime.rs
++++ b/crates/mtproto-engine/tests/sec_audit_runtime.rs
+@@ -19,6 +19,10 @@ use mtproto_testserver::*;
+ mod mitm;
+ use mitm::{Mitm, Mode};
+ 
++#[path = "support/cpu_time.rs"]
++mod cpu_time;
++use cpu_time::cpu_seconds as process_cpu_seconds;
++
+ #[derive(Default)]
+ struct Collector {
+     events: Mutex<Vec<(SessionHandle, EngineEvent)>>,
+@@ -229,15 +233,6 @@ fn injected_frames_never_touch_the_key_clock_or_salts() {
+     assert!(protocol_drops >= 1);
+ }
+ 
+-#[allow(unsafe_code)]
+-fn process_cpu_seconds() -> f64 {
+-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+-    let user = usage.ru_utime.tv_sec as f64 + usage.ru_utime.tv_usec as f64 * 1e-6;
+-    let system = usage.ru_stime.tv_sec as f64 + usage.ru_stime.tv_usec as f64 * 1e-6;
+-    user + system
+-}
+-
+ /// An on-path attacker floods a working connection with forged quick acks (4 bytes each, 31 bits of
+ /// guessed token): they cost little CPU, never count as liveness, and the session keeps working.
+ #[test]
+diff --git a/crates/mtproto-engine/tests/sec_rows_zeroize.rs b/crates/mtproto-engine/tests/sec_rows_zeroize.rs
+index 197202a..1e4dfe7 100644
+--- a/crates/mtproto-engine/tests/sec_rows_zeroize.rs
++++ b/crates/mtproto-engine/tests/sec_rows_zeroize.rs
+@@ -100,6 +100,36 @@ fn run_and_shut_down(server: &TestServer, setup: SessionSetup, watch: &freed_mem
+     let _ = server.with_stats(|stats| stats.connections);
+ }
+ 
++/// The filter the session tests scan with: what a thread named as an engine thread frees is scanned, what
++/// an unnamed thread or one named only `mtproto` frees is not.
++#[cfg(windows)]
++#[test]
++fn the_engine_thread_filter_scans_engine_threads_only() {
++    let secret: [u8; 32] = core::array::from_fn(|index| 0x47u8.wrapping_add((index as u8).wrapping_mul(31)));
++    let free_on = |name: Option<&str>| {
++        let builder = std::thread::Builder::new();
++        let builder = match name {
++            Some(name) => builder.name(name.into()),
++            None => builder,
++        };
++        let freed = builder.spawn(move || {
++            freed_memory::free_unwiped_copy(&secret);
++            freed_memory::is_engine_thread()
++        });
++        freed.unwrap().join().unwrap()
++    };
++    let mut watch = freed_memory::watch();
++    watch.secret("secret", &secret);
++    freed_memory::only_threads(freed_memory::is_engine_thread);
++    watch.arm_every_thread();
++    assert!(!free_on(None), "an unnamed thread is not an engine thread");
++    assert!(!free_on(Some("mtproto")), "a thread named mtproto is not an engine thread");
++    assert!(watch.found().is_empty(), "what other threads free is not scanned: {:?}", watch.found());
++    assert!(free_on(Some("mtproto-worker-0")), "a thread named mtproto-worker-0 is an engine thread");
++    watch.stop();
++    assert_eq!(watch.found(), ["secret"], "what an engine thread frees is scanned");
++}
++
+ #[test]
+ fn engine_secret_types_are_wiped_when_dropped() {
+     let key = proxy_key();
+@@ -141,6 +171,11 @@ fn engine_secret_types_are_wiped_when_dropped() {
+ }
+ 
+ #[test]
++#[cfg_attr(
++    all(windows, target_arch = "x86_64"),
++    ignore = "aes 0.8.4's autodetect Aes256 writes and wipes only the 480-byte AES-NI half of its 960-byte \
++              union on x86_64: the unused half in the connection's AesCtrs keeps stack bytes holding the secret"
++)]
+ fn a_session_with_an_address_secret_leaves_no_secret_in_freed_memory() {
+     let secret = [&[0xddu8][..], &proxy_key()].concat();
+     let key = random_key(301);
+@@ -174,6 +209,11 @@ fn a_session_through_an_authenticating_socks5_proxy_leaves_no_password_in_freed_
+ }
+ 
+ #[test]
++#[cfg_attr(
++    all(windows, target_arch = "x86_64"),
++    ignore = "aes 0.8.4's autodetect Aes256 writes and wipes only the 480-byte AES-NI half of its 960-byte \
++              union on x86_64: the unused half in the connection's AesCtrs keeps stack bytes holding the proxy key"
++)]
+ fn a_session_through_a_fake_tls_mtproxy_leaves_no_proxy_key_in_freed_memory() {
+     let mut secret = [&[0xeeu8][..], &proxy_key()].concat();
+     secret.extend_from_slice(b"www.example.com");
+diff --git a/crates/mtproto-engine/tests/support/cpu_time.rs b/crates/mtproto-engine/tests/support/cpu_time.rs
+new file mode 100644
+index 0000000..fb15cc0
+--- /dev/null
++++ b/crates/mtproto-engine/tests/support/cpu_time.rs
+@@ -0,0 +1,109 @@
++//! CPU time in seconds for the tests' budgets: the user and system time of this whole process, the threads
++//! that already exited included, and on Windows also that of the engine's reactor threads alone.
++#![allow(dead_code, unsafe_code)]
++
++#[cfg(windows)]
++use windows_sys::Win32::Foundation::{FILETIME, GetLastError, HANDLE};
++
++#[cfg(not(windows))]
++pub fn cpu_seconds() -> f64 {
++    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
++    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
++    let seconds = |time: libc::timeval| time.tv_sec as f64 + time.tv_usec as f64 / 1e6;
++    seconds(usage.ru_utime) + seconds(usage.ru_stime)
++}
++
++/// Windows charges thread time in whole clock ticks, 15.625 ms by default.
++#[cfg(windows)]
++pub fn cpu_seconds() -> f64 {
++    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
++    let mut times = [FILETIME::default(); 4];
++    let [created, exited, kernel, user] = &mut times;
++    let read = unsafe { GetProcessTimes(GetCurrentProcess(), created, exited, kernel, user) };
++    assert_ne!(read, 0, "GetProcessTimes: {}", std::io::Error::last_os_error());
++    (units(kernel) + units(user)) as f64 / 1e7
++}
++
++/// The CPU time of this process's engine reactor threads, `mtproto-main` and `mtproto-worker-N`, which must
++/// be `expected_workers` running threads, charged in clock ticks as by `cpu_seconds`. Windows test servers
++/// and middleboxes poll on threads of their own at a cost above some idle budgets; this leaves them out.
++/// Only for a fixture whose engine runs the same workers from before its first reading until after its
++/// last and nothing of its own elsewhere meanwhile: no name lookup, no engine started or shut down.
++#[cfg(windows)]
++pub fn reactor_cpu_seconds(expected_workers: usize) -> f64 {
++    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE};
++    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
++        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
++    };
++    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
++    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
++    assert_ne!(snapshot, INVALID_HANDLE_VALUE, "CreateToolhelp32Snapshot: {}", std::io::Error::last_os_error());
++    let process = unsafe { GetCurrentProcessId() };
++    let mut entry = THREADENTRY32 { dwSize: size_of::<THREADENTRY32>() as u32, ..Default::default() };
++    let mut workers = Vec::new();
++    let mut listed = unsafe { Thread32First(snapshot, &mut entry) } != 0;
++    while listed {
++        if entry.th32OwnerProcessID == process {
++            workers.extend(reactor_thread(entry.th32ThreadID, process));
++        }
++        listed = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
++    }
++    let error = unsafe { GetLastError() };
++    unsafe { CloseHandle(snapshot) };
++    assert_eq!(error, ERROR_NO_MORE_FILES, "Thread32Next: {}", std::io::Error::from_raw_os_error(error as i32));
++    let names: Vec<&str> = workers.iter().map(|(name, _)| name.as_str()).collect();
++    assert_eq!(workers.len(), expected_workers, "engine reactor threads found: {names:?}");
++    workers.iter().map(|(_, units)| units).sum::<u64>() as f64 / 1e7
++}
++
++/// The name and CPU time, in 100 ns units, of thread `id` if it is a running reactor thread of `process`.
++#[cfg(windows)]
++fn reactor_thread(id: u32, process: u32) -> Option<(String, u64)> {
++    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, STILL_ACTIVE};
++    use windows_sys::Win32::System::Threading::{
++        GetExitCodeThread, GetProcessIdOfThread, GetThreadTimes, OpenThread, THREAD_QUERY_LIMITED_INFORMATION,
++    };
++    let thread = unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, id) };
++    if thread.is_null() {
++        // A thread that ended after the snapshot was taken is no running worker.
++        let error = unsafe { GetLastError() };
++        let message = std::io::Error::from_raw_os_error(error as i32);
++        assert_eq!(error, ERROR_INVALID_PARAMETER, "OpenThread {id}: {message}");
++        return None;
++    }
++    // Another process's thread when the one listed ended and its id was given out again.
++    let name = if unsafe { GetProcessIdOfThread(thread) } == process { description(thread) } else { String::new() };
++    let mut reactor = None;
++    if name == "mtproto-main" || name.starts_with("mtproto-worker-") {
++        let (mut times, mut code) = ([FILETIME::default(); 4], 0);
++        let [created, exited, kernel, user] = &mut times;
++        let read = unsafe { GetThreadTimes(thread, created, exited, kernel, user) };
++        assert_ne!(read, 0, "GetThreadTimes {name}: {}", std::io::Error::last_os_error());
++        let read = unsafe { GetExitCodeThread(thread, &mut code) };
++        assert_ne!(read, 0, "GetExitCodeThread {name}: {}", std::io::Error::last_os_error());
++        assert_eq!(code, STILL_ACTIVE as u32, "{name} ({id}) has ended");
++        reactor = Some((name, units(kernel) + units(user)));
++    }
++    unsafe { CloseHandle(thread) };
++    reactor
++}
++
++/// The thread's name: std makes it the thread's description, a copy Windows allocates.
++#[cfg(windows)]
++fn description(thread: HANDLE) -> String {
++    use windows_sys::Win32::Foundation::LocalFree;
++    use windows_sys::Win32::System::Threading::GetThreadDescription;
++    let mut text: *mut u16 = std::ptr::null_mut();
++    let result = unsafe { GetThreadDescription(thread, &mut text) };
++    assert!(result >= 0 && !text.is_null(), "GetThreadDescription: HRESULT {result:#x}");
++    let length = (0..).take_while(|&index| unsafe { *text.add(index) } != 0).count();
++    let name = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, length) });
++    unsafe { LocalFree(text.cast()) };
++    name
++}
++
++/// A FILETIME duration in its 100 ns units.
++#[cfg(windows)]
++fn units(time: &FILETIME) -> u64 {
++    (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
++}
+diff --git a/crates/mtproto-engine/tests/support/route_rig.rs b/crates/mtproto-engine/tests/support/route_rig.rs
+index e02d047..7f660f9 100644
+--- a/crates/mtproto-engine/tests/support/route_rig.rs
++++ b/crates/mtproto-engine/tests/support/route_rig.rs
+@@ -13,6 +13,9 @@ use mtproto_engine::{
+ };
+ use mtproto_testserver::*;
+ 
++#[path = "cpu_time.rs"]
++mod cpu_time;
++
+ #[derive(Default)]
+ pub struct Collector {
+     pub events: Mutex<Vec<(SessionHandle, EngineEvent)>>,
+@@ -156,10 +159,7 @@ pub fn engine(collector: &Arc<Collector>) -> Engine {
+ }
+ 
+ pub fn cpu_seconds() -> f64 {
+-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+-    let seconds = |time: libc::timeval| time.tv_sec as f64 + time.tv_usec as f64 / 1e6;
+-    seconds(usage.ru_utime) + seconds(usage.ru_stime)
++    cpu_time::cpu_seconds()
+ }
+ 
+ /// The route memory the engine stores, for one network known to block TCP since `at`.
+diff --git a/crates/mtproto-ffi/Cargo.toml b/crates/mtproto-ffi/Cargo.toml
+index 8b16bc3..95642b7 100644
+--- a/crates/mtproto-ffi/Cargo.toml
++++ b/crates/mtproto-ffi/Cargo.toml
+@@ -17,3 +17,8 @@ zeroize.workspace = true
+ [dev-dependencies]
+ mtproto-testserver = { path = "../mtproto-testserver" }
+ rustls = { workspace = true }
++
++# cl.exe for the C header layout check, and the freed-memory scanner's thread names.
++[target.'cfg(windows)'.dev-dependencies]
++find-msvc-tools = "=0.1.13"
++windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+diff --git a/crates/mtproto-ffi/tests/ffi.rs b/crates/mtproto-ffi/tests/ffi.rs
+index d0da713..85ef89c 100644
+--- a/crates/mtproto-ffi/tests/ffi.rs
++++ b/crates/mtproto-ffi/tests/ffi.rs
+@@ -183,15 +183,33 @@ int main(void) {
+ }
+ "#;
+     std::fs::write(&source, program).unwrap();
+-    let binary = out_dir.join("abi");
++    let binary = out_dir.join(format!("abi{}", std::env::consts::EXE_SUFFIX));
++    #[cfg(not(windows))]
+     let status = Command::new("clang")
+         .args(["-std=c11", "-I", header_dir, "-o"])
+         .arg(&binary)
+         .arg(&source)
+         .status()
+         .expect("clang");
++    // cl.exe for this test binary's architecture, run in the environment find-msvc-tools sets up for it.
++    #[cfg(windows)]
++    let status = {
++        let arch = if cfg!(target_arch = "x86") { "i686" } else { std::env::consts::ARCH };
++        let target = format!("{arch}-pc-windows-msvc");
++        find_msvc_tools::find(&target, "cl.exe")
++            .unwrap_or_else(|| panic!("no cl.exe for {target}"))
++            .args(["/nologo", "/std:c11", "/I", header_dir, "/Fe:"])
++            .arg(&binary)
++            .arg("/Fo:")
++            .arg(out_dir.join("abi.obj"))
++            .arg(&source)
++            .status()
++            .expect("cl.exe")
++    };
+     assert!(status.success());
+-    let output = String::from_utf8(Command::new(&binary).output().unwrap().stdout).unwrap();
++    let run = Command::new(&binary).output().unwrap();
++    assert!(run.status.success(), "{} exited with {}", binary.display(), run.status);
++    let output = String::from_utf8(run.stdout).unwrap();
+     let mut expected: Vec<(String, usize)> = vec![
+         ("MTBytes".into(), size_of::<MTBytes>()),
+         ("MTString".into(), size_of::<MTString>()),
+diff --git a/crates/mtproto-netsim/Cargo.toml b/crates/mtproto-netsim/Cargo.toml
+index 3937e37..23b68f9 100644
+--- a/crates/mtproto-netsim/Cargo.toml
++++ b/crates/mtproto-netsim/Cargo.toml
+@@ -9,5 +9,8 @@ publish.workspace = true
+ [dependencies]
+ libc = "=0.2.189"
+ 
++[target.'cfg(windows)'.dependencies]
++windows-sys = { version = "=0.61.2", features = ["Win32_Networking_WinSock"] }
++
+ [lints]
+ workspace = true
+diff --git a/crates/mtproto-netsim/src/lib.rs b/crates/mtproto-netsim/src/lib.rs
+index 27a3d9b..af8a618 100644
+--- a/crates/mtproto-netsim/src/lib.rs
++++ b/crates/mtproto-netsim/src/lib.rs
+@@ -2,7 +2,10 @@
+ 
+ use std::io::{ErrorKind, Read, Write};
+ use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
++#[cfg(not(windows))]
+ use std::os::fd::AsRawFd;
++#[cfg(windows)]
++use std::os::windows::io::AsRawSocket;
+ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel};
+ use std::sync::{Arc, Mutex};
+@@ -532,16 +535,7 @@ impl ConnectionControl {
+             return;
+         }
+         for stream in [&self.client, &self.upstream] {
+-            let linger = libc::linger { l_onoff: 1, l_linger: 0 };
+-            unsafe {
+-                libc::setsockopt(
+-                    stream.as_raw_fd(),
+-                    libc::SOL_SOCKET,
+-                    libc::SO_LINGER,
+-                    &linger as *const libc::linger as *const libc::c_void,
+-                    std::mem::size_of::<libc::linger>() as libc::socklen_t,
+-                );
+-            }
++            reset_on_close(stream);
+             let _ = stream.shutdown(Shutdown::Both);
+         }
+     }
+@@ -807,6 +801,7 @@ fn socks5_accept(client: &mut TcpStream) -> Option<SocketAddr> {
+     Some(target)
+ }
+ 
++#[cfg(not(windows))]
+ fn set_receive_buffer(socket: &impl AsRawFd, bytes: usize) {
+     let value = bytes.min(i32::MAX as usize) as libc::c_int;
+     unsafe {
+@@ -820,6 +815,52 @@ fn set_receive_buffer(socket: &impl AsRawFd, bytes: usize) {
+     }
+ }
+ 
++#[cfg(windows)]
++fn set_receive_buffer(socket: &impl AsRawSocket, bytes: usize) {
++    use windows_sys::Win32::Networking::WinSock::{SO_RCVBUF, SOCKET, SOL_SOCKET, setsockopt};
++    let value = bytes.min(i32::MAX as usize) as i32;
++    unsafe {
++        setsockopt(
++            socket.as_raw_socket() as SOCKET,
++            SOL_SOCKET,
++            SO_RCVBUF,
++            &value as *const i32 as *const u8,
++            std::mem::size_of::<i32>() as i32,
++        );
++    }
++}
++
++/// A zero linger: closing the socket then resets the connection instead of finishing it.
++#[cfg(not(windows))]
++fn reset_on_close(stream: &TcpStream) {
++    let linger = libc::linger { l_onoff: 1, l_linger: 0 };
++    unsafe {
++        libc::setsockopt(
++            stream.as_raw_fd(),
++            libc::SOL_SOCKET,
++            libc::SO_LINGER,
++            &linger as *const libc::linger as *const libc::c_void,
++            std::mem::size_of::<libc::linger>() as libc::socklen_t,
++        );
++    }
++}
++
++/// A zero linger: closing the socket then resets the connection instead of finishing it.
++#[cfg(windows)]
++fn reset_on_close(stream: &TcpStream) {
++    use windows_sys::Win32::Networking::WinSock::{LINGER, SO_LINGER, SOCKET, SOL_SOCKET, setsockopt};
++    let linger = LINGER { l_onoff: 1, l_linger: 0 };
++    unsafe {
++        setsockopt(
++            stream.as_raw_socket() as SOCKET,
++            SOL_SOCKET,
++            SO_LINGER,
++            &linger as *const LINGER as *const u8,
++            std::mem::size_of::<LINGER>() as i32,
++        );
++    }
++}
++
+ /// The client closed the connection while it was being set up, without sending anything.
+ fn client_gone(client: &TcpStream) -> bool {
+     let _ = client.set_nonblocking(true);
+@@ -843,16 +884,7 @@ fn handle_connection(mut client: TcpStream, upstream: Upstream, shared: Arc<Shar
+     let outage = shared.outage_until.lock().unwrap().is_some_and(|until| Instant::now() < until);
+     if outage || random.unit() < profile.refuse_probability {
+         shared.refused.fetch_add(1, Ordering::Relaxed);
+-        let linger = libc::linger { l_onoff: 1, l_linger: 0 };
+-        unsafe {
+-            libc::setsockopt(
+-                client.as_raw_fd(),
+-                libc::SOL_SOCKET,
+-                libc::SO_LINGER,
+-                &linger as *const libc::linger as *const libc::c_void,
+-                std::mem::size_of::<libc::linger>() as libc::socklen_t,
+-            );
+-        }
++        reset_on_close(&client);
+         return;
+     }
+     let target = match upstream {

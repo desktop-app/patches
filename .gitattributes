@@ -3,3 +3,4 @@ libvpx/0002* eol=lf
 libvpx/0005* eol=lf
 libvpx/0007* eol=lf
 wallet-engine.patch eol=lf
+mtproto-engine.patch eol=lf
