@@ -30,8 +30,13 @@ addresses at http_port; an empty list allows no plain HTTP. Host-ordered
 dependents: a request with invoke_after and
 MTRequestFlagSurfaceDependencyWaits (1 << 8) ends in MTEventKindFailed
 with the server's code and text on MSG_WAIT_TIMEOUT or MSG_WAIT_FAILED,
-instead of waiting for its dependency and going again. Reset causes:
-MTEventKindUpdatesReset (13) gives its cause in code,
+instead of waiting for its dependency and going again. A request whose
+invoke_after names one failed as 500 TEMP_KEY_ROTATED by a key change, or
+refused this way, is refused before it goes out: with the flag as a local
+400 MSG_WAIT_FAILED, each time, also once the named request went again and
+completed, so the host holds it while it has that request and then sends it
+without invoke_after; without the flag as 500 TEMP_KEY_ROTATED, as before.
+Reset causes: MTEventKindUpdatesReset (13) gives its cause in code,
 MTUpdatesResetServerSession (1), MTUpdatesResetLocalSession (2),
 MTUpdatesResetUpdatesLost (3) or MTUpdatesResetUpdatesTooLong (4), and
 for 1 carries the server's own new_session_created message, as received,
@@ -58,6 +63,8 @@ mtproto-core rpc::tests::a_dependent_of_a_surfaced_failure_reaches_the_host_when
 mtproto-core rpc::tests::without_host_ordering_a_dependent_of_a_surfaced_failure_goes_again_at_once,
 mtproto-ffi tests::bit_8_alone_asks_for_dependency_waits,
 mtproto-ffi ffi_abi6::a_dependent_of_a_failed_request_reaches_the_host_that_asks_for_it,
+mtproto-engine pfs_host_keys::a_call_chained_to_a_call_failed_by_a_key_change_is_a_dependency_wait_for_a_host_that_orders_dependents,
+mtproto-engine pfs_host_keys::without_host_ordering_a_call_chained_to_a_call_failed_by_a_key_change_still_fails_as_rotated,
 mtproto-testserver tests::the_invoke_after_msg_id_is_kept_through_gzip,
 mtproto-testserver tests::a_session_remembers_the_latest_failed_queries,
 mtproto-core session::tests::new_session_created_hands_over_the_message_as_received,
@@ -143,21 +150,23 @@ index 110eeb7..8e52321 100644
  [lints]
  workspace = true
 diff --git a/crates/mtproto-core/src/rpc/mod.rs b/crates/mtproto-core/src/rpc/mod.rs
-index 91e26c3..6e32bc0 100644
+index 91e26c3..8af184a 100644
 --- a/crates/mtproto-core/src/rpc/mod.rs
 +++ b/crates/mtproto-core/src/rpc/mod.rs
-@@ -59,6 +59,10 @@ pub struct RequestFlags {
+@@ -59,6 +59,12 @@ pub struct RequestFlags {
      pub expected_response_size: u32,
      pub without_updates: bool,
      pub delegate_retry_decisions: bool,
 +    /// `MSG_WAIT_TIMEOUT`/`MSG_WAIT_FAILED` of a request with `invoke_after` reach the host as `Failed`
 +    /// with the server's code and message, for a host that orders dependent requests itself; otherwise
-+    /// the request waits for its dependency and goes again.
++    /// the request waits for its dependency and goes again. The engine's session refuses a request
++    /// chained to one failed as `TEMP_KEY_ROTATED` before it goes out: with this flag as a local
++    /// `400 MSG_WAIT_FAILED` the host orders like the server's, otherwise as `500 TEMP_KEY_ROTATED`.
 +    pub surface_dependency_waits: bool,
  }
  
  impl Default for RequestFlags {
-@@ -73,6 +77,7 @@ impl Default for RequestFlags {
+@@ -73,6 +79,7 @@ impl Default for RequestFlags {
              expected_response_size: 0,
              without_updates: false,
              delegate_retry_decisions: false,
@@ -165,7 +174,7 @@ index 91e26c3..6e32bc0 100644
          }
      }
  }
-@@ -91,6 +96,19 @@ pub enum VerificationKind {
+@@ -91,6 +98,19 @@ pub enum VerificationKind {
      Recaptcha { method: String, site_key: String },
  }
  
@@ -185,7 +194,7 @@ index 91e26c3..6e32bc0 100644
  #[derive(Debug, Clone, PartialEq)]
  pub enum RpcEvent {
      Completed {
-@@ -129,7 +147,12 @@ pub enum RpcEvent {
+@@ -129,7 +149,12 @@ pub enum RpcEvent {
          id: RequestId,
          kind: VerificationKind,
      },
@@ -199,7 +208,7 @@ index 91e26c3..6e32bc0 100644
      Update {
          body: Vec<u8>,
      },
-@@ -183,7 +206,9 @@ pub enum SessionRole {
+@@ -183,7 +208,9 @@ pub enum SessionRole {
  struct RequestState {
      request: RpcRequest,
      seq: u64,
@@ -210,7 +219,7 @@ index 91e26c3..6e32bc0 100644
      in_session: bool,
      not_before: f64,
      server_errors: u32,
-@@ -209,7 +234,7 @@ impl RequestState {
+@@ -209,7 +236,7 @@ impl RequestState {
          Self {
              request,
              seq,
@@ -219,7 +228,7 @@ index 91e26c3..6e32bc0 100644
              in_session: false,
              not_before: 0.0,
              server_errors: 0,
-@@ -410,7 +435,9 @@ impl RpcClient {
+@@ -410,7 +437,9 @@ impl RpcClient {
              .requests
              .iter()
              .filter(|(id, state)| {
@@ -230,7 +239,7 @@ index 91e26c3..6e32bc0 100644
              })
              .map(|(id, _)| *id)
              .collect();
-@@ -499,7 +526,7 @@ impl RpcClient {
+@@ -499,7 +528,7 @@ impl RpcClient {
          state.seq = self.next_seq;
          self.next_seq += 1;
          state.in_session = false;
@@ -239,7 +248,7 @@ index 91e26c3..6e32bc0 100644
          self.order.insert(state.seq, id);
          self.parked.insert(state.seq, id);
          self.requests.insert(id, state);
-@@ -673,13 +700,10 @@ impl RpcClient {
+@@ -673,13 +702,10 @@ impl RpcClient {
              let state = self.requests.get_mut(&id).expect("ready request exists");
              let without_updates = state.request.flags.without_updates
                  || environment.is_some_and(|environment| environment.disable_updates);
@@ -257,7 +266,7 @@ index 91e26c3..6e32bc0 100644
              state.in_session = true;
              state.rejected_key = None;
              state.sent_at_unix = now.unix;
-@@ -762,12 +786,14 @@ impl RpcClient {
+@@ -762,12 +788,14 @@ impl RpcClient {
              SessionEvent::Result { id, body, response_msg_id, .. } => {
                  let id = RequestId::from(id);
                  if let Some(state) = self.finish(id) {
@@ -277,7 +286,7 @@ index 91e26c3..6e32bc0 100644
                      }
                      self.events.push_back(RpcEvent::Completed {
                          id,
-@@ -793,14 +819,23 @@ impl RpcClient {
+@@ -793,14 +821,23 @@ impl RpcClient {
                  if self.role == SessionRole::Cdn => {}
              SessionEvent::Update { body, .. } => {
                  if is_updates_too_long(&body) {
@@ -306,7 +315,7 @@ index 91e26c3..6e32bc0 100644
              }
              SessionEvent::TimeDifferenceUpdated { difference, .. } => {
                  self.events.push_back(RpcEvent::TimeDifferenceUpdated { difference });
-@@ -858,6 +893,10 @@ impl RpcClient {
+@@ -858,6 +895,10 @@ impl RpcClient {
              }
          }
          if (message == "MSG_WAIT_TIMEOUT" || message == "MSG_WAIT_FAILED") && dependency.is_some() {
@@ -1662,10 +1671,40 @@ index c1ab28f..d1ac323 100644
      #[test]
      fn long_polls_are_spread_over_the_period() {
 diff --git a/crates/mtproto-engine/src/session_runtime.rs b/crates/mtproto-engine/src/session_runtime.rs
-index 69a7dc6..94a2874 100644
+index 69a7dc6..b09ef5d 100644
 --- a/crates/mtproto-engine/src/session_runtime.rs
 +++ b/crates/mtproto-engine/src/session_runtime.rs
-@@ -603,6 +603,22 @@ impl SessionRuntime {
+@@ -151,7 +151,8 @@ pub struct SessionRuntime {
+     /// Events a dropped client still held for the host, delivered with the next pump.
+     undelivered: Vec<RpcEvent>,
+     /// Requests failed as `TEMP_KEY_ROTATED`, newest last: a call sent later with `invoke_after` one
+-    /// of them fails the same way, so that the host sends the chain again in its order.
++    /// of them fails too and is added, as `TEMP_KEY_ROTATED` or, under `surface_dependency_waits`, as
++    /// `400 MSG_WAIT_FAILED`, so that the host sends the chain again in its order.
+     rotated: VecDeque<RequestId>,
+     pending_plain: VecDeque<Vec<u8>>,
+     handshake: Option<Handshake>,
+@@ -476,10 +477,17 @@ impl SessionRuntime {
+         }
+         if request.invoke_after.is_some_and(|after| self.rotated.contains(&after)) {
+             self.note_rotated(request.id);
++            // A host ordering dependents itself holds it, as after the server's MSG_WAIT_FAILED, while it has
++            // the dependency and then sends it unchained; TEMP_KEY_ROTATED it retries with the same chain.
++            let (code, message) = if request.flags.surface_dependency_waits {
++                (400, "MSG_WAIT_FAILED")
++            } else {
++                (500, pfs::PFS_ROTATED_ERROR)
++            };
+             self.undelivered.push(RpcEvent::Failed {
+                 id: request.id,
+-                code: 500,
+-                message: pfs::PFS_ROTATED_ERROR.to_string(),
++                code,
++                message: message.to_string(),
+                 response_time: now.unix + self.time_difference(),
+                 duration: 0.0,
+             });
+@@ -603,6 +611,22 @@ impl SessionRuntime {
          }
      }
  
@@ -1688,7 +1727,7 @@ index 69a7dc6..94a2874 100644
      pub fn set_obfuscation_dc_id(&mut self, dc_id: i16, now: Now, registry: &Registry) {
          if self.setup.obfuscation_dc_id != dc_id {
              self.setup.obfuscation_dc_id = dc_id;
-@@ -1606,6 +1622,15 @@ impl SessionRuntime {
+@@ -1606,6 +1630,15 @@ impl SessionRuntime {
              return;
          }
          if verified {
@@ -2836,6 +2875,149 @@ index e97eb44..064b9da 100644
  }
  
  fn measure(seconds: f64) -> f64 {
+diff --git a/crates/mtproto-engine/tests/pfs_host_keys.rs b/crates/mtproto-engine/tests/pfs_host_keys.rs
+index fbe7814..0f523d5 100644
+--- a/crates/mtproto-engine/tests/pfs_host_keys.rs
++++ b/crates/mtproto-engine/tests/pfs_host_keys.rs
+@@ -64,6 +64,14 @@ impl Collector {
+         })
+     }
+ 
++    fn failures(&self, session: SessionHandle, id: u64) -> Vec<(i32, String)> {
++        failures(&self.events.lock().unwrap(), session, id)
++    }
++
++    fn wait_failures(&self, session: SessionHandle, id: u64, count: usize) -> bool {
++        self.wait(WAIT, |events| failures(events, session, id).len() >= count)
++    }
++
+     fn in_use(&self, session: SessionHandle) -> Vec<(i64, bool)> {
+         self.of(session)
+             .iter()
+@@ -139,6 +147,19 @@ impl Collector {
+ 
+ const WAIT: Duration = Duration::from_secs(15);
+ 
++/// The code and message of each failure the session reported for `id`, in order.
++fn failures(events: &[(SessionHandle, EngineEvent)], session: SessionHandle, id: u64) -> Vec<(i32, String)> {
++    events
++        .iter()
++        .filter_map(|(s, event)| match event {
++            EngineEvent::Rpc(RpcEvent::Failed { id: failed, code, message, .. }) if *s == session && failed.0 == id => {
++                Some((*code, message.clone()))
++            }
++            _ => None,
++        })
++        .collect()
++}
++
+ fn request(id: u64) -> RpcRequest {
+     RpcRequest {
+         id: RequestId(id),
+@@ -466,3 +487,103 @@ fn a_call_chained_to_a_call_failed_by_a_key_change_fails_the_same_way() {
+         "nothing of the chain ran ahead of the call it waits for"
+     );
+ }
++
++/// A call as a host that runs every retry itself sends it (tdesktop's `MTP::Instance`), ordering the
++/// calls chained with `invoke_after` itself too when `surface_dependency_waits` is set.
++fn host_request(id: u64, tag: u32, invoke_after: Option<u64>, surface_dependency_waits: bool) -> RpcRequest {
++    RpcRequest {
++        id: RequestId(id),
++        body: call(tag, &id.to_le_bytes()),
++        flags: RequestFlags {
++            automatic_flood_wait: false,
++            retry_server_errors: false,
++            surface_dependency_waits,
++            ..RequestFlags::default()
++        },
++        invoke_after: invoke_after.map(RequestId),
++    }
++}
++
++/// Call 10 is still unanswered when a class change makes the temporary key go: it fails as
++/// `TEMP_KEY_ROTATED`, whatever the host's dependency flag says.
++fn fail_call_10_by_a_key_change(engine: &Engine, collector: &Collector, session: SessionHandle, surface: bool) {
++    engine.send(session, host_request(1, 1, None, surface));
++    assert!(collector.wait_completed(session, 1));
++    engine.send(session, host_request(10, TAG_NEVER, None, surface));
++    std::thread::sleep(Duration::from_millis(500));
++    engine.set_obfuscation_dc_id(session, -2);
++    assert!(collector.wait_failures(session, 10, 1), "events {:?}", collector.of(session));
++    assert_eq!(collector.failures(session, 10), [(500, "TEMP_KEY_ROTATED".to_string())]);
++}
++
++/// A host that orders dependents itself keeps call 10 and sends it again. Calls chained to it must
++/// fail as a dependency wait from the server would: the host holds them while it has call 10 and sends
++/// them without `invoke_after` once call 10 is done. As `TEMP_KEY_ROTATED` the host would only retry
++/// them with the same `invoke_after`, and they would never go.
++#[test]
++fn a_call_chained_to_a_call_failed_by_a_key_change_is_a_dependency_wait_for_a_host_that_orders_dependents() {
++    let server = server();
++    let collector = Arc::new(Collector::default());
++    let engine = engine(&collector);
++    let session = engine.create_session(setup(&server, Some(perm()), pfs(86_400)));
++    fail_call_10_by_a_key_change(&engine, &collector, session, true);
++    let wait_failed = (400, "MSG_WAIT_FAILED".to_string());
++
++    engine.send(session, host_request(30, 30, Some(10), true));
++    engine.send(session, host_request(31, 31, Some(30), true));
++    assert!(collector.wait_failures(session, 31, 1), "events {:?}", collector.of(session));
++    assert_eq!(collector.failures(session, 30), [wait_failed.clone()], "not TEMP_KEY_ROTATED");
++    assert_eq!(collector.failures(session, 31), [wait_failed.clone()], "the chain after the refused call waits too");
++
++    engine.send(session, host_request(10, 10, None, true));
++    assert!(collector.wait_completed(session, 10), "events {:?}", collector.of(session));
++    engine.send(session, host_request(30, 30, Some(10), true));
++    assert!(collector.wait_failures(session, 30, 2), "events {:?}", collector.of(session));
++    assert_eq!(
++        collector.failures(session, 30),
++        [wait_failed.clone(), wait_failed],
++        "still refused once call 10 is done, as a wait the host releases"
++    );
++    assert_eq!(server.executions(30) + server.executions(31), 0);
++
++    engine.send(session, host_request(30, 30, None, true));
++    engine.send(session, host_request(31, 31, None, true));
++    assert!(collector.wait_completed(session, 30) && collector.wait_completed(session, 31));
++    assert_eq!((server.executions(30), server.executions(31)), (1, 1));
++
++    let chained = server.with_stats(|stats| stats.invoke_after);
++    engine.send(session, host_request(50, TAG_SLOW, None, true));
++    engine.send(session, host_request(51, 51, Some(50), true));
++    assert!(collector.wait_completed(session, 50) && collector.wait_completed(session, 51));
++    assert!(collector.failures(session, 51).is_empty());
++    assert!(
++        server.with_stats(|stats| stats.invoke_after) > chained,
++        "a call chained to one the key change did not touch keeps its invokeAfterMsg"
++    );
++}
++
++/// The same with a host that leaves dependency waits to the session: the chained call fails as
++/// `TEMP_KEY_ROTATED`, before and after call 10 is done, as it did.
++#[test]
++fn without_host_ordering_a_call_chained_to_a_call_failed_by_a_key_change_still_fails_as_rotated() {
++    let server = server();
++    let collector = Arc::new(Collector::default());
++    let engine = engine(&collector);
++    let session = engine.create_session(setup(&server, Some(perm()), pfs(86_400)));
++    fail_call_10_by_a_key_change(&engine, &collector, session, false);
++    let rotated = (500, "TEMP_KEY_ROTATED".to_string());
++
++    engine.send(session, host_request(30, 30, Some(10), false));
++    assert!(collector.wait_failures(session, 30, 1), "events {:?}", collector.of(session));
++    assert_eq!(collector.failures(session, 30), [rotated.clone()]);
++
++    engine.send(session, host_request(10, 10, None, false));
++    assert!(collector.wait_completed(session, 10), "events {:?}", collector.of(session));
++    engine.send(session, host_request(30, 30, Some(10), false));
++    assert!(collector.wait_failures(session, 30, 2), "events {:?}", collector.of(session));
++    assert_eq!(collector.failures(session, 30), [rotated.clone(), rotated]);
++
++    engine.send(session, host_request(30, 30, None, false));
++    assert!(collector.wait_completed(session, 30));
++    assert_eq!(server.executions(30), 1);
++}
 diff --git a/crates/mtproto-engine/tests/pfs_idle_cost.rs b/crates/mtproto-engine/tests/pfs_idle_cost.rs
 index 7cfa30c..c3d31af 100644
 --- a/crates/mtproto-engine/tests/pfs_idle_cost.rs
@@ -3171,21 +3353,26 @@ index 8b16bc3..95642b7 100644
 +find-msvc-tools = "=0.1.13"
 +windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
 diff --git a/crates/mtproto-ffi/include/mtproto_engine.h b/crates/mtproto-ffi/include/mtproto_engine.h
-index 4f4afe5..a8a9440 100644
+index 4f4afe5..4a4d80c 100644
 --- a/crates/mtproto-ffi/include/mtproto_engine.h
 +++ b/crates/mtproto-ffi/include/mtproto_engine.h
-@@ -138,6 +138,10 @@ enum {
+@@ -138,6 +138,15 @@ enum {
      MTRequestFlagTimeoutTimer = 1 << 5,
      MTRequestFlagWithoutUpdates = 1 << 6,
      MTRequestFlagDelegateRetryDecisions = 1 << 7,
 +    /* MSG_WAIT_TIMEOUT and MSG_WAIT_FAILED of a request with invoke_after come to the host as
 +       MTEventKindFailed with the server's code and text, for a host that orders dependent requests
-+       itself; without it the session waits for the request's dependency and sends it again. */
++       itself; without it the session waits for the request's dependency and sends it again.
++       A request whose invoke_after names one that failed as 500 TEMP_KEY_ROTATED (or was refused this
++       way) is refused at once, without going out: with this flag as 400 MSG_WAIT_FAILED, each time it
++       comes with that invoke_after, also after the named request went again and completed, so the host
++       holds it while it still has that request and then sends it without invoke_after; without the
++       flag as 500 TEMP_KEY_ROTATED. */
 +    MTRequestFlagSurfaceDependencyWaits = 1 << 8,
  };
  
  typedef struct {
-@@ -161,6 +165,9 @@ typedef enum {
+@@ -161,6 +170,9 @@ typedef enum {
      MTEventKindInitHashStored = 10,
      MTEventKindInitHashCleared = 11,
      MTEventKindVerificationRequired = 12,
@@ -3195,7 +3382,7 @@ index 4f4afe5..a8a9440 100644
      MTEventKindUpdatesReset = 13,
      MTEventKindUpdate = 14,
      MTEventKindTimeDifferenceUpdated = 15,
-@@ -213,6 +220,18 @@ enum {
+@@ -213,6 +225,18 @@ enum {
      MTAuthKeyCreatedPermanent = 1 << 1,
  };
  
@@ -3214,7 +3401,7 @@ index 4f4afe5..a8a9440 100644
  enum {
      MTReleasedMayHaveRun = 1 << 0,
  };
-@@ -326,6 +345,11 @@ enum {
+@@ -326,6 +350,11 @@ enum {
  /* Which transports the session may use; HTTP goes to `http_port`, or to each address's own port
     when it is 0. Auto stays on TCP while TCP answers and moves to HTTP while it does not. */
  void mt_session_set_transport(MTEngine *engine, MTSessionHandle session, uint8_t transport, uint16_t http_port);
