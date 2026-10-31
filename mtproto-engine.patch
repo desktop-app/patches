@@ -1,5 +1,6 @@
 mtproto-engine: build and pass its tests on Windows, Windows 7 included,
-and abort on a panic on an engine thread.
+abort on a panic on an engine thread, and give the host explicit HTTP
+addresses, host-ordered dependents and reset causes (ABI 6).
 
 Upstream: https://github.com/TelegramMessenger/mtproto-engine
 Branch: main
@@ -10,7 +11,7 @@ Apply with `git apply` right after checking out that revision.
 Builds for i686-win7-windows-msvc and x86_64-win7-windows-msvc (std built
 from source with -Z build-std and +crt-static) and aarch64-pc-windows-msvc.
 Every hunk is Windows-gated, or moves a test helper unchanged off Windows,
-except one change, made for every platform: the engine's threads
+except two changes, made for every platform. First, the engine's threads
 (mtproto-main, mtproto-worker-N, mtproto-resolver) run under an
 abort-on-panic guard, so a host built with panic = "unwind" ends the
 process on a panic there, as the engine's own panic = "abort" profile does,
@@ -20,6 +21,51 @@ mtproto-engine engine_thread::tests::a_panic_on_an_engine_thread_aborts_the_proc
 mtproto-engine engine_thread::tests::a_panic_payload_that_panics_on_drop_still_aborts_the_process.
 On Windows run the suites with libtest's serial mode:
   cargo test -p mtproto-core -p mtproto-engine -p mtproto-ffi -- --test-threads=1
+
+Second, ABI 6 (mt_engine_abi_version() returns 6; no struct layout
+changes) gives the host three capabilities and one fix. Explicit HTTP
+candidates: mt_session_set_http_addresses names a session's plain HTTP
+addresses, each at its own port, instead of deriving them from its
+addresses at http_port; an empty list allows no plain HTTP. Host-ordered
+dependents: a request with invoke_after and
+MTRequestFlagSurfaceDependencyWaits (1 << 8) ends in MTEventKindFailed
+with the server's code and text on MSG_WAIT_TIMEOUT or MSG_WAIT_FAILED,
+instead of waiting for its dependency and going again. Reset causes:
+MTEventKindUpdatesReset (13) gives its cause in code,
+MTUpdatesResetServerSession (1), MTUpdatesResetLocalSession (2),
+MTUpdatesResetUpdatesLost (3) or MTUpdatesResetUpdatesTooLong (4), and
+for 1 carries the server's own new_session_created message, as received,
+in its payload. The fix: the initConnection hash stored
+(MTEventKindInitHashStored) is that of the environment the answered
+request was sent with; an answer to a request sent with an environment
+replaced since stores nothing, so the next request carries initConnection
+with the current one. The test server answers MSG_WAIT_FAILED to a query
+chained after a failed one, as Telegram does. Code that matches on
+UpdatesReset, the ABI version checks, the fuzz targets and
+docs/swift-integration.md follow. Tests:
+mtproto-engine session_runtime::http::tests::the_hosts_http_addresses_replace_the_derived_routes,
+mtproto-engine host_endpoints::an_address_only_in_the_tcp_list_gets_no_http,
+mtproto-engine host_endpoints::the_hosts_http_addresses_keep_their_own_ports,
+mtproto-engine host_endpoints::an_empty_http_list_allows_no_fallback,
+mtproto-engine host_endpoints::a_new_http_list_moves_http_to_it,
+mtproto-engine host_endpoints::the_same_http_list_again_changes_nothing_and_a_new_one_reconnects,
+mtproto-engine host_endpoints::a_paused_session_connects_only_after_unpause_to_the_latest_lists,
+mtproto-engine host_endpoints::a_pause_during_an_http_probe_connects_only_after_unpause_to_the_latest_lists,
+mtproto-engine host_endpoints::a_call_outstanding_across_a_pause_and_new_lists_runs_and_completes_once,
+mtproto-engine host_endpoints::a_call_outstanding_across_a_forced_restart_runs_and_completes_once,
+mtproto-ffi ffi_abi6::http_goes_to_the_addresses_the_host_gives,
+mtproto-core rpc::tests::a_dependent_of_a_surfaced_failure_reaches_the_host_when_it_orders_dependents,
+mtproto-core rpc::tests::without_host_ordering_a_dependent_of_a_surfaced_failure_goes_again_at_once,
+mtproto-ffi tests::bit_8_alone_asks_for_dependency_waits,
+mtproto-ffi ffi_abi6::a_dependent_of_a_failed_request_reaches_the_host_that_asks_for_it,
+mtproto-testserver tests::the_invoke_after_msg_id_is_kept_through_gzip,
+mtproto-testserver tests::a_session_remembers_the_latest_failed_queries,
+mtproto-core session::tests::new_session_created_hands_over_the_message_as_received,
+mtproto-core rpc::tests::updates_reset_says_why,
+mtproto-core rpc::tests::a_server_session_reset_hands_over_the_notice_in_place_and_once,
+mtproto-ffi ffi_abi6::a_reset_says_why_and_a_new_server_session_hands_over_its_notice,
+mtproto-core rpc::tests::an_answer_to_a_superseded_initialization_stores_nothing,
+mtproto-ffi ffi_abi6::the_header_declares_abi_6.
 
 Tests gated off on Windows, each with its reason in the source:
 - mtproto-engine interface::tests::loopback_resolves_to_lo0 (Windows):
@@ -96,6 +142,610 @@ index 110eeb7..8e52321 100644
 +
  [lints]
  workspace = true
+diff --git a/crates/mtproto-core/src/rpc/mod.rs b/crates/mtproto-core/src/rpc/mod.rs
+index 91e26c3..6e32bc0 100644
+--- a/crates/mtproto-core/src/rpc/mod.rs
++++ b/crates/mtproto-core/src/rpc/mod.rs
+@@ -59,6 +59,10 @@ pub struct RequestFlags {
+     pub expected_response_size: u32,
+     pub without_updates: bool,
+     pub delegate_retry_decisions: bool,
++    /// `MSG_WAIT_TIMEOUT`/`MSG_WAIT_FAILED` of a request with `invoke_after` reach the host as `Failed`
++    /// with the server's code and message, for a host that orders dependent requests itself; otherwise
++    /// the request waits for its dependency and goes again.
++    pub surface_dependency_waits: bool,
+ }
+ 
+ impl Default for RequestFlags {
+@@ -73,6 +77,7 @@ impl Default for RequestFlags {
+             expected_response_size: 0,
+             without_updates: false,
+             delegate_retry_decisions: false,
++            surface_dependency_waits: false,
+         }
+     }
+ }
+@@ -91,6 +96,19 @@ pub enum VerificationKind {
+     Recaptcha { method: String, site_key: String },
+ }
+ 
++/// Why the host should fetch the updates it may have missed (`RpcEvent::UpdatesReset`).
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum UpdatesResetReason {
++    /// The server said it started a new session (`new_session_created`).
++    ServerSession,
++    /// The client started a new session itself.
++    LocalSession,
++    /// Updates came that were too old to tell from ones already delivered: they were dropped.
++    UpdatesLost,
++    /// An `updatesTooLong` update, which follows as the next event.
++    UpdatesTooLong,
++}
++
+ #[derive(Debug, Clone, PartialEq)]
+ pub enum RpcEvent {
+     Completed {
+@@ -129,7 +147,12 @@ pub enum RpcEvent {
+         id: RequestId,
+         kind: VerificationKind,
+     },
+-    UpdatesReset,
++    /// `notice` is the server's `new_session_created` message as it was received (unpacked from any
++    /// container or gzip) for `ServerSession`, and empty for the other reasons.
++    UpdatesReset {
++        reason: UpdatesResetReason,
++        notice: Vec<u8>,
++    },
+     Update {
+         body: Vec<u8>,
+     },
+@@ -183,7 +206,9 @@ pub enum SessionRole {
+ struct RequestState {
+     request: RpcRequest,
+     seq: u64,
+-    wrapped_with_init: bool,
++    /// The `init_hash` of the environment the request was wrapped with in `initConnection`; None when it
++    /// went without. Only its answer may record that hash as stored.
++    wrapped_with_init: Option<String>,
+     in_session: bool,
+     not_before: f64,
+     server_errors: u32,
+@@ -209,7 +234,7 @@ impl RequestState {
+         Self {
+             request,
+             seq,
+-            wrapped_with_init: false,
++            wrapped_with_init: None,
+             in_session: false,
+             not_before: 0.0,
+             server_errors: 0,
+@@ -410,7 +435,9 @@ impl RpcClient {
+             .requests
+             .iter()
+             .filter(|(id, state)| {
+-                state.in_session && !state.wrapped_with_init && !self.session.was_transmitted(QueryId::from(**id))
++                state.in_session
++                    && state.wrapped_with_init.is_none()
++                    && !self.session.was_transmitted(QueryId::from(**id))
+             })
+             .map(|(id, _)| *id)
+             .collect();
+@@ -499,7 +526,7 @@ impl RpcClient {
+         state.seq = self.next_seq;
+         self.next_seq += 1;
+         state.in_session = false;
+-        state.wrapped_with_init = false;
++        state.wrapped_with_init = None;
+         self.order.insert(state.seq, id);
+         self.parked.insert(state.seq, id);
+         self.requests.insert(id, state);
+@@ -673,13 +700,10 @@ impl RpcClient {
+             let state = self.requests.get_mut(&id).expect("ready request exists");
+             let without_updates = state.request.flags.without_updates
+                 || environment.is_some_and(|environment| environment.disable_updates);
+-            let body = wrap_request(
+-                &state.request.body,
+-                if initialize { environment } else { None },
+-                without_updates,
+-                state.verification.as_ref(),
+-            );
+-            state.wrapped_with_init = initialize;
++            let wrapped_environment = if initialize { environment } else { None };
++            let body =
++                wrap_request(&state.request.body, wrapped_environment, without_updates, state.verification.as_ref());
++            state.wrapped_with_init = wrapped_environment.map(|environment| environment.init_hash.clone());
+             state.in_session = true;
+             state.rejected_key = None;
+             state.sent_at_unix = now.unix;
+@@ -762,12 +786,14 @@ impl RpcClient {
+             SessionEvent::Result { id, body, response_msg_id, .. } => {
+                 let id = RequestId::from(id);
+                 if let Some(state) = self.finish(id) {
+-                    if state.wrapped_with_init
+-                        && let Some(environment) = &self.environment
+-                        && self.stored_init_hash.as_deref() != Some(environment.init_hash.as_str())
++                    // The connection is initialized with what the request carried: an environment the host
++                    // replaced since stores nothing, so the next request carries the current one.
++                    if let Some(hash) = state.wrapped_with_init
++                        && self.environment.as_ref().is_some_and(|environment| environment.init_hash == hash)
++                        && self.stored_init_hash.as_deref() != Some(hash.as_str())
+                     {
+-                        self.stored_init_hash = Some(environment.init_hash.clone());
+-                        self.events.push_back(RpcEvent::InitHashStored { hash: environment.init_hash.clone() });
++                        self.stored_init_hash = Some(hash.clone());
++                        self.events.push_back(RpcEvent::InitHashStored { hash });
+                     }
+                     self.events.push_back(RpcEvent::Completed {
+                         id,
+@@ -793,14 +819,23 @@ impl RpcClient {
+                 if self.role == SessionRole::Cdn => {}
+             SessionEvent::Update { body, .. } => {
+                 if is_updates_too_long(&body) {
+-                    self.events.push_back(RpcEvent::UpdatesReset);
++                    self.events.push_back(RpcEvent::UpdatesReset {
++                        reason: UpdatesResetReason::UpdatesTooLong,
++                        notice: Vec::new(),
++                    });
+                 }
+                 self.events.push_back(RpcEvent::Update { body });
+             }
+-            SessionEvent::ServerSessionReset { .. }
+-            | SessionEvent::LocalSessionReset { .. }
+-            | SessionEvent::UpdatesLost => {
+-                self.events.push_back(RpcEvent::UpdatesReset);
++            SessionEvent::ServerSessionReset { notice, .. } => {
++                self.events.push_back(RpcEvent::UpdatesReset { reason: UpdatesResetReason::ServerSession, notice });
++            }
++            SessionEvent::LocalSessionReset { .. } => {
++                self.events
++                    .push_back(RpcEvent::UpdatesReset { reason: UpdatesResetReason::LocalSession, notice: Vec::new() });
++            }
++            SessionEvent::UpdatesLost => {
++                self.events
++                    .push_back(RpcEvent::UpdatesReset { reason: UpdatesResetReason::UpdatesLost, notice: Vec::new() });
+             }
+             SessionEvent::TimeDifferenceUpdated { difference, .. } => {
+                 self.events.push_back(RpcEvent::TimeDifferenceUpdated { difference });
+@@ -858,6 +893,10 @@ impl RpcClient {
+             }
+         }
+         if (message == "MSG_WAIT_TIMEOUT" || message == "MSG_WAIT_FAILED") && dependency.is_some() {
++            if flags.surface_dependency_waits {
++                self.surface(id, code, message, response_time, now);
++                return;
++            }
+             if let Some(state) = self.requests.get_mut(&id) {
+                 state.waiting_for_dependency = dependency;
+             }
+diff --git a/crates/mtproto-core/src/rpc/tests.rs b/crates/mtproto-core/src/rpc/tests.rs
+index 0da76e6..4346b40 100644
+--- a/crates/mtproto-core/src/rpc/tests.rs
++++ b/crates/mtproto-core/src/rpc/tests.rs
+@@ -163,6 +163,71 @@ fn init_connection_until_first_success_then_hash_stored() {
+     assert_eq!(calls[0].1, Vec::<u32>::new());
+ }
+ 
++/// The device model an `initConnection` wrapper carries; None for a call sent without one.
++fn init_device_model(body: &[u8]) -> Option<Vec<u8>> {
++    let mut reader = Reader::new(body);
++    (reader.read_u32().ok()? == ids::INVOKE_WITH_LAYER).then_some(())?;
++    reader.read_i32().ok()?;
++    (reader.read_u32().ok()? == INIT_CONNECTION).then_some(())?;
++    reader.read_i32().ok()?;
++    reader.read_i32().ok()?;
++    Some(reader.read_bytes().ok()?.to_vec())
++}
++
++impl Harness {
++    /// The calls that go out, each with its msg_id and the body as sent.
++    fn flush_call_bodies(&mut self) -> Vec<(i64, Vec<u8>)> {
++        let mut calls = Vec::new();
++        for _ in 0..10 {
++            self.advance(0.002);
++            let _ = self.client.handle_timeout(self.now);
++            if let Some(transmit) = self.client.poll_transmit(self.now, &mut self.rng) {
++                let packet = self.server.decode(&transmit.data);
++                calls.extend(
++                    packet
++                        .messages
++                        .into_iter()
++                        .filter(|message| unwrap_call(&message.body).1.is_some())
++                        .map(|message| (message.msg_id, message.body)),
++                );
++            }
++        }
++        calls
++    }
++}
++
++#[test]
++fn an_answer_to_a_superseded_initialization_stores_nothing() {
++    let mut h = Harness::new(SessionRole::Main, None);
++    // A paused session: the call waits for a connection, already wrapped with the environment of now.
++    h.client.connection_closed(h.now);
++    h.send(1, RequestFlags::default());
++    let mut replaced = environment("h2");
++    replaced.device_model = "PC".into();
++    h.client.update_environment(replaced, None, h.now);
++    h.client.connection_opened(h.now);
++    let sent = h.flush_call_bodies();
++    assert_eq!(sent.len(), 1);
++    assert_eq!(init_device_model(&sent[0].1), Some(b"Mac".to_vec()), "the call went as it was wrapped");
++    h.reply(vec![Outgoing::Content(rpc_result(sent[0].0, &[1, 0, 0, 0]))]);
++    let events = h.events();
++    assert!(events.iter().any(|event| matches!(event, RpcEvent::Completed { id: RequestId(1), .. })));
++    assert!(
++        !events.iter().any(|event| matches!(event, RpcEvent::InitHashStored { .. })),
++        "the server was initialized with the old environment, not with h2: {events:?}"
++    );
++    assert_eq!(h.client.stored_init_hash(), None);
++
++    h.send(2, RequestFlags::default());
++    let sent = h.flush_call_bodies();
++    assert_eq!(init_device_model(&sent[0].1), Some(b"PC".to_vec()), "the next call initializes with h2");
++    h.reply(vec![Outgoing::Content(rpc_result(sent[0].0, &[2, 0, 0, 0]))]);
++    assert!(h.events().contains(&RpcEvent::InitHashStored { hash: "h2".into() }));
++    assert_eq!(h.client.stored_init_hash(), Some("h2"));
++    h.send(3, RequestFlags::default());
++    assert_eq!(init_device_model(&h.flush_call_bodies()[0].1), None, "initialized with h2 now");
++}
++
+ fn first_init_connection(role: SessionRole) -> (i32, Vec<Vec<u8>>, Vec<u8>) {
+     let mut h = Harness::new(role, None);
+     let mut env = environment("h1");
+@@ -570,10 +635,106 @@ fn updates_too_long_and_session_resets_emit_updates_reset() {
+     h.send(1, RequestFlags::default());
+     let calls = h.flush_calls();
+     h.reply(vec![Outgoing::Content(update(0xe317af7e, &[])), Outgoing::Content(new_session_created(calls[0].0, 1, 5))]);
+-    let resets = h.events().into_iter().filter(|e| *e == RpcEvent::UpdatesReset).count();
++    let resets = h.events().into_iter().filter(|e| matches!(e, RpcEvent::UpdatesReset { .. })).count();
+     assert_eq!(resets, 2);
+ }
+ 
++/// The resets and updates among `events`, in their order: an update as its first word.
++fn resets_and_updates(events: Vec<RpcEvent>) -> Vec<(Option<UpdatesResetReason>, Vec<u8>)> {
++    events
++        .into_iter()
++        .filter_map(|event| match event {
++            RpcEvent::UpdatesReset { reason, notice } => Some((Some(reason), notice)),
++            RpcEvent::Update { body } => Some((None, body[..4].to_vec())),
++            _ => None,
++        })
++        .collect()
++}
++
++#[test]
++fn updates_reset_says_why() {
++    let mut h = Harness::new(SessionRole::Main, Some("h1"));
++    h.send(1, RequestFlags::default());
++    let calls = h.flush_calls();
++    let mut reasons = Vec::new();
++
++    let notice = new_session_created(calls[0].0, 1, 5);
++    assert_eq!(notice.len(), 28);
++    h.reply(vec![Outgoing::Service(notice.clone())]);
++    let seen = resets_and_updates(h.events());
++    assert_eq!(seen, vec![(Some(UpdatesResetReason::ServerSession), notice)], "the server's own message");
++    reasons.extend(seen.into_iter().filter_map(|(reason, _)| reason));
++
++    let old = h.server.next_msg_id(false);
++    for _ in 0..2001 {
++        h.reply(vec![Outgoing::Content(update(0x0101_0101, &[0; 4]))]);
++    }
++    h.events();
++    let fresh = h.server.next_msg_id(false);
++    let packet = h.server.seal(fresh, 0, &container(&[(old, 1, update(0x74ae4240, &[0; 4]))]));
++    h.client.handle_packet(&packet, h.now, &mut h.rng).unwrap();
++    let seen = resets_and_updates(h.events());
++    assert_eq!(seen, vec![(Some(UpdatesResetReason::UpdatesLost), Vec::new())], "a dropped update");
++    reasons.extend(seen.into_iter().filter_map(|(reason, _)| reason));
++
++    h.client.reset_session(h.now, &mut h.rng);
++    let seen = resets_and_updates(h.events());
++    assert_eq!(seen, vec![(Some(UpdatesResetReason::LocalSession), Vec::new())], "a new session of our own");
++    reasons.extend(seen.into_iter().filter_map(|(reason, _)| reason));
++
++    h.server.session_id = h.client.session().session_id();
++    h.reply(vec![Outgoing::Content(update(0xe317af7e, &[]))]);
++    let seen = resets_and_updates(h.events());
++    assert_eq!(
++        seen,
++        vec![(Some(UpdatesResetReason::UpdatesTooLong), Vec::new()), (None, 0xe317af7eu32.to_le_bytes().to_vec())],
++        "the reset comes directly before its updatesTooLong"
++    );
++    reasons.extend(seen.into_iter().filter_map(|(reason, _)| reason));
++
++    assert_eq!(
++        reasons,
++        vec![
++            UpdatesResetReason::ServerSession,
++            UpdatesResetReason::UpdatesLost,
++            UpdatesResetReason::LocalSession,
++            UpdatesResetReason::UpdatesTooLong
++        ]
++    );
++}
++
++#[test]
++fn a_server_session_reset_hands_over_the_notice_in_place_and_once() {
++    let mut h = Harness::new(SessionRole::Main, Some("h1"));
++    h.send(1, RequestFlags::default());
++    let calls = h.flush_calls();
++    let notice = new_session_created(calls[0].0, 7, 5);
++    let packet = h.server.encode(vec![
++        Outgoing::Content(update(0x0101_0101, &[1; 4])),
++        Outgoing::Service(gzip_packed(&notice)),
++        Outgoing::Content(update(0x0202_0202, &[2; 4])),
++    ]);
++    h.client.handle_packet(&packet, h.now, &mut h.rng).unwrap();
++    assert_eq!(
++        resets_and_updates(h.events()),
++        vec![
++            (None, 0x0101_0101u32.to_le_bytes().to_vec()),
++            (Some(UpdatesResetReason::ServerSession), notice.clone()),
++            (None, 0x0202_0202u32.to_le_bytes().to_vec()),
++        ],
++        "unpacked from its container and gzip, between the updates around it"
++    );
++
++    h.client.handle_packet(&packet, h.now, &mut h.rng).unwrap();
++    assert_eq!(resets_and_updates(h.events()), Vec::new(), "the same packet again");
++    h.reply(vec![Outgoing::Service(notice)]);
++    assert_eq!(resets_and_updates(h.events()), Vec::new(), "the same new session in a new message");
++    h.reply(vec![Outgoing::Service(new_session_created(calls[0].0, 8, 5))]);
++    let seen = resets_and_updates(h.events());
++    assert_eq!(seen.len(), 1);
++    assert_eq!(seen[0].0, Some(UpdatesResetReason::ServerSession), "another new session");
++}
++
+ #[test]
+ fn delegated_retry_decisions_for_flood_and_server_errors() {
+     let mut h = Harness::new(SessionRole::Main, Some("h1"));
+@@ -707,6 +868,97 @@ fn msg_wait_errors_wait_for_the_dependency_with_any_code() {
+     }
+ }
+ 
++/// The flags of a host that keeps flood waits, server error retries and, with
++/// `surface_dependency_waits`, the order of dependent requests to itself.
++fn host_retries(surface_dependency_waits: bool) -> RequestFlags {
++    RequestFlags {
++        automatic_flood_wait: false,
++        retry_server_errors: false,
++        surface_dependency_waits,
++        ..Default::default()
++    }
++}
++
++/// The error of the request waited for, which the host retries itself, and the server's answer to the
++/// request chained after it: 400, 500 and negative codes.
++const FAILED_DEPENDENCIES: [((i32, &str), (i32, &str)); 4] = [
++    ((420, "FLOOD_WAIT_3"), (400, "MSG_WAIT_FAILED")),
++    ((500, "INTERNAL_SERVER_ERROR"), (500, "MSG_WAIT_FAILED")),
++    ((-503, "Timeout"), (-503, "MSG_WAIT_TIMEOUT")),
++    ((-500, "SOMETHING"), (400, "MSG_WAIT_TIMEOUT")),
++];
++
++impl Harness {
++    /// Request 1 and request 2 chained after it, both with `flags`: the msg_ids they went under. Request
++    /// 2 goes with invokeAfterMsg, request 1 being in flight.
++    fn send_chained(&mut self, flags: RequestFlags) -> (i64, i64) {
++        self.send(1, flags);
++        self.client
++            .send(RpcRequest { id: RequestId(2), body: call(2), flags, invoke_after: Some(RequestId(1)) }, self.now);
++        let calls = self.flush_calls();
++        let first = calls.iter().find(|c| c.2 == 1).expect("request 1 went").0;
++        let dependent = calls.iter().find(|c| c.2 == 2).expect("request 2 went");
++        assert_eq!(dependent.1, vec![ids::INVOKE_AFTER_MSG]);
++        (first, dependent.0)
++    }
++
++    /// Nothing goes out and nothing is reported for a while longer than any wait the client keeps.
++    fn assert_quiet(&mut self, context: &str) {
++        self.advance(SERVER_ERROR_MAX_RETRY_DELAY + 4.0);
++        assert!(self.flush_calls().is_empty(), "{context}: nothing is sent again by the client");
++        let events = self.events();
++        assert!(
++            !events.iter().any(|e| matches!(e, RpcEvent::Completed { .. } | RpcEvent::Failed { .. })),
++            "{context}: {events:?}"
++        );
++    }
++}
++
++#[test]
++fn a_dependent_of_a_surfaced_failure_reaches_the_host_when_it_orders_dependents() {
++    for ((code, message), (wait_code, wait_message)) in FAILED_DEPENDENCIES {
++        let context = format!("{code} {message}, then {wait_code} {wait_message}");
++        let mut h = Harness::new(SessionRole::Main, Some("h1"));
++        let (first, dependent) = h.send_chained(host_retries(true));
++        h.reply(vec![Outgoing::Content(rpc_error(first, code, message))]);
++        assert_eq!(failed_with(&h.events(), 1), Some((code, message.into())), "{context}: the host retries it");
++        h.reply(vec![Outgoing::Content(rpc_error(dependent, wait_code, wait_message))]);
++        assert_eq!(
++            failed_with(&h.events(), 2),
++            Some((wait_code, wait_message.into())),
++            "{context}: as the server said"
++        );
++        assert_eq!(h.client.request_count(), 0, "{context}: the host has both");
++        h.assert_quiet(&context);
++
++        // The dependent's answer can come while the request it waits for is still in flight.
++        let mut h = Harness::new(SessionRole::Main, Some("h1"));
++        let (first, dependent) = h.send_chained(host_retries(true));
++        h.reply(vec![Outgoing::Content(rpc_error(dependent, wait_code, wait_message))]);
++        assert_eq!(failed_with(&h.events(), 2), Some((wait_code, wait_message.into())), "{context}: before 1");
++        h.reply(vec![Outgoing::Content(rpc_result(first, &[1, 0, 0, 0]))]);
++        let events = h.events();
++        assert!(events.iter().any(|e| matches!(e, RpcEvent::Completed { id: RequestId(1), .. })), "{context}");
++        h.assert_quiet(&context);
++    }
++}
++
++#[test]
++fn without_host_ordering_a_dependent_of_a_surfaced_failure_goes_again_at_once() {
++    for ((code, message), (wait_code, wait_message)) in FAILED_DEPENDENCIES {
++        let context = format!("{code} {message}, then {wait_code} {wait_message}");
++        let mut h = Harness::new(SessionRole::Main, Some("h1"));
++        let (first, dependent) = h.send_chained(host_retries(false));
++        h.reply(vec![Outgoing::Content(rpc_error(first, code, message))]);
++        assert_eq!(failed_with(&h.events(), 1), Some((code, message.into())), "{context}");
++        h.reply(vec![Outgoing::Content(rpc_error(dependent, wait_code, wait_message))]);
++        assert!(failed_with(&h.events(), 2).is_none(), "{context}: the client keeps the dependent");
++        let calls = h.flush_calls();
++        assert_eq!(calls.iter().map(|c| c.2).collect::<Vec<_>>(), vec![2], "{context}: goes again at once");
++        assert!(calls[0].1.is_empty(), "{context}: and unchained, though the host still has request 1 to retry");
++    }
++}
++
+ #[test]
+ fn negative_and_normalized_codes_are_retried_as_server_errors() {
+     for (code, message) in [
+@@ -952,7 +1204,7 @@ fn lost_updates_ask_the_host_for_a_difference() {
+     let packet = h.server.seal(fresh, 0, &body);
+     h.client.handle_packet(&packet, h.now, &mut h.rng).unwrap();
+     let events = h.events();
+-    assert!(events.contains(&RpcEvent::UpdatesReset));
++    assert!(events.iter().any(|e| matches!(e, RpcEvent::UpdatesReset { .. })));
+     assert!(!events.iter().any(|e| matches!(e, RpcEvent::Update { .. })));
+ }
+ 
+@@ -974,7 +1226,7 @@ fn cdn_sessions_never_forward_updates() {
+     h.reply(vec![Outgoing::Content(update(0x1234_5678, &[0; 8]))]);
+     let events = h.events();
+     assert!(
+-        !events.iter().any(|event| matches!(event, RpcEvent::Update { .. } | RpcEvent::UpdatesReset)),
++        !events.iter().any(|event| matches!(event, RpcEvent::Update { .. } | RpcEvent::UpdatesReset { .. })),
+         "{events:?}"
+     );
+ }
+diff --git a/crates/mtproto-core/src/session/mod.rs b/crates/mtproto-core/src/session/mod.rs
+index 1b999e8..3fb6e6a 100644
+--- a/crates/mtproto-core/src/session/mod.rs
++++ b/crates/mtproto-core/src/session/mod.rs
+@@ -160,6 +160,8 @@ impl Default for SessionConfig {
+     }
+ }
+ 
++/// What the session reports to its owner. `ServerSessionReset::notice` is the `new_session_created`
++/// message as received, unpacked from any container or gzip, for a host that hands it on.
+ #[derive(Debug, Clone, PartialEq)]
+ pub enum SessionEvent {
+     Result { id: QueryId, body: Vec<u8>, response_msg_id: i64, original_size: usize },
+@@ -167,7 +169,7 @@ pub enum SessionEvent {
+     Acknowledged { id: QueryId },
+     Update { body: Vec<u8>, msg_id: i64 },
+     UpdatesLost,
+-    ServerSessionReset { unique_id: i64, first_msg_id: i64 },
++    ServerSessionReset { unique_id: i64, first_msg_id: i64, notice: Vec<u8> },
+     LocalSessionReset { previous_session_id: i64 },
+     TimeDifferenceUpdated { difference: f64, forced: bool },
+     SaltsUpdated { salts: Vec<ServerSalt> },
+@@ -2279,7 +2281,7 @@ impl Session {
+                 self.on_bad_msg_notification(msg_id, bad_msg_id, error_code, now)
+             }
+             ServiceMessage::NewSessionCreated { first_msg_id, unique_id, server_salt } => {
+-                self.on_new_session_created(context, msg_id, unique_id, first_msg_id, server_salt, now)
++                self.on_new_session_created(context, msg_id, unique_id, first_msg_id, server_salt, body, now)
+             }
+             ServiceMessage::MsgsAck(msg_ids) => {
+                 for acked in msg_ids {
+@@ -2591,6 +2593,7 @@ impl Session {
+         self.refresh_unknown_tracking();
+     }
+ 
++    #[allow(clippy::too_many_arguments)]
+     fn on_new_session_created(
+         &mut self,
+         context: &mut PacketContext,
+@@ -2598,6 +2601,7 @@ impl Session {
+         unique_id: i64,
+         first_msg_id: i64,
+         server_salt: i64,
++        notice: &[u8],
+         now: Now,
+     ) {
+         if context.mode == Mode::Replay || self.recent_unique_ids.contains(&unique_id) {
+@@ -2640,7 +2644,7 @@ impl Session {
+             self.withdraw_asks_for(answer);
+         }
+         context.deferred_resends.extend(resend.into_iter().map(|(msg_id, id)| (id, msg_id)));
+-        self.events.push_back(SessionEvent::ServerSessionReset { unique_id, first_msg_id });
++        self.events.push_back(SessionEvent::ServerSessionReset { unique_id, first_msg_id, notice: notice.to_vec() });
+     }
+ 
+     fn on_message_info(
+diff --git a/crates/mtproto-core/src/session/tests.rs b/crates/mtproto-core/src/session/tests.rs
+index 9534f6b..f8befc6 100644
+--- a/crates/mtproto-core/src/session/tests.rs
++++ b/crates/mtproto-core/src/session/tests.rs
+@@ -331,6 +331,55 @@ fn new_session_created_resends_older_queries_and_reports_reset() {
+     assert_eq!(h.results(), vec![(QueryId(2), vec![2, 0, 0, 0])]);
+ }
+ 
++fn reset_notices(events: &[SessionEvent]) -> Vec<Vec<u8>> {
++    events
++        .iter()
++        .filter_map(|event| match event {
++            SessionEvent::ServerSessionReset { notice, .. } => Some(notice.clone()),
++            _ => None,
++        })
++        .collect()
++}
++
++#[test]
++fn new_session_created_hands_over_the_message_as_received() {
++    let mut h = Harness::new();
++    h.session.send(QueryId(1), query_body(1), QueryOptions::default(), h.now);
++    let packet = h.flush().unwrap();
++    let query = h.sent_query(&packet, 1);
++
++    // gzip-packed in a container, with a new salt and a query older than the new session.
++    let packed = new_session_created(packet.header.msg_id + 4, 41, 4242);
++    assert_eq!(packed.len(), 28);
++    h.deliver(vec![Outgoing::Content(update(0x0101_0101, &[0; 4])), Outgoing::Service(gzip_packed(&packed))]).unwrap();
++    let events = h.events();
++    assert_eq!(reset_notices(&events), vec![packed], "the bytes inside the gzip");
++    assert!(events.iter().any(|event| matches!(event, SessionEvent::SaltsUpdated { .. })));
++    let packet = h.flush().unwrap();
++    assert_eq!(packet.header.salt, 4242, "the salt it carried is taken");
++    let resent = h.sent_query(&packet, 1);
++    assert!(resent > query, "the older query goes again");
++
++    let contained = new_session_created(resent, 42, 4242);
++    h.deliver(vec![Outgoing::Content(update(0x0101_0101, &[0; 4])), Outgoing::Service(contained.clone())]).unwrap();
++    assert_eq!(reset_notices(&h.events()), vec![contained], "a container's child");
++    let alone = new_session_created(resent, 43, 4242);
++    h.deliver(vec![Outgoing::Service(alone.clone())]).unwrap();
++    assert_eq!(reset_notices(&h.events()), vec![alone], "a message of its own");
++    let packed_alone = new_session_created(resent, 44, 4242);
++    h.deliver(vec![Outgoing::Service(gzip_packed(&packed_alone))]).unwrap();
++    assert_eq!(reset_notices(&h.events()), vec![packed_alone], "gzip-packed alone");
++
++    h.deliver(vec![Outgoing::Service(new_session_created(resent, 41, 4242))]).unwrap();
++    assert!(reset_notices(&h.events()).is_empty(), "a new session already reported");
++    let repeated = h.server.encode(vec![Outgoing::Service(new_session_created(resent, 45, 4242))]);
++    h.session.handle_packet(&repeated, h.now, &mut h.rng).unwrap();
++    assert_eq!(reset_notices(&h.events()).len(), 1);
++    h.session.handle_packet(&repeated, h.now, &mut h.rng).unwrap();
++    assert!(reset_notices(&h.events()).is_empty(), "the same packet again");
++    assert!(h.flush_all().iter().all(|packet| packet.messages.iter().all(|m| query_tag(&m.body).is_none())));
++}
++
+ #[test]
+ fn reconnect_without_ack_retransmits_with_original_msg_ids() {
+     let mut h = Harness::new();
+diff --git a/crates/mtproto-core/tests/sec_rows_rpc.rs b/crates/mtproto-core/tests/sec_rows_rpc.rs
+index fac3787..4604b82 100644
+--- a/crates/mtproto-core/tests/sec_rows_rpc.rs
++++ b/crates/mtproto-core/tests/sec_rows_rpc.rs
+@@ -242,7 +242,7 @@ fn updates_from_a_cdn_are_dropped_in_every_wrapping() {
+         ]);
+         let events = h.events();
+         let updates = events.iter().filter(|event| matches!(event, RpcEvent::Update { .. })).count();
+-        let resets = events.iter().filter(|event| matches!(event, RpcEvent::UpdatesReset)).count();
++        let resets = events.iter().filter(|event| matches!(event, RpcEvent::UpdatesReset { .. })).count();
+         let completed = events.iter().any(|event| matches!(event, RpcEvent::Completed { id: RequestId(1), .. }));
+         assert!(completed, "{role:?}: the answer in the same packet still completes: {events:?}");
+         if role == SessionRole::Cdn {
 diff --git a/crates/mtproto-core/tests/sec_rows_zeroize.rs b/crates/mtproto-core/tests/sec_rows_zeroize.rs
 index 7b8e802..540a4cc 100644
 --- a/crates/mtproto-core/tests/sec_rows_zeroize.rs
@@ -766,7 +1416,7 @@ index 09abb61..5945a6d 100644
 +    }
  }
 diff --git a/crates/mtproto-engine/src/lib.rs b/crates/mtproto-engine/src/lib.rs
-index 774f5a2..1889fa1 100644
+index 774f5a2..67d5a94 100644
 --- a/crates/mtproto-engine/src/lib.rs
 +++ b/crates/mtproto-engine/src/lib.rs
 @@ -2,6 +2,7 @@
@@ -794,10 +1444,41 @@ index 774f5a2..1889fa1 100644
              inner.workers.push(WorkerHandle {
                  sender: Mutex::new(sender),
                  waker,
+@@ -185,6 +188,12 @@ impl Engine {
+         self.post(handle, Command::SetAddresses(handle, addresses));
+     }
+ 
++    /// The session's HTTP routes from now on: these addresses, each at its own port, instead of those
++    /// derived from its addresses; addresses with a secret are skipped, and an empty list allows none.
++    pub fn set_http_addresses(&self, handle: SessionHandle, addresses: Vec<DcAddress>) {
++        self.post(handle, Command::SetHttpAddresses(handle, addresses));
++    }
++
+     pub fn set_proxy(&self, handle: SessionHandle, proxy: Option<ProxyConfig>) {
+         self.post(handle, Command::SetProxy(handle, proxy));
+     }
 diff --git a/crates/mtproto-engine/src/session_explorer_tests.rs b/crates/mtproto-engine/src/session_explorer_tests.rs
-index a61264a..46b507d 100644
+index a61264a..7fb6c2f 100644
 --- a/crates/mtproto-engine/src/session_explorer_tests.rs
 +++ b/crates/mtproto-engine/src/session_explorer_tests.rs
+@@ -1702,7 +1702,7 @@ impl<'a> Runner<'a> {
+                     }
+                 }
+                 EngineEvent::Closed => self.note_all_open(s, "session closed", at),
+-                EngineEvent::Rpc(RpcEvent::UpdatesReset) => self.note_all_open(s, "session reset", at),
++                EngineEvent::Rpc(RpcEvent::UpdatesReset { .. }) => self.note_all_open(s, "session reset", at),
+                 EngineEvent::Rpc(RpcEvent::TemporaryKeyBound) => self.note_all_open(s, "temporary key bound", at),
+                 EngineEvent::AuthKeyCreated { expires_at: Some(_), .. } => {
+                     self.note_all_open(s, "temporary key made", at)
+@@ -2840,7 +2840,7 @@ fn drain_reset_executions(transport: TransportPreference) -> (u32, bool) {
+                 EngineEvent::Rpc(RpcEvent::Completed { id, .. }) => {
+                     completed.insert(id.0);
+                 }
+-                EngineEvent::Rpc(RpcEvent::UpdatesReset) => *reset = true,
++                EngineEvent::Rpc(RpcEvent::UpdatesReset { .. }) => *reset = true,
+                 _ => {}
+             }
+         }
 @@ -3638,3 +3638,81 @@ fn enable_pfs_during_answered_destroy_runs_the_call_in_flight_once() {
      fixed_report("answered destroy then enable_pfs", &plan, &outcome);
      assert!(!outcome.violations.iter().any(|v| v.kind().starts_with("duplicate")), "the call in flight ran twice");
@@ -880,11 +1561,134 @@ index a61264a..46b507d 100644
 +    assert!(answered, "no answer {waited:?} after the promotion; {racer_events} poll events for the racer's socket");
 +    assert_eq!(server.executions(1), 1);
 +}
+diff --git a/crates/mtproto-engine/src/session_http.rs b/crates/mtproto-engine/src/session_http.rs
+index c1ab28f..d1ac323 100644
+--- a/crates/mtproto-engine/src/session_http.rs
++++ b/crates/mtproto-engine/src/session_http.rs
+@@ -288,20 +288,30 @@ impl SessionRuntime {
+         self.http = Some(http);
+     }
+ 
++    /// Every way HTTP may go, in order: the host's own HTTP addresses when it gave them, each at its own
++    /// port, or else each address without a secret at `http_port` and then at its own port; Telegram
++    /// Web's endpoint after them either way. Every HTTP connection and probe picks from these.
+     fn http_candidates(&self) -> Vec<HttpCandidate> {
+-        let mut candidates: Vec<HttpCandidate> = self
+-            .setup
+-            .addresses
+-            .iter()
+-            .filter(|address| address.secret.is_none())
+-            .flat_map(|address| {
+-                let mut ports = vec![self.setup.http_port.unwrap_or(address.port)];
+-                if !ports.contains(&address.port) {
+-                    ports.push(address.port);
+-                }
+-                ports.into_iter().map(move |port| HttpCandidate { host: address.host.clone(), port, web: false })
+-            })
+-            .collect();
++        let mut candidates: Vec<HttpCandidate> = match &self.setup.http_addresses {
++            Some(addresses) => addresses
++                .iter()
++                .filter(|address| address.secret.is_none())
++                .map(|address| HttpCandidate { host: address.host.clone(), port: address.port, web: false })
++                .collect(),
++            None => self
++                .setup
++                .addresses
++                .iter()
++                .filter(|address| address.secret.is_none())
++                .flat_map(|address| {
++                    let mut ports = vec![self.setup.http_port.unwrap_or(address.port)];
++                    if !ports.contains(&address.port) {
++                        ports.push(address.port);
++                    }
++                    ports.into_iter().map(move |port| HttpCandidate { host: address.host.clone(), port, web: false })
++                })
++                .collect(),
++        };
+         if let Some(web) = self.web_endpoint() {
+             candidates.push(HttpCandidate { host: web.host.clone(), port: web.port, web: true });
+         }
+@@ -588,7 +598,7 @@ impl SessionRuntime {
+         self.open_http_conn(registry, now, resolver, callbacks)
+     }
+ 
+-    /// Some HTTP route exists at all: an address without a secret, and no MTProxy in the way.
++    /// Some HTTP route exists at all: a candidate (`http_candidates`), and no MTProxy in the way.
+     pub(super) fn http_route_possible(&self) -> bool {
+         !self.setup.proxy_blocks_http() && !self.http_candidates().is_empty()
+     }
+@@ -2565,6 +2575,42 @@ impl SessionRuntime {
+ #[cfg(test)]
+ mod tests {
+     use super::staggered_wait;
++    use super::{Now, OsRandom, SessionRole, SessionRuntime, Token};
++    use crate::types::{DcAddress, SessionHandle, SessionSetup};
++
++    fn plain_candidates(setup: &SessionSetup) -> Vec<(String, u16)> {
++        let start = Now { mono: 1000.0, unix: 1_727_000_000.0 };
++        let runtime = SessionRuntime::new(SessionHandle(1), setup.clone(), Token(16), start, &mut OsRandom::new());
++        runtime.http_candidates().into_iter().filter(|candidate| !candidate.web).map(|c| (c.host, c.port)).collect()
++    }
++
++    /// The host's HTTP addresses replace the routes derived from the session's addresses: each goes at
++    /// its own port and never at `http_port`, one with a secret is left out, and an empty list leaves
++    /// none. Without them the routes are derived as before.
++    #[test]
++    fn the_hosts_http_addresses_replace_the_derived_routes() {
++        let address = |host: &str, port: u16, secret: Option<Vec<u8>>| DcAddress { host: host.into(), port, secret };
++        let mut setup = SessionSetup::new(
++            2,
++            SessionRole::Main,
++            vec![address("149.154.167.51", 443, None), address("149.154.167.52", 443, Some(vec![0xdd; 17]))],
++        );
++        setup.http_port = Some(80);
++        let derived = plain_candidates(&setup);
++        assert_eq!(derived, [("149.154.167.51".to_string(), 80), ("149.154.167.51".to_string(), 443)]);
++
++        setup.http_addresses = Some(vec![
++            address("149.154.167.51", 443, None),
++            address("149.154.167.60", 8080, None),
++            address("149.154.167.61", 80, Some(vec![0xdd; 17])),
++        ]);
++        let explicit = plain_candidates(&setup);
++        assert_eq!(explicit, [("149.154.167.51".to_string(), 443), ("149.154.167.60".to_string(), 8080)]);
++
++        setup.http_addresses = Some(Vec::new());
++        let none = plain_candidates(&setup);
++        assert!(none.is_empty(), "an empty list allows no plain HTTP: {none:?}");
++    }
+ 
+     #[test]
+     fn long_polls_are_spread_over_the_period() {
 diff --git a/crates/mtproto-engine/src/session_runtime.rs b/crates/mtproto-engine/src/session_runtime.rs
-index 69a7dc6..d435a6c 100644
+index 69a7dc6..94a2874 100644
 --- a/crates/mtproto-engine/src/session_runtime.rs
 +++ b/crates/mtproto-engine/src/session_runtime.rs
-@@ -1606,6 +1606,15 @@ impl SessionRuntime {
+@@ -603,6 +603,22 @@ impl SessionRuntime {
+         }
+     }
+ 
++    /// The HTTP routes from now on are exactly these addresses at their own ports (`http_addresses`).
++    /// A new list voids what was learned on the old routes, as new addresses do: Auto starts over on
++    /// TCP, the links close and the session reconnects at once.
++    pub fn set_http_addresses(&mut self, addresses: Vec<DcAddress>, now: Now, registry: &Registry) {
++        if self.setup.http_addresses.as_ref() == Some(&addresses) {
++            return;
++        }
++        self.reset_auto(registry, now, false);
++        self.setup.http_addresses = Some(addresses);
++        self.forget_routes();
++        self.close_connection(registry, now, false);
++        self.next_attempt_at = now.mono;
++        self.reset_failures();
++        self.flaps = 0;
++    }
++
+     pub fn set_obfuscation_dc_id(&mut self, dc_id: i16, now: Now, registry: &Registry) {
+         if self.setup.obfuscation_dc_id != dc_id {
+             self.setup.obfuscation_dc_id = dc_id;
+@@ -1606,6 +1622,15 @@ impl SessionRuntime {
              return;
          }
          if verified {
@@ -900,8 +1704,31 @@ index 69a7dc6..d435a6c 100644
              if self.http.is_some() {
                  self.switch_back_to_tcp(registry, now, callbacks);
              } else if self.auto.on_websocket {
+diff --git a/crates/mtproto-engine/src/types.rs b/crates/mtproto-engine/src/types.rs
+index d97db54..20fc8d0 100644
+--- a/crates/mtproto-engine/src/types.rs
++++ b/crates/mtproto-engine/src/types.rs
+@@ -210,6 +210,10 @@ pub struct SessionSetup {
+     pub transport: TransportPreference,
+     /// The port HTTP goes to; None uses each address's own port.
+     pub http_port: Option<u16>,
++    /// The HTTP routes the host gave, each address at its own port, used instead of those derived from
++    /// `addresses` at `http_port`: an address with a secret is skipped, and an empty list allows no plain
++    /// HTTP at all. None derives them. Telegram Web's endpoint (`web`) is governed apart.
++    pub http_addresses: Option<Vec<DcAddress>>,
+     /// Auto on HTTP: when TCP is tried again first; later tries wait twice as long each.
+     pub tcp_recheck_after: f64,
+     /// The engine makes and binds temporary keys itself; `auth_key` is then the permanent key.
+@@ -284,6 +288,7 @@ impl SessionSetup {
+             request_timeout: 5.0,
+             transport: TransportPreference::Tcp,
+             http_port: Some(80),
++            http_addresses: None,
+             tcp_recheck_after: 60.0,
+             pfs: None,
+             web: None,
 diff --git a/crates/mtproto-engine/src/worker.rs b/crates/mtproto-engine/src/worker.rs
-index b0e3986..ef2e17b 100644
+index b0e3986..b1313e9 100644
 --- a/crates/mtproto-engine/src/worker.rs
 +++ b/crates/mtproto-engine/src/worker.rs
 @@ -9,6 +9,7 @@ use mtproto_core::crypto::OsRandom;
@@ -912,7 +1739,15 @@ index b0e3986..ef2e17b 100644
  use crate::http_link::TOKENS_PER_SESSION;
  use crate::resolver::resolve_blocking;
  use crate::session_runtime::{Resolution, Resolve, SessionRuntime};
-@@ -81,7 +82,7 @@ impl Resolve for ThreadResolver {
+@@ -35,6 +36,7 @@ pub enum Command {
+     SetOnline(SessionHandle, bool),
+     SetAuthKey(SessionHandle, Option<AuthKeyMaterial>),
+     SetAddresses(SessionHandle, Vec<DcAddress>),
++    SetHttpAddresses(SessionHandle, Vec<DcAddress>),
+     SetObfuscationDcId(SessionHandle, i16),
+     SetProxy(SessionHandle, Option<ProxyConfig>),
+     SetTransport(SessionHandle, crate::types::TransportPreference, Option<u16>),
+@@ -81,7 +83,7 @@ impl Resolve for ThreadResolver {
          let waker = self.waker.clone();
          let host = host.to_string();
          let lookup_host = host.clone();
@@ -921,8 +1756,20 @@ index b0e3986..ef2e17b 100644
              let addresses = resolve_blocking(&lookup_host, port);
              let _ = sender.send(Command::Resolved { host: lookup_host, port, addresses });
              let _ = waker.wake();
+@@ -356,6 +358,11 @@ impl Worker {
+                         session.set_addresses(addresses, now, self.poll.registry());
+                     }
+                 }
++                Command::SetHttpAddresses(handle, addresses) => {
++                    if let Some(session) = self.sessions.get_mut(&handle) {
++                        session.set_http_addresses(addresses, now, self.poll.registry());
++                    }
++                }
+                 Command::SetObfuscationDcId(handle, dc_id) => {
+                     if let Some(session) = self.sessions.get_mut(&handle) {
+                         session.set_obfuscation_dc_id(dc_id, now, self.poll.registry());
 diff --git a/crates/mtproto-engine/tests/engine.rs b/crates/mtproto-engine/tests/engine.rs
-index 38a9daa..b38de0c 100644
+index 38a9daa..e6da0ad 100644
 --- a/crates/mtproto-engine/tests/engine.rs
 +++ b/crates/mtproto-engine/tests/engine.rs
 @@ -12,6 +12,10 @@ use mtproto_engine::{
@@ -936,6 +1783,15 @@ index 38a9daa..b38de0c 100644
  #[derive(Default)]
  struct Collector {
      events: Mutex<Vec<(SessionHandle, EngineEvent)>>,
+@@ -447,7 +451,7 @@ fn updates_and_session_resets_are_delivered() {
+     engine.send(session, request(2, TAG_NEW_SESSION));
+     assert!(collector.wait(WAIT, |events| completions(events, session) == 2));
+     assert!(collector.count(|event| matches!(event, EngineEvent::Rpc(RpcEvent::Update { .. }))) >= 1);
+-    assert!(collector.count(|event| matches!(event, EngineEvent::Rpc(RpcEvent::UpdatesReset))) >= 1);
++    assert!(collector.count(|event| matches!(event, EngineEvent::Rpc(RpcEvent::UpdatesReset { .. }))) >= 1);
+     engine.shutdown();
+ }
+ 
 @@ -919,15 +923,6 @@ fn verified_race_leaves_an_address_that_accepts_but_never_answers() {
      drop(keeper);
  }
@@ -952,6 +1808,628 @@ index 38a9daa..b38de0c 100644
  #[test]
  fn unresolvable_proxy_host_backs_off_instead_of_spinning() {
      let key = random_key(41);
+diff --git a/crates/mtproto-engine/tests/host_endpoints.rs b/crates/mtproto-engine/tests/host_endpoints.rs
+new file mode 100644
+index 0000000..5e5d5f3
+--- /dev/null
++++ b/crates/mtproto-engine/tests/host_endpoints.rs
+@@ -0,0 +1,616 @@
++//! The endpoints a host gives a session. With its own HTTP addresses (`set_http_addresses`) HTTP goes
++//! there and nowhere else, at their own ports; each test runs the routes derived from the TCP
++//! addresses as its control, where the same listener does get HTTP. A host that holds a session
++//! paused while it replaces addresses, transport and environment gets no connection anywhere until it
++//! lets the session go, and then only to the latest ones, without a call running or completing twice.
++
++use std::io::{Read, Write};
++use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
++use std::sync::atomic::{AtomicUsize, Ordering};
++use std::sync::{Arc, Condvar, Mutex};
++use std::time::{Duration, Instant};
++
++use mtproto_engine::mtproto_core::auth_key::AuthKey;
++use mtproto_engine::mtproto_core::rpc::{ApiEnvironment, RequestFlags, RequestId, RpcEvent, RpcRequest, SessionRole};
++use mtproto_engine::mtproto_core::session::ServerSalt;
++use mtproto_engine::{
++    AuthKeyMaterial, DcAddress, DropReason, Engine, EngineCallbacks, EngineConfig, EngineEvent, SessionHandle,
++    SessionSetup, TransportPreference, unix_seconds,
++};
++use mtproto_testserver::*;
++
++const WAIT: Duration = Duration::from_secs(20);
++
++#[derive(Default)]
++struct Collector {
++    events: Mutex<Vec<(SessionHandle, EngineEvent)>>,
++    condvar: Condvar,
++}
++
++impl EngineCallbacks for Collector {
++    fn on_event(&self, session: SessionHandle, event: EngineEvent) {
++        self.events.lock().unwrap().push((session, event));
++        self.condvar.notify_all();
++    }
++
++    fn on_log(&self, _level: mtproto_engine::LogLevel, message: &str) {
++        if std::env::var_os("MTPROTO_TEST_LOG").is_some() {
++            eprintln!("LOG {message}");
++        }
++    }
++}
++
++impl Collector {
++    fn wait<F: Fn(&[(SessionHandle, EngineEvent)]) -> bool>(&self, timeout: Duration, predicate: F) -> bool {
++        let deadline = Instant::now() + timeout;
++        let mut events = self.events.lock().unwrap();
++        loop {
++            if predicate(&events) {
++                return true;
++            }
++            let now = Instant::now();
++            if now >= deadline {
++                return false;
++            }
++            events = self.condvar.wait_timeout(events, deadline - now).unwrap().0;
++        }
++    }
++
++    fn completed(&self, session: SessionHandle, id: u64) -> usize {
++        completed(&self.events.lock().unwrap(), session, id)
++    }
++
++    fn count(&self, predicate: impl Fn(&EngineEvent) -> bool) -> usize {
++        self.events.lock().unwrap().iter().filter(|(_, event)| predicate(event)).count()
++    }
++}
++
++fn completed(events: &[(SessionHandle, EngineEvent)], session: SessionHandle, id: u64) -> usize {
++    events
++        .iter()
++        .filter(|(handle, event)| {
++            *handle == session
++                && matches!(event, EngineEvent::Rpc(RpcEvent::Completed { id: completed, .. }) if completed.0 == id)
++        })
++        .count()
++}
++
++fn eventually(timeout: Duration, condition: impl Fn() -> bool) -> bool {
++    let deadline = Instant::now() + timeout;
++    loop {
++        if condition() {
++            return true;
++        }
++        if Instant::now() >= deadline {
++            return false;
++        }
++        std::thread::sleep(Duration::from_millis(5));
++    }
++}
++
++/// What reached an endpoint: every connection, and how it opened.
++#[derive(Default)]
++struct Seen {
++    connections: AtomicUsize,
++    /// Connections that opened with an HTTP request.
++    http: AtomicUsize,
++    /// Connections that opened with anything else: the TCP transport, whose obfuscated header never
++    /// starts like an HTTP request.
++    tcp: AtomicUsize,
++    /// Connections that are over.
++    ended: AtomicUsize,
++    /// Connections accepted before this many get nothing back from upstream.
++    held_below: AtomicUsize,
++}
++
++/// A local address a session can be given. With an upstream it forwards both ways, a route to the test
++/// server; without one it takes connections and never answers, an address that leads nowhere.
++struct Endpoint {
++    port: u16,
++    seen: Arc<Seen>,
++}
++
++impl Endpoint {
++    fn route(upstream: SocketAddr) -> Self {
++        Self::start(Some(upstream))
++    }
++
++    fn sink() -> Self {
++        Self::start(None)
++    }
++
++    fn start(upstream: Option<SocketAddr>) -> Self {
++        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
++        let port = listener.local_addr().unwrap().port();
++        let seen = Arc::new(Seen::default());
++        let counted = seen.clone();
++        std::thread::spawn(move || {
++            for stream in listener.incoming() {
++                let Ok(stream) = stream else { continue };
++                let serial = counted.connections.fetch_add(1, Ordering::SeqCst);
++                let seen = counted.clone();
++                std::thread::spawn(move || {
++                    serve(stream, serial, upstream, &seen);
++                    seen.ended.fetch_add(1, Ordering::SeqCst);
++                });
++            }
++        });
++        Self { port, seen }
++    }
++
++    fn address(&self) -> DcAddress {
++        DcAddress { host: "127.0.0.1".into(), port: self.port, secret: None }
++    }
++
++    fn connections(&self) -> usize {
++        self.seen.connections.load(Ordering::SeqCst)
++    }
++
++    fn http(&self) -> usize {
++        self.seen.http.load(Ordering::SeqCst)
++    }
++
++    fn tcp(&self) -> usize {
++        self.seen.tcp.load(Ordering::SeqCst)
++    }
++
++    fn ended(&self) -> usize {
++        self.seen.ended.load(Ordering::SeqCst)
++    }
++
++    /// Every connection open now is over.
++    fn all_ended(&self) -> bool {
++        self.ended() == self.connections()
++    }
++
++    /// From now on nothing the server sends on the connections open now reaches the session.
++    fn hold_open_connections(&self) {
++        self.seen.held_below.store(self.connections(), Ordering::SeqCst);
++    }
++}
++
++fn serve(mut client: TcpStream, serial: usize, upstream: Option<SocketAddr>, seen: &Arc<Seen>) {
++    let mut buffer = vec![0u8; 64 * 1024];
++    let mut head = Vec::new();
++    while head.len() < 4 {
++        match client.read(&mut buffer) {
++            Ok(0) | Err(_) => return,
++            Ok(read) => head.extend_from_slice(&buffer[..read]),
++        }
++    }
++    let opened_with_http = [&b"POST"[..], b"GET ", b"HEAD", b"OPTI", b"PUT "].contains(&&head[..4]);
++    if opened_with_http {
++        seen.http.fetch_add(1, Ordering::SeqCst);
++    } else {
++        seen.tcp.fetch_add(1, Ordering::SeqCst);
++    }
++    let Some(upstream) = upstream else {
++        while matches!(client.read(&mut buffer), Ok(read) if read > 0) {}
++        return;
++    };
++    let Ok(mut server) = TcpStream::connect(upstream) else {
++        return;
++    };
++    let _ = server.set_nodelay(true);
++    let _ = client.set_nodelay(true);
++    if server.write_all(&head).is_err() {
++        return;
++    }
++    let (Ok(mut from_server), Ok(mut to_client)) = (server.try_clone(), client.try_clone()) else {
++        return;
++    };
++    let held = seen.clone();
++    std::thread::spawn(move || {
++        let mut buffer = vec![0u8; 64 * 1024];
++        loop {
++            let read = match from_server.read(&mut buffer) {
++                Ok(0) | Err(_) => break,
++                Ok(read) => read,
++            };
++            if serial < held.held_below.load(Ordering::SeqCst) {
++                continue;
++            }
++            if to_client.write_all(&buffer[..read]).is_err() {
++                break;
++            }
++        }
++        let _ = to_client.shutdown(Shutdown::Both);
++    });
++    loop {
++        let read = match client.read(&mut buffer) {
++            Ok(0) | Err(_) => break,
++            Ok(read) => read,
++        };
++        if server.write_all(&buffer[..read]).is_err() {
++            break;
++        }
++    }
++    let _ = server.shutdown(Shutdown::Both);
++}
++
++fn salts() -> Vec<ServerSalt> {
++    let now = unix_seconds();
++    vec![ServerSalt { salt: SERVER_SALT, valid_since: now - 60.0, valid_until: now + 3600.0 }]
++}
++
++fn environment(hash: &str) -> ApiEnvironment {
++    ApiEnvironment {
++        layer: 230,
++        api_id: 9,
++        device_model: "Desktop".into(),
++        system_version: "Windows 11".into(),
++        app_version: "1".into(),
++        system_lang_code: "en".into(),
++        lang_pack: "tdesktop".into(),
++        lang_code: "en".into(),
++        proxy: None,
++        params: None,
++        init_hash: hash.into(),
++        disable_updates: false,
++    }
++}
++
++/// A main session set up as a desktop host sets one up: TCP falling back to HTTP, HTTP on port 80
++/// unless the host gives HTTP addresses of its own.
++fn setup(key: &AuthKey, tcp: Vec<DcAddress>, http: Option<Vec<DcAddress>>) -> SessionSetup {
++    let mut setup = SessionSetup::new(2, SessionRole::Main, tcp);
++    setup.auth_key = Some(AuthKeyMaterial { key: key.clone(), salts: salts(), init_hash: None });
++    setup.transport = TransportPreference::Auto;
++    setup.http_port = Some(80);
++    setup.http_addresses = http;
++    setup
++}
++
++fn request(id: u64, tag: u32) -> RpcRequest {
++    RpcRequest {
++        id: RequestId(id),
++        body: call(tag, &id.to_le_bytes()),
++        flags: RequestFlags::default(),
++        invoke_after: None,
++    }
++}
++
++fn engine(collector: &Arc<Collector>) -> Engine {
++    Engine::new(EngineConfig { worker_threads: 1, ..EngineConfig::default() }, collector.clone()).unwrap()
++}
++
++/// What an Auto session whose only TCP address never answers did: whether its call completed, and
++/// the HTTP connections that reached the TCP address and the host's HTTP address.
++struct Fallback {
++    done: bool,
++    http_at_tcp_address: usize,
++    http_at_http_address: usize,
++}
++
++fn auto_fallback(seed: u64, http_list: bool) -> Fallback {
++    let key = random_key(seed);
++    let server = TestServer::start(vec![key.clone()], ServerOptions::default());
++    let tcp_only = Endpoint::sink();
++    let http = Endpoint::route(server.address);
++    let collector = Arc::new(Collector::default());
++    let engine = engine(&collector);
++    let mut setup = setup(&key, vec![tcp_only.address()], http_list.then(|| vec![http.address()]));
++    // Derived routes go to each address's own port, so the control's HTTP lands on the listener.
++    setup.http_port = None;
++    let session = engine.create_session(setup);
++    engine.send(session, request(1, 1));
++    let done = if http_list {
++        collector.wait(WAIT, |events| completed(events, session, 1) == 1)
++    } else {
++        eventually(WAIT, || tcp_only.http() > 0)
++    };
++    let tcp_attempts = tcp_only.tcp();
++    let fallback = Fallback { done, http_at_tcp_address: tcp_only.http(), http_at_http_address: http.http() };
++    engine.shutdown();
++    eprintln!(
++        "HTTP list {http_list}: done {done}, TCP connections to the TCP address {tcp_attempts}, HTTP there {}, HTTP at the HTTP address {}",
++        fallback.http_at_tcp_address, fallback.http_at_http_address
++    );
++    fallback
++}
++
++/// The TCP address never answers, so Auto moves to HTTP. With the host's HTTP list it reaches the
++/// server through the HTTP address and never sends HTTP to the address that is only in the TCP list;
++/// with derived routes (the control, ABI 5) HTTP goes to that address.
++#[test]
++fn an_address_only_in_the_tcp_list_gets_no_http() {
++    let explicit = auto_fallback(8101, true);
++    assert!(explicit.done, "the call did not complete over the host's HTTP address");
++    assert!(explicit.http_at_http_address > 0);
++    assert_eq!(explicit.http_at_tcp_address, 0, "HTTP went to an address the host gave for TCP only");
++    let derived = auto_fallback(8101, false);
++    assert!(derived.http_at_tcp_address > 0, "control: derived routes send HTTP to the TCP address");
++}
++
++/// HTTP goes to each of the host's HTTP addresses at its own port only, never at `http_port`. The
++/// control derives routes from the same address, and its first HTTP connection goes to `http_port`.
++#[test]
++fn the_hosts_http_addresses_keep_their_own_ports() {
++    let mut results = Vec::new();
++    for http_list in [true, false] {
++        let key = random_key(8102);
++        let server = TestServer::start(vec![key.clone()], ServerOptions::default());
++        let route = Endpoint::route(server.address);
++        let other_port = Endpoint::sink();
++        let collector = Arc::new(Collector::default());
++        let engine = engine(&collector);
++        let mut setup = setup(&key, vec![route.address()], http_list.then(|| vec![route.address()]));
++        setup.transport = TransportPreference::Http;
++        setup.http_port = Some(other_port.port);
++        let session = engine.create_session(setup);
++        engine.send(session, request(1, 1));
++        let done = if http_list {
++            collector.wait(WAIT, |events| completed(events, session, 1) == 1)
++        } else {
++            eventually(WAIT, || other_port.connections() > 0)
++        };
++        let (at_route, at_other_port) = (route.http(), other_port.connections());
++        engine.shutdown();
++        eprintln!(
++            "HTTP list {http_list}: done {done}, HTTP at the address's port {at_route}, connections to http_port {at_other_port}"
++        );
++        results.push((http_list, done, at_route, at_other_port));
++    }
++    let (_, done, at_route, at_other_port) = results[0];
++    assert!(done && at_route > 0, "the call did not complete at the HTTP address's own port");
++    assert_eq!(at_other_port, 0, "HTTP went to http_port instead of the host's port");
++    let (_, done, _, at_other_port) = results[1];
++    assert!(done && at_other_port > 0, "control: derived routes try http_port first");
++}
++
++/// An empty HTTP list: Auto never falls back, however long TCP gets no answer. The control with
++/// derived routes sends HTTP to the TCP address within the same time.
++#[test]
++fn an_empty_http_list_allows_no_fallback() {
++    let mut results = Vec::new();
++    for empty in [true, false] {
++        let key = random_key(8103);
++        let tcp_only = Endpoint::sink();
++        let collector = Arc::new(Collector::default());
++        let engine = engine(&collector);
++        let mut setup = setup(&key, vec![tcp_only.address()], empty.then(Vec::new));
++        setup.http_port = None;
++        let session = engine.create_session(setup);
++        engine.send(session, request(1, 1));
++        // Auto tries HTTP after 2.5 s of silence or two failed connections.
++        std::thread::sleep(Duration::from_secs(8));
++        let (tcp, http) = (tcp_only.tcp(), tcp_only.http());
++        let switches = collector
++            .count(|event| matches!(event, EngineEvent::ConnectionDropped { reason: DropReason::TransportSwitch, .. }));
++        let done = collector.completed(session, 1);
++        engine.shutdown();
++        eprintln!("empty list {empty}: in 8 s {tcp} TCP and {http} HTTP connections, {switches} switches, {done} done");
++        results.push((empty, tcp, http, switches, done));
++    }
++    let (_, tcp, http, switches, done) = results[0];
++    assert!(tcp > 0, "TCP was never tried");
++    assert_eq!((http, switches, done), (0, 0, 0), "an empty HTTP list still let HTTP through");
++    let (_, _, http, _, _) = results[1];
++    assert!(http > 0, "control: derived routes fall back to HTTP within 8 s");
++}
++
++/// On HTTP, a new HTTP list closes every connection to the old address, and from then on HTTP goes
++/// only to the new one. The TCP address is only a sink, so routes derived from it (ABI 5) complete
++/// nothing at all.
++#[test]
++fn a_new_http_list_moves_http_to_it() {
++    let key = random_key(8104);
++    let server = TestServer::start(vec![key.clone()], ServerOptions::default());
++    let tcp_only = Endpoint::sink();
++    let first = Endpoint::route(server.address);
++    let second = Endpoint::route(server.address);
++    let collector = Arc::new(Collector::default());
++    let engine = engine(&collector);
++    let mut setup = setup(&key, vec![tcp_only.address()], Some(vec![first.address()]));
++    setup.transport = TransportPreference::Http;
++    setup.http_port = None;
++    let session = engine.create_session(setup);
++    engine.send(session, request(1, 1));
++    let first_done = collector.wait(WAIT, |events| completed(events, session, 1) == 1);
++    let first_before = first.http();
++    engine.set_http_addresses(session, vec![second.address()]);
++    engine.send(session, request(2, 2));
++    let second_done = collector.wait(WAIT, |events| completed(events, session, 2) == 1);
++    let old_closed = eventually(Duration::from_secs(5), || first.all_ended());
++    let old_connections = first.connections();
++    engine.send(session, request(3, 3));
++    let third_done = collector.wait(WAIT, |events| completed(events, session, 3) == 1);
++    std::thread::sleep(Duration::from_millis(500));
++    let (old_after, new_http, sink) = (first.connections(), second.http(), tcp_only.connections());
++    engine.shutdown();
++    eprintln!(
++        "first address: {first_before} HTTP connections before the change, {old_after} in all; second address: {new_http} HTTP connections; TCP address: {sink} connections"
++    );
++    assert!(first_done && first_before > 0, "the first call did not complete at the first HTTP address");
++    assert!(second_done && third_done, "calls after the change did not complete");
++    assert!(old_closed, "connections to the old HTTP address stayed open");
++    assert_eq!(old_after, old_connections, "HTTP went to the old address after the change");
++    assert!(new_http > 0, "nothing reached the new HTTP address");
++    assert_eq!(sink, 0, "a session on HTTP connected to its TCP address");
++}
++
++/// The HTTP list it already has changes nothing: the TCP connection stays. A different list voids
++/// the routes as new addresses do: the connection closes and the session reconnects at once.
++#[test]
++fn the_same_http_list_again_changes_nothing_and_a_new_one_reconnects() {
++    let key = random_key(8105);
++    let server = TestServer::start(vec![key.clone()], ServerOptions::default());
++    let tcp = Endpoint::route(server.address);
++    let (first, second) = (Endpoint::sink(), Endpoint::sink());
++    let collector = Arc::new(Collector::default());
++    let engine = engine(&collector);
++    let session = engine.create_session(setup(&key, vec![tcp.address()], Some(vec![first.address()])));
++    engine.send(session, request(1, 1));
++    assert!(collector.wait(WAIT, |events| completed(events, session, 1) == 1));
++    let connected = tcp.connections();
++    engine.set_http_addresses(session, vec![first.address()]);
++    engine.send(session, request(2, 2));
++    let same_done = collector.wait(WAIT, |events| completed(events, session, 2) == 1);
++    std::thread::sleep(Duration::from_millis(300));
++    let (after_same, ended_after_same) = (tcp.connections(), tcp.ended());
++    engine.set_http_addresses(session, vec![second.address()]);
++    engine.send(session, request(3, 3));
++    let new_done = collector.wait(WAIT, |events| completed(events, session, 3) == 1);
++    let (after_new, ended_after_new) = (tcp.connections(), tcp.ended());
++    let http = first.connections() + second.connections();
++    engine.shutdown();
++    eprintln!(
++        "TCP connections: {connected} at first, {after_same} ({ended_after_same} over) after the same list, {after_new} ({ended_after_new} over) after a new one"
++    );
++    assert!(same_done && new_done);
++    assert_eq!((after_same, ended_after_same), (connected, 0), "the same HTTP list again closed the connection");
++    assert!(ended_after_new >= 1 && after_new > after_same, "a new HTTP list kept the old connection");
++    assert_eq!(http, 0, "HTTP was tried while TCP answered");
++}
++
++/// A host holding a session paused changes everything a refresh changes: empty lists, another
++/// transport and environment, then the latest lists. Nothing connects while it is held, nor while it
++/// runs with empty lists; let go, it connects only to the latest TCP address.
++#[test]
++fn a_paused_session_connects_only_after_unpause_to_the_latest_lists() {
++    let key = random_key(8106);
++    let server = TestServer::start(vec![key.clone()], ServerOptions::default());
++    let endpoints: Vec<Endpoint> = (0..4).map(|_| Endpoint::route(server.address)).collect();
++    let [old_tcp, old_http, new_tcp, new_http] = &endpoints[..] else { unreachable!() };
++    let connections = || endpoints.iter().map(Endpoint::connections).sum::<usize>();
++    let collector = Arc::new(Collector::default());
++    let engine = engine(&collector);
++    let mut paused = setup(&key, vec![old_tcp.address()], Some(vec![old_http.address()]));
++    paused.paused = true;
++    paused.transport = TransportPreference::Tcp;
++    paused.environment = Some(environment("first"));
++    let session = engine.create_session(paused);
++    engine.send(session, request(1, 1));
++    std::thread::sleep(Duration::from_millis(300));
++    assert_eq!(connections(), 0, "a session created paused connected");
++
++    engine.set_addresses(session, Vec::new());
++    engine.set_http_addresses(session, Vec::new());
++    engine.set_transport(session, TransportPreference::Http, None);
++    engine.update_environment(session, environment("second"), None);
++    std::thread::sleep(Duration::from_secs(1));
++    assert_eq!(connections(), 0, "a paused session connected after new lists, transport and environment");
++
++    engine.set_paused(session, false);
++    std::thread::sleep(Duration::from_secs(1));
++    assert_eq!(connections(), 0, "a session with empty lists connected");
++
++    engine.set_paused(session, true);
++    engine.set_addresses(session, vec![new_tcp.address()]);
++    engine.set_http_addresses(session, vec![new_http.address()]);
++    engine.set_transport(session, TransportPreference::Auto, Some(80));
++    engine.update_environment(session, environment("third"), None);
++    std::thread::sleep(Duration::from_secs(1));
++    assert_eq!(connections(), 0, "a paused session connected after the latest lists");
++
++    engine.set_paused(session, false);
++    let done = collector.wait(WAIT, |events| completed(events, session, 1) == 1);
++    let seen: Vec<(usize, usize)> = endpoints.iter().map(|endpoint| (endpoint.tcp(), endpoint.http())).collect();
++    engine.shutdown();
++    eprintln!("(TCP, HTTP) connections at old TCP, old HTTP, new TCP, new HTTP: {seen:?}");
++    assert!(done, "the call did not complete after unpause");
++    assert_eq!(old_tcp.connections() + old_http.connections(), 0, "the session connected to an old address");
++    assert!(seen[2].0 > 0, "the call did not go over TCP to the latest address");
++}
++
++/// The session is on Auto with an HTTP probe outstanding (the HTTP address takes it and never answers)
++/// when the host pauses it. The pause alone closes the probe and the TCP connection; the host then
++/// replaces both lists, transport and environment, nothing connects while it is held, and let go the
++/// session reaches the server only through the new lists: TCP to the new TCP address, which never
++/// answers either, and then HTTP to the new HTTP address.
++#[test]
++fn a_pause_during_an_http_probe_connects_only_after_unpause_to_the_latest_lists() {
++    let key = random_key(8107);
++    let server = TestServer::start(vec![key.clone()], ServerOptions::default());
++    let (old_tcp, old_http, new_tcp) = (Endpoint::sink(), Endpoint::sink(), Endpoint::sink());
++    let new_http = Endpoint::route(server.address);
++    let collector = Arc::new(Collector::default());
++    let engine = engine(&collector);
++    let mut setup = setup(&key, vec![old_tcp.address()], Some(vec![old_http.address()]));
++    setup.environment = Some(environment("first"));
++    let session = engine.create_session(setup);
++    engine.send(session, request(1, 1));
++    assert!(eventually(WAIT, || old_http.http() > 0), "Auto never probed the HTTP address");
++
++    engine.set_paused(session, true);
++    let closed = eventually(Duration::from_secs(2), || old_tcp.all_ended() && old_http.all_ended());
++    assert!(closed, "the pause left the probe or the TCP connection open");
++    engine.set_addresses(session, vec![new_tcp.address()]);
++    engine.set_http_addresses(session, vec![new_http.address()]);
++    engine.set_transport(session, TransportPreference::Tcp, Some(80));
++    engine.set_transport(session, TransportPreference::Auto, Some(80));
++    engine.update_environment(session, environment("second"), None);
++    let counts = || [&old_tcp, &old_http, &new_tcp, &new_http].map(Endpoint::connections);
++    let held = counts();
++    std::thread::sleep(Duration::from_secs(1));
++    let still = counts();
++    assert_eq!(still, held, "connections while paused (old TCP, old HTTP, new TCP, new HTTP)");
++    assert_eq!(held[2] + held[3], 0, "the new addresses were used before unpause");
++
++    engine.set_paused(session, false);
++    let done = collector.wait(WAIT, |events| completed(events, session, 1) == 1);
++    let after = counts();
++    let (new_tcp_attempts, new_http_requests) = (new_tcp.tcp(), new_http.http());
++    engine.shutdown();
++    eprintln!("connections (old TCP, old HTTP, new TCP, new HTTP) while paused {held:?}, at the end {after:?}");
++    assert!(done, "the call did not complete after unpause");
++    assert_eq!(after[..2], held[..2], "the session went back to an old address");
++    assert!(new_tcp_attempts > 0 && new_http_requests > 0, "the latest lists were not the ones used");
++}
++
++/// A call runs on the server while its answer is held on the way back; the host then pauses the
++/// session, gives it its lists (new ones or the same) and lets it go. Both routes lead to one server,
++/// whose session keeps the answer: it comes back once and the call never runs again.
++fn a_call_outstanding_across_a_restart(new_lists: bool) {
++    let key = random_key(8108);
++    let server = TestServer::start(vec![key.clone()], ServerOptions::default());
++    let (first, second) = (Endpoint::route(server.address), Endpoint::route(server.address));
++    let collector = Arc::new(Collector::default());
++    let engine = engine(&collector);
++    let session = engine.create_session(setup(&key, vec![first.address()], Some(vec![first.address()])));
++    engine.send(session, request(1, 1));
++    assert!(collector.wait(WAIT, |events| completed(events, session, 1) == 1), "the first route did not answer");
++    first.hold_open_connections();
++    engine.send(session, request(2, TAG_SLOW));
++    assert!(eventually(WAIT, || server.executions(TAG_SLOW) == 1), "the call never ran");
++    // The server answers TAG_SLOW 300 ms after running it, into the held connection.
++    std::thread::sleep(Duration::from_millis(500));
++    assert_eq!(collector.completed(session, 2), 0, "the held answer reached the session");
++
++    engine.set_paused(session, true);
++    assert!(eventually(Duration::from_secs(5), || first.all_ended()), "the pause left the connection open");
++    let before = (first.connections(), second.connections());
++    let route = if new_lists { second.address() } else { first.address() };
++    engine.set_addresses(session, vec![route.clone()]);
++    engine.set_http_addresses(session, vec![route]);
++    engine.set_paused(session, false);
++    let done = collector.wait(WAIT, |events| completed(events, session, 2) > 0);
++    std::thread::sleep(Duration::from_millis(1500));
++    let (completions, executions) = (collector.completed(session, 2), server.executions(TAG_SLOW));
++    let after = (first.connections(), second.connections());
++    let redelivered = server.with_stats(|stats| stats.redelivered_answers);
++    engine.shutdown();
++    eprintln!(
++        "new lists {new_lists}: completions {completions}, executions {executions}, connections (first, second) {before:?} -> {after:?}, answers redelivered for repeats {redelivered}"
++    );
++    assert!(done, "the call never completed after unpause");
++    assert_eq!(completions, 1, "the call completed more than once");
++    assert_eq!(executions, 1, "the call ran again");
++    if new_lists {
++        assert_eq!(after.0, before.0, "the session went back to the old route");
++        assert!(after.1 > before.1, "the session did not connect to the new route");
++    } else {
++        assert!(after.0 > before.0, "the session did not reconnect");
++        assert_eq!(after.1, 0);
++    }
++}
++
++#[test]
++fn a_call_outstanding_across_a_pause_and_new_lists_runs_and_completes_once() {
++    a_call_outstanding_across_a_restart(true);
++}
++
++#[test]
++fn a_call_outstanding_across_a_forced_restart_runs_and_completes_once() {
++    a_call_outstanding_across_a_restart(false);
++}
 diff --git a/crates/mtproto-engine/tests/http_drain_reset_cost.rs b/crates/mtproto-engine/tests/http_drain_reset_cost.rs
 index 6c46f9d..5e4f7e3 100644
 --- a/crates/mtproto-engine/tests/http_drain_reset_cost.rs
@@ -1421,7 +2899,7 @@ index c7a7906..6d29a83 100644
  
  fn measure(seconds: f64) -> f64 {
 diff --git a/crates/mtproto-engine/tests/sec_audit_runtime.rs b/crates/mtproto-engine/tests/sec_audit_runtime.rs
-index 78b7771..72eb81d 100644
+index 78b7771..f735b31 100644
 --- a/crates/mtproto-engine/tests/sec_audit_runtime.rs
 +++ b/crates/mtproto-engine/tests/sec_audit_runtime.rs
 @@ -19,6 +19,10 @@ use mtproto_testserver::*;
@@ -1435,6 +2913,15 @@ index 78b7771..72eb81d 100644
  #[derive(Default)]
  struct Collector {
      events: Mutex<Vec<(SessionHandle, EngineEvent)>>,
+@@ -211,7 +215,7 @@ fn injected_frames_never_touch_the_key_clock_or_salts() {
+                 EngineEvent::AuthKeyInvalid { .. }
+                     | EngineEvent::PermanentKeyInvalid
+                     | EngineEvent::AuthKeyRequired
+-                    | EngineEvent::Rpc(RpcEvent::UpdatesReset)
++                    | EngineEvent::Rpc(RpcEvent::UpdatesReset { .. })
+             ),
+             "injected frames changed state: {event:?}"
+         );
 @@ -229,15 +233,6 @@ fn injected_frames_never_touch_the_key_clock_or_salts() {
      assert!(protocol_drops >= 1);
  }
@@ -1451,6 +2938,19 @@ index 78b7771..72eb81d 100644
  /// An on-path attacker floods a working connection with forged quick acks (4 bytes each, 31 bits of
  /// guessed token): they cost little CPU, never count as liveness, and the session keeps working.
  #[test]
+diff --git a/crates/mtproto-engine/tests/sec_rows_rpc_engine.rs b/crates/mtproto-engine/tests/sec_rows_rpc_engine.rs
+index 75d9aeb..1d15fd1 100644
+--- a/crates/mtproto-engine/tests/sec_rows_rpc_engine.rs
++++ b/crates/mtproto-engine/tests/sec_rows_rpc_engine.rs
+@@ -218,7 +218,7 @@ fn a_cdn_session_never_delivers_a_pushed_update() {
+     }));
+     assert_eq!(server.executions(TAG_UPDATE_PUSH), 2);
+     let leaked = collector
+-        .count(cdn, |event| matches!(event, EngineEvent::Rpc(RpcEvent::Update { .. } | RpcEvent::UpdatesReset)));
++        .count(cdn, |event| matches!(event, EngineEvent::Rpc(RpcEvent::Update { .. } | RpcEvent::UpdatesReset { .. })));
+     engine.shutdown();
+     assert_eq!(leaked, 0, "a CDN pushed an update to the host");
+ }
 diff --git a/crates/mtproto-engine/tests/sec_rows_zeroize.rs b/crates/mtproto-engine/tests/sec_rows_zeroize.rs
 index 197202a..1e4dfe7 100644
 --- a/crates/mtproto-engine/tests/sec_rows_zeroize.rs
@@ -1670,10 +3170,192 @@ index 8b16bc3..95642b7 100644
 +[target.'cfg(windows)'.dev-dependencies]
 +find-msvc-tools = "=0.1.13"
 +windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+diff --git a/crates/mtproto-ffi/include/mtproto_engine.h b/crates/mtproto-ffi/include/mtproto_engine.h
+index 4f4afe5..a8a9440 100644
+--- a/crates/mtproto-ffi/include/mtproto_engine.h
++++ b/crates/mtproto-ffi/include/mtproto_engine.h
+@@ -138,6 +138,10 @@ enum {
+     MTRequestFlagTimeoutTimer = 1 << 5,
+     MTRequestFlagWithoutUpdates = 1 << 6,
+     MTRequestFlagDelegateRetryDecisions = 1 << 7,
++    /* MSG_WAIT_TIMEOUT and MSG_WAIT_FAILED of a request with invoke_after come to the host as
++       MTEventKindFailed with the server's code and text, for a host that orders dependent requests
++       itself; without it the session waits for the request's dependency and sends it again. */
++    MTRequestFlagSurfaceDependencyWaits = 1 << 8,
+ };
+ 
+ typedef struct {
+@@ -161,6 +165,9 @@ typedef enum {
+     MTEventKindInitHashStored = 10,
+     MTEventKindInitHashCleared = 11,
+     MTEventKindVerificationRequired = 12,
++    /* The host should fetch the updates it may have missed; code says why (MTUpdatesReset*). For
++       MTUpdatesResetServerSession the payload is the server's new_session_created message as received
++       (unpacked from any container or gzip); the other codes carry no payload. */
+     MTEventKindUpdatesReset = 13,
+     MTEventKindUpdate = 14,
+     MTEventKindTimeDifferenceUpdated = 15,
+@@ -213,6 +220,18 @@ enum {
+     MTAuthKeyCreatedPermanent = 1 << 1,
+ };
+ 
++/* MTEvent.code of MTEventKindUpdatesReset. */
++enum {
++    /* The server started a new session (new_session_created, the payload). */
++    MTUpdatesResetServerSession = 1,
++    /* The session started a new session itself. */
++    MTUpdatesResetLocalSession = 2,
++    /* Updates too old to tell from ones already delivered were dropped. */
++    MTUpdatesResetUpdatesLost = 3,
++    /* An updatesTooLong update came; it follows as the next MTEventKindUpdate. */
++    MTUpdatesResetUpdatesTooLong = 4,
++};
++
+ enum {
+     MTReleasedMayHaveRun = 1 << 0,
+ };
+@@ -326,6 +345,11 @@ enum {
+ /* Which transports the session may use; HTTP goes to `http_port`, or to each address's own port
+    when it is 0. Auto stays on TCP while TCP answers and moves to HTTP while it does not. */
+ void mt_session_set_transport(MTEngine *engine, MTSessionHandle session, uint8_t transport, uint16_t http_port);
++/* The session's HTTP routes from now on: these addresses, each at its own port, instead of those
++   derived from its addresses at http_port. Addresses with a secret are skipped, and an empty list
++   (count 0) allows no plain HTTP at all; Telegram Web's endpoint is set apart. The addresses are
++   copied during the call. */
++void mt_session_set_http_addresses(MTEngine *engine, MTSessionHandle session, const MTAddress *addresses, size_t count);
+ 
+ /* Telegram Web's endpoints on one front, through host streams; used only while a stream host is set
+    and no proxy is. When TCP gets no answer, Auto tries the WebSocket endpoint (ws_path, carrying the
+diff --git a/crates/mtproto-ffi/src/lib.rs b/crates/mtproto-ffi/src/lib.rs
+index 68468db..c5b73b7 100644
+--- a/crates/mtproto-ffi/src/lib.rs
++++ b/crates/mtproto-ffi/src/lib.rs
+@@ -10,8 +10,8 @@ use zeroize::Zeroize;
+ use mtproto_engine::mtproto_core::auth_key::AuthKey;
+ use mtproto_engine::mtproto_core::crypto::RsaPublicKey;
+ use mtproto_engine::mtproto_core::rpc::{
+-    ApiEnvironment, ClientProxy, RequestFlags, RequestId, RpcEvent, RpcRequest, SessionRole, Verification,
+-    VerificationKind,
++    ApiEnvironment, ClientProxy, RequestFlags, RequestId, RpcEvent, RpcRequest, SessionRole, UpdatesResetReason,
++    Verification, VerificationKind,
+ };
+ use mtproto_engine::mtproto_core::session::{DestroyAuthKeyOutcome, ServerSalt};
+ use mtproto_engine::mtproto_core::transport::Framing;
+@@ -21,7 +21,7 @@ use mtproto_engine::{
+     TransportPreference, WebEndpoint,
+ };
+ 
+-pub const ABI_VERSION: u32 = 5;
++pub const ABI_VERSION: u32 = 6;
+ 
+ /// `MTEvent.flags` of `MTEventKindReleased`: the request may have reached the server.
+ pub const RELEASED_MAY_HAVE_RUN: u32 = 1 << 0;
+@@ -30,6 +30,13 @@ pub const RELEASED_MAY_HAVE_RUN: u32 = 1 << 0;
+ pub const AUTH_KEY_CREATED_TEMPORARY: u32 = 1 << 0;
+ pub const AUTH_KEY_CREATED_PERMANENT: u32 = 1 << 1;
+ 
++/// `MTEvent.code` of `MTEventKindUpdatesReset`: why the host should fetch the updates it may have missed.
++/// Only `UPDATES_RESET_SERVER_SESSION` carries a payload, the server's `new_session_created` message.
++pub const UPDATES_RESET_SERVER_SESSION: i32 = 1;
++pub const UPDATES_RESET_LOCAL_SESSION: i32 = 2;
++pub const UPDATES_RESET_UPDATES_LOST: i32 = 3;
++pub const UPDATES_RESET_UPDATES_TOO_LONG: i32 = 4;
++
+ #[repr(C)]
+ #[derive(Clone, Copy)]
+ pub struct MTBytes {
+@@ -466,7 +473,17 @@ impl Bridge {
+                     }
+                 }
+             }
+-            RpcEvent::UpdatesReset => self.emit(session, blank(13), None),
++            RpcEvent::UpdatesReset { reason, notice } => {
++                let mut event = blank(13);
++                event.code = match reason {
++                    UpdatesResetReason::ServerSession => UPDATES_RESET_SERVER_SESSION,
++                    UpdatesResetReason::LocalSession => UPDATES_RESET_LOCAL_SESSION,
++                    UpdatesResetReason::UpdatesLost => UPDATES_RESET_UPDATES_LOST,
++                    UpdatesResetReason::UpdatesTooLong => UPDATES_RESET_UPDATES_TOO_LONG,
++                };
++                let payload = (reason == UpdatesResetReason::ServerSession && !notice.is_empty()).then_some(notice);
++                self.emit(session, event, payload);
++            }
+             RpcEvent::Update { body } => self.emit(session, blank(14), Some(body)),
+             RpcEvent::TimeDifferenceUpdated { difference } => {
+                 let mut event = blank(15);
+@@ -646,6 +663,7 @@ unsafe fn request(value: &MTRequest) -> RpcRequest {
+             timeout_timer: flags & 32 != 0,
+             without_updates: flags & 64 != 0,
+             delegate_retry_decisions: flags & 128 != 0,
++            surface_dependency_waits: flags & 256 != 0,
+             expected_response_size: value.expected_response_size,
+         },
+         invoke_after: (value.invoke_after != 0).then_some(RequestId(value.invoke_after)),
+@@ -1094,6 +1112,21 @@ pub unsafe extern "C" fn mt_session_set_transport(pointer: *mut MTEngine, sessio
+     }
+ }
+ 
++/// The session's HTTP routes from now on: these addresses, each at its own port, instead of those
++/// derived from its addresses at `http_port`. Addresses with a secret are skipped, and an empty list
++/// (`count` 0) allows no plain HTTP at all. The addresses are copied during the call.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn mt_session_set_http_addresses(
++    pointer: *mut MTEngine,
++    session: u64,
++    values: *const MTAddress,
++    count: usize,
++) {
++    if let Some(engine) = unsafe { engine(pointer) } {
++        engine.set_http_addresses(SessionHandle(session), unsafe { addresses(values, count) });
++    }
++}
++
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn mt_session_update_environment(
+     pointer: *mut MTEngine,
+@@ -1206,3 +1239,29 @@ pub unsafe extern "C" fn mt_buffer_free(buffer: *mut MTBuffer) {
+         drop(unsafe { Box::from_raw(buffer) });
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn flags_of(bits: u32) -> RequestFlags {
++        let body = [0u8; 4];
++        let value = MTRequest {
++            id: 1,
++            body: MTBytes { data: body.as_ptr(), length: body.len() },
++            flags: bits,
++            expected_response_size: 0,
++            invoke_after: 0,
++        };
++        unsafe { request(&value) }.flags
++    }
++
++    #[test]
++    fn bit_8_alone_asks_for_dependency_waits() {
++        let only = flags_of(1 << 8);
++        assert!(only.surface_dependency_waits);
++        assert_eq!(only, RequestFlags { surface_dependency_waits: true, ..flags_of(0) });
++        assert!(!flags_of(0xff).surface_dependency_waits, "the other bits leave it off");
++        assert!(!flags_of(0).surface_dependency_waits);
++    }
++}
 diff --git a/crates/mtproto-ffi/tests/ffi.rs b/crates/mtproto-ffi/tests/ffi.rs
-index d0da713..85ef89c 100644
+index d0da713..edf649d 100644
 --- a/crates/mtproto-ffi/tests/ffi.rs
 +++ b/crates/mtproto-ffi/tests/ffi.rs
+@@ -51,7 +51,7 @@ fn c_abi_end_to_end() {
+     let sink: &'static Sink = Box::leak(Box::default());
+     let engine = unsafe { mt_engine_create(2, sink as *const Sink as *mut c_void, Some(on_event), None) };
+     assert!(!engine.is_null());
+-    assert_eq!(mt_engine_abi_version(), 5);
++    assert_eq!(mt_engine_abi_version(), 6);
+     let host = server.address.ip().to_string();
+     let address = MTAddress { host: string(&host), port: server.address.port(), secret: bytes(&[]) };
+     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
 @@ -183,15 +183,33 @@ int main(void) {
  }
  "#;
@@ -1710,6 +3392,333 @@ index d0da713..85ef89c 100644
      let mut expected: Vec<(String, usize)> = vec![
          ("MTBytes".into(), size_of::<MTBytes>()),
          ("MTString".into(), size_of::<MTString>()),
+diff --git a/crates/mtproto-ffi/tests/ffi_abi6.rs b/crates/mtproto-ffi/tests/ffi_abi6.rs
+new file mode 100644
+index 0000000..6169b82
+--- /dev/null
++++ b/crates/mtproto-ffi/tests/ffi_abi6.rs
+@@ -0,0 +1,298 @@
++//! What ABI 6 added, through the C ABI with real callbacks that free every payload: the session's own
++//! HTTP addresses (`mt_session_set_http_addresses`), dependency waits handed to the host
++//! (`MTRequestFlagSurfaceDependencyWaits`) and the reason of each `MTEventKindUpdatesReset`, with the
++//! server's `new_session_created` message as the payload of a server's new session.
++
++use std::ffi::c_void;
++use std::net::TcpListener;
++use std::sync::{Condvar, Mutex};
++use std::time::{Duration, Instant};
++
++use mtproto_engine_ffi::*;
++use mtproto_testserver::*;
++
++const COMPLETED: u32 = 1;
++const FAILED: u32 = 2;
++const UPDATES_RESET: u32 = 13;
++const SURFACE_DEPENDENCY_WAITS: u32 = 1 << 8;
++const NEW_SESSION_CREATED: u32 = 0x9ec2_0908;
++const WAIT: Duration = Duration::from_secs(15);
++
++#[derive(Clone, Debug)]
++struct Seen {
++    session: u64,
++    kind: u32,
++    request: u64,
++    code: i32,
++    text: String,
++    payload: Option<Vec<u8>>,
++}
++
++#[derive(Default)]
++struct Sink {
++    events: Mutex<Vec<Seen>>,
++    condvar: Condvar,
++}
++
++impl Sink {
++    fn wait(&self, timeout: Duration, predicate: impl Fn(&[Seen]) -> bool) -> bool {
++        let deadline = Instant::now() + timeout;
++        let mut events = self.events.lock().unwrap();
++        while !predicate(&events) {
++            let now = Instant::now();
++            if now >= deadline {
++                return false;
++            }
++            events = self.condvar.wait_timeout(events, deadline - now).unwrap().0;
++        }
++        true
++    }
++
++    fn of(&self, session: u64) -> Vec<Seen> {
++        self.events.lock().unwrap().iter().filter(|event| event.session == session).cloned().collect()
++    }
++}
++
++/// Copies what the test needs and frees the payload, as a host must for every event.
++unsafe extern "C" fn on_event(context: *mut c_void, session: u64, event: *const MTEvent) {
++    let sink = unsafe { &*(context as *const Sink) };
++    let event = unsafe { &*event };
++    let payload = (!event.payload.is_null()).then(|| {
++        let data =
++            unsafe { std::slice::from_raw_parts(mt_buffer_data(event.payload), mt_buffer_length(event.payload)) }
++                .to_vec();
++        unsafe { mt_buffer_free(event.payload) };
++        data
++    });
++    let text = if event.text.data.is_null() {
++        String::new()
++    } else {
++        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(event.text.data, event.text.length) }).into_owned()
++    };
++    sink.events.lock().unwrap().push(Seen {
++        session,
++        kind: event.kind,
++        request: event.request_id,
++        code: event.code,
++        text,
++        payload,
++    });
++    sink.condvar.notify_all();
++}
++
++fn bytes(data: &[u8]) -> MTBytes {
++    MTBytes { data: data.as_ptr(), length: data.len() }
++}
++
++fn string(text: &str) -> MTString {
++    MTString { data: text.as_ptr(), length: text.len() }
++}
++
++struct Rig {
++    server: TestServer,
++    key: mtproto_engine::mtproto_core::auth_key::AuthKey,
++    sink: &'static Sink,
++    engine: *mut MTEngine,
++    host: String,
++}
++
++impl Rig {
++    fn new(seed: u64) -> Self {
++        let key = random_key(seed);
++        let server = TestServer::start(vec![key.clone()], ServerOptions::default());
++        let sink: &'static Sink = Box::leak(Box::default());
++        let engine = unsafe { mt_engine_create(1, sink as *const Sink as *mut c_void, Some(on_event), None) };
++        assert!(!engine.is_null());
++        let host = server.address.ip().to_string();
++        Self { server, key, sink, engine, host }
++    }
++
++    /// A main session on `tcp_port`, created paused so that what is sent before `resume` goes out
++    /// together on its first connection.
++    fn paused_session(&self, tcp_port: u16) -> u64 {
++        let key = &self.key;
++        let address = MTAddress { host: string(&self.host), port: tcp_port, secret: bytes(&[]) };
++        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
++        let salt = MTSaltEntry { salt: SERVER_SALT, valid_since: now - 60.0, valid_until: now + 3600.0 };
++        let setup = MTSessionSetup {
++            datacenter_id: 2,
++            obfuscation_dc_id: 2,
++            role: 0,
++            framing: 0,
++            addresses: &address,
++            address_count: 1,
++            proxy: MTProxy {
++                kind: 0,
++                host: string(""),
++                port: 0,
++                username: string(""),
++                password: string(""),
++                secret: bytes(&[]),
++            },
++            auth_key: bytes(key.bytes()),
++            salts: &salt,
++            salt_count: 1,
++            has_init_hash: 0,
++            init_hash: string(""),
++            generate_key: 0,
++            public_keys_pem: std::ptr::null(),
++            public_key_count: 0,
++            temp_key_expires_in: 0,
++            environment: std::ptr::null(),
++            time_difference: 0.0,
++            online: 1,
++            paused: 1,
++            keep_connected: 1,
++            idle_disconnect_after: 0.0,
++            request_timeout: 5.0,
++            pfs_lifetime: 0,
++            pfs_make_permanent_key: 0,
++            pfs_temporary_key: std::ptr::null(),
++        };
++        let session = unsafe { mt_session_create(self.engine, &setup) };
++        assert_ne!(session, 0);
++        session
++    }
++
++    fn send(&self, session: u64, tag: u32, flags: u32, invoke_after: u64) -> u64 {
++        let id = unsafe { mt_engine_next_request_id(self.engine) };
++        self.send_body(session, id, &call(tag, &id.to_le_bytes()), flags, invoke_after);
++        id
++    }
++
++    fn send_body(&self, session: u64, id: u64, body: &[u8], flags: u32, invoke_after: u64) {
++        let request = MTRequest { id, body: bytes(body), flags, expected_response_size: 0, invoke_after };
++        unsafe { mt_session_send(self.engine, session, &request) };
++    }
++
++    fn resume(&self, session: u64) {
++        unsafe { mt_session_set_paused(self.engine, session, 0) };
++    }
++
++    fn finished(&self, session: u64, id: u64) -> Option<Seen> {
++        self.sink
++            .of(session)
++            .into_iter()
++            .find(|event| (event.kind == COMPLETED || event.kind == FAILED) && event.request == id)
++    }
++
++    fn wait_finished(&self, session: u64, id: u64) -> Option<Seen> {
++        self.sink.wait(WAIT, |events| {
++            events.iter().any(|e| e.session == session && e.request == id && (e.kind == COMPLETED || e.kind == FAILED))
++        });
++        self.finished(session, id)
++    }
++}
++
++impl Drop for Rig {
++    fn drop(&mut self) {
++        unsafe { mt_engine_destroy(self.engine) };
++    }
++}
++
++/// A local port nothing listens on.
++fn closed_port() -> u16 {
++    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
++}
++
++#[test]
++fn the_header_declares_abi_6() {
++    let header = include_str!("../include/mtproto_engine.h");
++    for declared in [
++        "MTRequestFlagSurfaceDependencyWaits = 1 << 8,",
++        "MTUpdatesResetServerSession = 1,",
++        "MTUpdatesResetLocalSession = 2,",
++        "MTUpdatesResetUpdatesLost = 3,",
++        "MTUpdatesResetUpdatesTooLong = 4,",
++        "void mt_session_set_http_addresses(MTEngine *engine, MTSessionHandle session, const MTAddress *addresses, size_t count);",
++    ] {
++        assert!(header.contains(declared), "{declared}");
++    }
++    assert_eq!((UPDATES_RESET_SERVER_SESSION, UPDATES_RESET_LOCAL_SESSION, UPDATES_RESET_UPDATES_LOST), (1, 2, 3));
++    assert_eq!(UPDATES_RESET_UPDATES_TOO_LONG, 4);
++    assert_eq!(mt_engine_abi_version(), 6);
++}
++
++#[test]
++fn http_goes_to_the_addresses_the_host_gives() {
++    let rig = Rig::new(601);
++    // The TCP address leads nowhere, and HTTP derived from it would go there too.
++    let session = rig.paused_session(closed_port());
++    unsafe { mt_session_set_transport(rig.engine, session, 1, 0) };
++    let http = MTAddress { host: string(&rig.host), port: rig.server.address.port(), secret: bytes(&[]) };
++    unsafe { mt_session_set_http_addresses(rig.engine, session, &http, 1) };
++    let id = rig.send(session, 7, 0, 0);
++    rig.resume(session);
++    let finished = rig.wait_finished(session, id).expect("the call completes over the given HTTP address");
++    assert_eq!(finished.kind, COMPLETED, "{finished:?}");
++    let (tag, payload) = parse_result(finished.payload.as_deref().unwrap_or_default()).unwrap();
++    assert_eq!((tag, payload), (7, id.to_le_bytes().to_vec()));
++    assert!(rig.server.with_stats(|stats| stats.http.requests) > 0, "it went over HTTP");
++}
++
++#[test]
++fn a_dependent_of_a_failed_request_reaches_the_host_that_asks_for_it() {
++    let rig = Rig::new(602);
++    let port = rig.server.address.port();
++
++    // A floods; B, chained after it with invokeAfterMsg, hears MSG_WAIT_FAILED and the host gets it.
++    let host_ordered = rig.paused_session(port);
++    let first = rig.send(host_ordered, TAG_FLOOD_ONCE, 0, 0);
++    let dependent = rig.send(host_ordered, 7, SURFACE_DEPENDENCY_WAITS, first);
++    rig.resume(host_ordered);
++    let failed = rig.wait_finished(host_ordered, first).expect("A finished");
++    assert_eq!((failed.kind, failed.code, failed.text.as_str()), (FAILED, 420, "FLOOD_WAIT_1"));
++    let failed = rig.wait_finished(host_ordered, dependent).expect("B finished");
++    assert_eq!((failed.kind, failed.code, failed.text.as_str()), (FAILED, 400, "MSG_WAIT_FAILED"));
++    assert!(rig.server.with_stats(|stats| stats.invoke_after) >= 1, "B rode with invokeAfterMsg");
++    std::thread::sleep(Duration::from_millis(1500));
++    assert_eq!(rig.server.executions(7), 0, "B never ran: the host sends it again once A is through");
++    let finished_b = rig
++        .sink
++        .of(host_ordered)
++        .iter()
++        .filter(|e| e.request == dependent && (e.kind == COMPLETED || e.kind == FAILED))
++        .count();
++    assert_eq!(finished_b, 1, "B finished once, as failed");
++
++    // The control without the flag: the engine waits for A, which has left, and sends B again at once.
++    let engine_ordered = rig.paused_session(port);
++    let first = rig.send(engine_ordered, TAG_SERVER_ERROR_ONCE, 0, 0);
++    let dependent = rig.send(engine_ordered, 8, 0, first);
++    rig.resume(engine_ordered);
++    let failed = rig.wait_finished(engine_ordered, first).expect("A finished");
++    assert_eq!((failed.kind, failed.code), (FAILED, 500));
++    let completed = rig.wait_finished(engine_ordered, dependent).expect("B finished");
++    assert_eq!(completed.kind, COMPLETED, "{completed:?}");
++    assert_eq!(rig.server.with_stats(|stats| stats.msg_wait_failures), 2, "both Bs heard MSG_WAIT_FAILED first");
++    assert_eq!(rig.server.executions(8), 1, "B ran once, sent again without invokeAfterMsg");
++}
++
++#[test]
++fn a_reset_says_why_and_a_new_server_session_hands_over_its_notice() {
++    let rig = Rig::new(604);
++    let session = rig.paused_session(rig.server.address.port());
++    let fresh = rig.send(session, TAG_NEW_SESSION, 0, 0);
++    rig.resume(session);
++    assert_eq!(rig.wait_finished(session, fresh).map(|event| event.kind), Some(COMPLETED));
++    assert!(rig.sink.wait(WAIT, |events| events.iter().any(|e| e.kind == UPDATES_RESET)));
++    let resets: Vec<Seen> = rig.sink.of(session).into_iter().filter(|event| event.kind == UPDATES_RESET).collect();
++    assert_eq!(resets.len(), 1, "{resets:?}");
++    assert_eq!(resets[0].code, UPDATES_RESET_SERVER_SESSION);
++    let notice = resets[0].payload.clone().expect("the server's message");
++    assert_eq!(notice.len(), 28);
++    assert_eq!(u32::from_le_bytes(notice[..4].try_into().unwrap()), NEW_SESSION_CREATED);
++    assert_eq!(i64::from_le_bytes(notice[12..20].try_into().unwrap()), 77, "the test server's unique_id");
++    assert_eq!(i64::from_le_bytes(notice[20..28].try_into().unwrap()), SERVER_SALT);
++
++    // msg_seqno too low: the session starts a new session of its own and sends the call again.
++    let local = unsafe { mt_engine_next_request_id(rig.engine) };
++    rig.send_body(session, local, &bad_msg_call(32, false), 0, 0);
++    assert_eq!(rig.wait_finished(session, local).map(|event| event.kind), Some(COMPLETED));
++    assert!(rig.sink.wait(WAIT, |events| events.iter().filter(|e| e.kind == UPDATES_RESET).count() >= 2));
++    let resets: Vec<Seen> = rig.sink.of(session).into_iter().filter(|event| event.kind == UPDATES_RESET).collect();
++    assert_eq!(resets[1].code, UPDATES_RESET_LOCAL_SESSION, "{resets:?}");
++    for reset in &resets {
++        assert_eq!(reset.payload.is_some(), reset.code == UPDATES_RESET_SERVER_SESSION, "{reset:?}");
++    }
++}
+diff --git a/crates/mtproto-ffi/tests/ffi_drain.rs b/crates/mtproto-ffi/tests/ffi_drain.rs
+index 8a9c32b..f8be74d 100644
+--- a/crates/mtproto-ffi/tests/ffi_drain.rs
++++ b/crates/mtproto-ffi/tests/ffi_drain.rs
+@@ -155,5 +155,5 @@ fn the_header_declares_the_drain_abi() {
+     assert!(header.contains("MTReleasedMayHaveRun = 1 << 0,"));
+     assert!(header.contains("void mt_session_drain(MTEngine *engine, MTSessionHandle session, double deadline);"));
+     assert_eq!(RELEASED_MAY_HAVE_RUN, 1);
+-    assert_eq!(mt_engine_abi_version(), 5);
++    assert_eq!(mt_engine_abi_version(), 6);
+ }
+diff --git a/crates/mtproto-fuzz/src/targets.rs b/crates/mtproto-fuzz/src/targets.rs
+index 038a1da..3476be3 100644
+--- a/crates/mtproto-fuzz/src/targets.rs
++++ b/crates/mtproto-fuzz/src/targets.rs
+@@ -1169,6 +1169,7 @@ fn rpc_case(seed: u64) -> CaseResult {
+                 expected_response_size: g.u32() % (1 << 20),
+                 without_updates: g.one_in(3),
+                 delegate_retry_decisions: g.one_in(3),
++                surface_dependency_waits: g.one_in(3),
+             };
+             let invoke_after = g.one_in(5).then(|| RequestId(g.below(next as usize) as u64));
+             let body = vec![0x88, 0x77, 0x66, 0x55, (next & 0xff) as u8, 0, 0, 0];
 diff --git a/crates/mtproto-netsim/Cargo.toml b/crates/mtproto-netsim/Cargo.toml
 index 3937e37..23b68f9 100644
 --- a/crates/mtproto-netsim/Cargo.toml
@@ -1835,3 +3844,239 @@ index 27a3d9b..af8a618 100644
          return;
      }
      let target = match upstream {
+diff --git a/crates/mtproto-testserver/src/lib.rs b/crates/mtproto-testserver/src/lib.rs
+index c5686c6..44fc61b 100644
+--- a/crates/mtproto-testserver/src/lib.rs
++++ b/crates/mtproto-testserver/src/lib.rs
+@@ -57,6 +57,9 @@ pub const SERVER_PING_ID: i64 = 0x5e57_9149;
+ pub const LARGE_SIZE: usize = 1024 * 1024;
+ pub const SERVER_SALT: i64 = 0x5a17;
+ const MAX_REMEMBERED_ANSWERS: usize = 16 * 1024;
++/// How many queries answered with an error a server session remembers for the queries chained after
++/// them with `invokeAfterMsg`.
++const MAX_REMEMBERED_FAILURES: usize = 1024;
+ 
+ pub fn call(tag: u32, payload: &[u8]) -> Vec<u8> {
+     let mut writer = Writer::new();
+@@ -146,6 +149,8 @@ pub struct Stats {
+     pub init_connections: usize,
+     pub without_updates: usize,
+     pub invoke_after: usize,
++    /// Queries chained after a failed one, answered `MSG_WAIT_FAILED` without running.
++    pub msg_wait_failures: usize,
+     pub state_requests: usize,
+     pub pings: usize,
+     pub future_salts_requests: usize,
+@@ -229,6 +234,36 @@ struct SessionState {
+     clock_offset: f64,
+     awaiting_retransmission: HashSet<i64>,
+     sent_packets: VecDeque<Vec<u8>>,
++    /// The msg_ids of the latest queries answered with an `rpc_error`, oldest first: a query chained
++    /// after one of them with `invokeAfterMsg` gets `MSG_WAIT_FAILED` instead of running, as from
++    /// Telegram.
++    failed_queries: VecDeque<i64>,
++}
++
++impl SessionState {
++    /// Remembers the queries `answers` fail, keeping the latest `MAX_REMEMBERED_FAILURES`.
++    fn remember_failures(&mut self, answers: &[(Vec<u8>, bool)]) {
++        for failed in answers.iter().filter_map(|(body, _)| failed_query(body)) {
++            if self.failed_queries.contains(&failed) {
++                continue;
++            }
++            if self.failed_queries.len() >= MAX_REMEMBERED_FAILURES {
++                self.failed_queries.pop_front();
++            }
++            self.failed_queries.push_back(failed);
++        }
++    }
++
++    fn failed(&self, msg_id: i64) -> bool {
++        self.failed_queries.contains(&msg_id)
++    }
++}
++
++/// The query an answer fails: the `req_msg_id` of an `rpc_result` that carries an `rpc_error`.
++fn failed_query(body: &[u8]) -> Option<i64> {
++    let word = |at: usize| body.get(at..at + 4).map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()));
++    (word(0) == Some(ids::RPC_RESULT) && word(12) == Some(ids::RPC_ERROR))
++        .then(|| i64::from_le_bytes(body[4..12].try_into().unwrap()))
+ }
+ 
+ #[derive(Clone, Copy)]
+@@ -1126,6 +1161,7 @@ fn process_packet(
+                 clock_offset: options.clock_offset,
+                 awaiting_retransmission: HashSet::new(),
+                 sent_packets: VecDeque::new(),
++                failed_queries: VecDeque::new(),
+             }
+         });
+         session.peer.server_time = server_now(session.clock_offset);
+@@ -1199,6 +1235,8 @@ fn process_packet(
+                     kill_now = true;
+                 }
+             }
++            // The answers up to here whose failures the session remembered.
++            let mut remembered = 0;
+             for message in decoded.messages.iter().filter(|_| !kill_now) {
+                 if !session.received.insert(message.msg_id) {
+                     stats.duplicate_msg_ids += 1;
+@@ -1317,7 +1355,15 @@ fn process_packet(
+                             temp.inited = true;
+                         }
+                         stats.without_updates += usize::from(flags.without_updates);
+-                        stats.invoke_after += usize::from(flags.invoke_after);
++                        stats.invoke_after += usize::from(flags.invoke_after.is_some());
++                        session.remember_failures(&outgoing[remembered..]);
++                        remembered = outgoing.len();
++                        if flags.invoke_after.is_some_and(|after| session.failed(after)) {
++                            stats.msg_wait_failures += 1;
++                            outgoing.push((sp::rpc_error(message.msg_id, 400, "MSG_WAIT_FAILED"), true));
++                            session.answered_queries.insert(message.msg_id, 0);
++                            continue;
++                        }
+                         let (tag, payload) = match call {
+                             Some(Inner::Call(tag, payload)) => (tag, payload),
+                             Some(Inner::Api(constructor, body)) => {
+@@ -1823,6 +1869,7 @@ fn process_packet(
+                     }
+                 }
+             }
++            session.remember_failures(&outgoing[remembered..]);
+         }
+     }
+     Reaction {
+@@ -2068,7 +2115,8 @@ fn future_salts_reply(req_msg_id: i64, salt: i64, clock_offset: f64) -> Vec<u8>
+ struct WrapperFlags {
+     init_connection: bool,
+     without_updates: bool,
+-    invoke_after: bool,
++    /// The msg_id an `invokeAfterMsg` wrapper names.
++    invoke_after: Option<i64>,
+ }
+ 
+ enum Inner {
+@@ -2085,10 +2133,10 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+         };
+         match constructor {
+             ids::INVOKE_AFTER_MSG => {
+-                flags.invoke_after = true;
+-                if reader.read_i64().is_err() {
++                let Ok(after) = reader.read_i64() else {
+                     return (None, flags);
+-                }
++                };
++                flags.invoke_after = flags.invoke_after.or(Some(after));
+             }
+             ids::INVOKE_WITHOUT_UPDATES => flags.without_updates = true,
+             ids::INVOKE_WITH_LAYER => {
+@@ -2133,7 +2181,7 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+                     return (None, flags);
+                 };
+                 let (inner, inner_flags) = unwrap_wrappers(&unpacked);
+-                flags.invoke_after |= inner_flags.invoke_after;
++                flags.invoke_after = flags.invoke_after.or(inner_flags.invoke_after);
+                 flags.without_updates |= inner_flags.without_updates;
+                 flags.init_connection |= inner_flags.init_connection;
+                 return (inner, flags);
+@@ -2190,3 +2238,70 @@ pub fn random_key(seed: u64) -> AuthKey {
+     let mut rng = XorShiftRandom::new(seed);
+     AuthKey::new(rng.array())
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn after(msg_id: i64, body: &[u8]) -> Vec<u8> {
++        let mut writer = Writer::new();
++        writer.write_u32(ids::INVOKE_AFTER_MSG);
++        writer.write_i64(msg_id);
++        writer.write_raw(body);
++        writer.into_inner()
++    }
++
++    fn without_updates(body: &[u8]) -> Vec<u8> {
++        let mut writer = Writer::new();
++        writer.write_u32(ids::INVOKE_WITHOUT_UPDATES);
++        writer.write_raw(body);
++        writer.into_inner()
++    }
++
++    #[test]
++    fn the_invoke_after_msg_id_is_kept_through_gzip() {
++        let inner = call(7, &[1, 2, 3]);
++        for (body, expected, updates_off) in [
++            (inner.clone(), None, false),
++            (after(0x1234, &inner), Some(0x1234), false),
++            (after(0x1234, &sp::gzip_packed(&inner)), Some(0x1234), false),
++            (sp::gzip_packed(&after(0x5678, &without_updates(&inner))), Some(0x5678), true),
++            (without_updates(&sp::gzip_packed(&after(0x9abc, &inner))), Some(0x9abc), true),
++        ] {
++            let (call, flags) = unwrap_wrappers(&body);
++            assert!(matches!(call, Some(Inner::Call(7, ref payload)) if payload == &[1, 2, 3]));
++            assert_eq!(flags.invoke_after, expected);
++            assert_eq!(flags.without_updates, updates_off);
++        }
++    }
++
++    #[test]
++    fn a_session_remembers_the_latest_failed_queries() {
++        let mut session = SessionState {
++            peer: ServerPeer::new(random_key(1), 0.0),
++            received: HashSet::new(),
++            unacked: Vec::new(),
++            answered_queries: HashMap::new(),
++            answer_ids: HashMap::new(),
++            clock_offset: 0.0,
++            awaiting_retransmission: HashSet::new(),
++            sent_packets: VecDeque::new(),
++            failed_queries: VecDeque::new(),
++        };
++        session.remember_failures(&[
++            (sp::rpc_error(4, 420, "FLOOD_WAIT_1"), true),
++            (sp::rpc_result(8, &result_body(1, &[])), true),
++            (sp::pong(12, 1), true),
++            (sp::rpc_error(4, 420, "FLOOD_WAIT_1"), true),
++        ]);
++        assert!(session.failed(4));
++        assert!(!session.failed(8) && !session.failed(12), "answers that are no error");
++        assert_eq!(session.failed_queries.len(), 1, "remembered once");
++        let errors: Vec<(Vec<u8>, bool)> =
++            (1..=MAX_REMEMBERED_FAILURES as i64 + 1).map(|id| (sp::rpc_error(id * 16, 500, "X"), true)).collect();
++        session.remember_failures(&errors);
++        assert_eq!(session.failed_queries.len(), MAX_REMEMBERED_FAILURES);
++        assert!(!session.failed(4) && !session.failed(16), "the oldest are forgotten");
++        assert!(session.failed(32) && session.failed((MAX_REMEMBERED_FAILURES as i64 + 1) * 16));
++    }
++}
+diff --git a/docs/swift-integration.md b/docs/swift-integration.md
+index 8977917..c974efa 100644
+--- a/docs/swift-integration.md
++++ b/docs/swift-integration.md
+@@ -639,8 +639,11 @@ exactly as `MTTcpConnection` does; iOS only.
+ The C ABI in `crates/mtproto-ffi/include/mtproto_engine.h` follows these rules. Any other host must
+ follow them too.
+ 
+-- **Version.** `mt_engine_abi_version()` must equal the version the host was built against (5: ABI 5
+-  added `mt_session_drain` and `MTEventKindReleased`).
++- **Version.** `mt_engine_abi_version()` must equal the version the host was built against (6: ABI 6
++  added `mt_session_set_http_addresses`, `MTRequestFlagSurfaceDependencyWaits`, and the reason of each
++  `MTEventKindUpdatesReset` in `code` (`MTUpdatesReset*`) with the server's `new_session_created`
++  message as the payload of `MTUpdatesResetServerSession`; ABI 5 added `mt_session_drain` and
++  `MTEventKindReleased`).
+ - **Engine.** `mt_engine_create` returns an owned pointer. `mt_engine_destroy` releases it:
+   - Delivery stops at once. A secret payload that is already queued is zeroized, not delivered.
+   - The worker threads are shut down and joined.
+diff --git a/fuzz/src/peer.rs b/fuzz/src/peer.rs
+index 732c740..9958f2c 100644
+--- a/fuzz/src/peer.rs
++++ b/fuzz/src/peer.rs
+@@ -174,6 +174,7 @@ impl Client for RpcClient {
+             expected_response_size: if bits & 64 != 0 { 1 << 20 } else { 0 },
+             without_updates: bits & 128 != 0,
+             delegate_retry_decisions: bits & 256 != 0,
++            surface_dependency_waits: bits & 1024 != 0,
+         };
+         let invoke_after = (bits & 512 != 0 && id > 1).then(|| RequestId(1 + cursor.below(id as usize - 1) as u64));
+         RpcClient::send(self, RpcRequest { id: RequestId(id), body, flags, invoke_after }, now);
