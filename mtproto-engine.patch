@@ -11,7 +11,7 @@ Apply with `git apply` right after checking out that revision.
 Builds for i686-win7-windows-msvc and x86_64-win7-windows-msvc (std built
 from source with -Z build-std and +crt-static) and aarch64-pc-windows-msvc.
 Every hunk is Windows-gated, or moves a test helper unchanged off Windows,
-except two changes, made for every platform. First, the engine's threads
+except three changes, made for every platform. First, the engine's threads
 (mtproto-main, mtproto-worker-N, mtproto-resolver) run under an
 abort-on-panic guard, so a host built with panic = "unwind" ends the
 process on a panic there, as the engine's own panic = "abort" profile does,
@@ -73,6 +73,22 @@ mtproto-core rpc::tests::a_server_session_reset_hands_over_the_notice_in_place_a
 mtproto-ffi ffi_abi6::a_reset_says_why_and_a_new_server_session_hands_over_its_notice,
 mtproto-core rpc::tests::an_answer_to_a_superseded_initialization_stores_nothing,
 mtproto-ffi ffi_abi6::the_header_declares_abi_6.
+
+Third, mt_session_set_obfuscation_dc_id on a PFS session drops the
+temporary key in use at once, failing the calls the server may have as
+500 TEMP_KEY_ROTATED and keeping the queued ones, instead of at the next
+drive, after the rest of the host's commands. An
+mt_session_offer_temporary_key that follows finds no key in use and is
+taken, also when a move to the media class and back arrives in one batch:
+before, the offer of the key the session still talked under was ignored,
+and a handshake replaced that key. Tests:
+mtproto-engine session_runtime::tests::a_move_to_the_media_class_and_back_in_one_batch_takes_the_regular_key_again,
+mtproto-engine session_runtime::tests::a_move_to_the_media_class_and_back_in_one_batch_without_a_media_key_takes_the_regular_key_again,
+mtproto-engine session_runtime::tests::a_move_to_the_media_class_and_back_with_drives_between_takes_each_offered_key,
+mtproto-engine session_runtime::tests::offers_wait_while_the_key_is_in_use_and_a_class_change_forgets_them,
+mtproto-engine session_runtime::tests::a_move_to_the_media_class_and_back_refuses_the_key_bound_to_another_permanent_key,
+mtproto-engine session_runtime::tests::a_move_to_the_media_class_and_back_during_a_handshake_takes_the_offered_keys,
+mtproto-engine pfs_host_offers::a_move_to_the_media_class_and_back_takes_the_offered_regular_key_again.
 
 Tests gated off on Windows, each with its reason in the source:
 - mtproto-engine interface::tests::loopback_resolves_to_lo0 (Windows):
@@ -1467,9 +1483,18 @@ index 774f5a2..67d5a94 100644
          self.post(handle, Command::SetProxy(handle, proxy));
      }
 diff --git a/crates/mtproto-engine/src/session_explorer_tests.rs b/crates/mtproto-engine/src/session_explorer_tests.rs
-index a61264a..7fb6c2f 100644
+index a61264a..9139d0b 100644
 --- a/crates/mtproto-engine/src/session_explorer_tests.rs
 +++ b/crates/mtproto-engine/src/session_explorer_tests.rs
+@@ -1538,7 +1538,7 @@ impl<'a> Runner<'a> {
+             }
+             Ev::ObfuscationDc { s } => {
+                 let dc = if self.sessions[s].setup.obfuscation_dc_id == 2 { -2 } else { 2 };
+-                self.sessions[s].set_obfuscation_dc_id(dc, now, registry);
++                self.sessions[s].set_obfuscation_dc_id(dc, now, registry, &self.callbacks, &mut self.rng);
+             }
+             Ev::TimeDifference { s, delta } => {
+                 let difference = self.sessions[s].time_difference() + delta;
 @@ -1702,7 +1702,7 @@ impl<'a> Runner<'a> {
                      }
                  }
@@ -1670,8 +1695,41 @@ index c1ab28f..d1ac323 100644
  
      #[test]
      fn long_polls_are_spread_over_the_period() {
+diff --git a/crates/mtproto-engine/src/session_pfs.rs b/crates/mtproto-engine/src/session_pfs.rs
+index 5eaf872..2aea1f5 100644
+--- a/crates/mtproto-engine/src/session_pfs.rs
++++ b/crates/mtproto-engine/src/session_pfs.rs
+@@ -107,13 +107,16 @@ impl PfsState {
+     }
+ 
+     /// The address class changed: a temporary key is made for one class of addresses, so the one in
+-    /// use goes, and an offer made for the old class is no good.
+-    pub(super) fn replace_temporary_key_now(&mut self, now: Now) {
++    /// use goes, and an offer made for the old class is no good. True when it can go at once; during a
++    /// destroy, a switch to PFS or the wait after binds showed the permanent key unknown, `drive_pfs`
++    /// replaces it once that is over.
++    pub(super) fn replace_temporary_key_now(&mut self, now: Now) -> bool {
+         if self.destroying || self.switch_by.is_some() {
+-            return;
++            return false;
+         }
+         self.need_regenerate = true;
+         self.regenerate_at = now.mono;
++        now.mono >= self.held_until && self.invalid_in_a_row < PFS_INVALID_PERMANENT_AFTER
+     }
+ 
+     /// The host turns PFS on while the session runs it only to check its permanent key: the session
+@@ -689,7 +692,7 @@ impl SessionRuntime {
+     /// `fail_transmitted` they fail to the host instead, and so do the ones chained after them with
+     /// `invoke_after`. The new key starts on fresh connections, as in tdlib: the old session's late
+     /// packets would otherwise meet the new handshake.
+-    fn regenerate_temporary_key(
++    pub(super) fn regenerate_temporary_key(
+         &mut self,
+         fail_transmitted: bool,
+         registry: &Registry,
 diff --git a/crates/mtproto-engine/src/session_runtime.rs b/crates/mtproto-engine/src/session_runtime.rs
-index 69a7dc6..b09ef5d 100644
+index 69a7dc6..29dc4c4 100644
 --- a/crates/mtproto-engine/src/session_runtime.rs
 +++ b/crates/mtproto-engine/src/session_runtime.rs
 @@ -151,7 +151,8 @@ pub struct SessionRuntime {
@@ -1704,10 +1762,11 @@ index 69a7dc6..b09ef5d 100644
                  response_time: now.unix + self.time_difference(),
                  duration: 0.0,
              });
-@@ -603,6 +611,22 @@ impl SessionRuntime {
+@@ -603,15 +611,43 @@ impl SessionRuntime {
          }
      }
  
+-    pub fn set_obfuscation_dc_id(&mut self, dc_id: i16, now: Now, registry: &Registry) {
 +    /// The HTTP routes from now on are exactly these addresses at their own ports (`http_addresses`).
 +    /// A new list voids what was learned on the old routes, as new addresses do: Auto starts over on
 +    /// TCP, the links close and the session reconnects at once.
@@ -1724,10 +1783,34 @@ index 69a7dc6..b09ef5d 100644
 +        self.flaps = 0;
 +    }
 +
-     pub fn set_obfuscation_dc_id(&mut self, dc_id: i16, now: Now, registry: &Registry) {
++    /// A new address class (the obfuscation id, negative for media addresses). Under PFS the temporary
++    /// key in use goes at once, failing the calls the server may have, so that a key the host offers for
++    /// the new class right after finds none in use and is taken.
++    pub fn set_obfuscation_dc_id(
++        &mut self,
++        dc_id: i16,
++        now: Now,
++        registry: &Registry,
++        callbacks: &Arc<dyn EngineCallbacks>,
++        rng: &mut OsRandom,
++    ) {
          if self.setup.obfuscation_dc_id != dc_id {
              self.setup.obfuscation_dc_id = dc_id;
-@@ -1606,6 +1630,15 @@ impl SessionRuntime {
+             let running = self.rpc.is_some();
++            let mut replace = false;
+             if let Some(pfs) = &mut self.pfs {
+                 pfs.forget_offer();
+-                if running {
+-                    pfs.replace_temporary_key_now(now);
+-                }
++                replace = running && pfs.replace_temporary_key_now(now);
++            }
++            if replace && !self.closed {
++                self.regenerate_temporary_key(true, registry, now, callbacks, rng);
+             }
+             self.close_connection(registry, now, false);
+             self.next_attempt_at = now.mono;
+@@ -1606,6 +1642,15 @@ impl SessionRuntime {
              return;
          }
          if verified {
@@ -1743,6 +1826,499 @@ index 69a7dc6..b09ef5d 100644
              if self.http.is_some() {
                  self.switch_back_to_tcp(registry, now, callbacks);
              } else if self.auto.on_websocket {
+@@ -2754,7 +2799,13 @@ impl Drop for SessionRuntime {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use crate::types::{BoundTemporaryKey, PfsSetup};
++    use mtproto_core::auth_key::AuthKey;
++    use mtproto_core::rpc::RequestFlags;
++    use mtproto_core::test_support::{ServerHandshake, ServerHandshakeBehavior};
++    use mtproto_testserver::{SERVER_SALT, ServerOptions, TAG_NEVER, TestServer, call, random_key};
+     use std::net::{IpAddr, Ipv4Addr};
++    use std::time::{Duration, Instant};
+ 
+     struct ScriptedResolver {
+         answers: VecDeque<Vec<SocketAddr>>,
+@@ -2820,6 +2871,478 @@ mod tests {
+         );
+         assert_eq!(resolver.calls, 3);
+     }
++
++    const REGULAR: i16 = 10_002;
++    const MEDIA: i16 = -10_002;
++
++    #[derive(Default)]
++    struct Recorded(std::sync::Mutex<Vec<EngineEvent>>);
++
++    impl EngineCallbacks for Recorded {
++        fn on_event(&self, _session: SessionHandle, event: EngineEvent) {
++            self.0.lock().unwrap().push(event);
++        }
++    }
++
++    struct NoLookups;
++
++    impl Resolve for NoLookups {
++        fn resolve(&mut self, _session: SessionHandle, host: &str, _port: u16) -> Resolution {
++            panic!("looked up {host}");
++        }
++    }
++
++    /// A PFS worker on the Regular class of the test environment against the test server, driven the
++    /// way the worker drives it: I/O, then the host's commands, then `drive`. Commands issued between
++    /// two drives are one batch, as the commands one drain of the worker's queue applies.
++    struct Live {
++        poll: mio::Poll,
++        events: mio::Events,
++        scratch: Vec<u8>,
++        rng: OsRandom,
++        recorded: Arc<Recorded>,
++        callbacks: Arc<dyn EngineCallbacks>,
++        config: EngineConfig,
++        runtime: SessionRuntime,
++        perm: AuthKey,
++    }
++
++    impl Live {
++        fn new(server: &TestServer, perm: &AuthKey) -> Self {
++            let now = crate::clock::now();
++            let mut setup = SessionSetup::new(
++                2,
++                SessionRole::Worker { requires_auth_token: false },
++                vec![DcAddress { host: "127.0.0.1".into(), port: server.address.port(), secret: None }],
++            );
++            setup.obfuscation_dc_id = REGULAR;
++            setup.http_port = None;
++            setup.keep_connected = true;
++            setup.idle_disconnect_after = None;
++            setup.auth_key = Some(AuthKeyMaterial {
++                key: perm.clone(),
++                salts: vec![ServerSalt {
++                    salt: SERVER_SALT,
++                    valid_since: now.unix - 60.0,
++                    valid_until: now.unix + 3600.0,
++                }],
++                init_hash: None,
++            });
++            setup.pfs = Some(PfsSetup {
++                lifetime: 86_400,
++                public_keys: vec![ServerHandshake::new(ServerHandshakeBehavior::default()).public_key()],
++                ..PfsSetup::default()
++            });
++            let mut rng = OsRandom::new();
++            let runtime = SessionRuntime::new(SessionHandle(1), setup, Token(16), now, &mut rng);
++            let recorded = Arc::new(Recorded::default());
++            Self {
++                poll: mio::Poll::new().unwrap(),
++                events: mio::Events::with_capacity(64),
++                scratch: vec![0u8; 256 * 1024],
++                rng,
++                callbacks: recorded.clone(),
++                recorded,
++                config: EngineConfig::default(),
++                runtime,
++                perm: perm.clone(),
++            }
++        }
++
++        /// A turn with no host command: I/O, then `drive`.
++        fn turn(&mut self) {
++            self.poll.poll(&mut self.events, Some(Duration::from_millis(2))).unwrap();
++            let now = crate::clock::now();
++            for event in self.events.iter() {
++                let readable = event.is_readable() || event.is_read_closed() || event.is_error();
++                let writable = event.is_writable() || event.is_write_closed();
++                self.runtime.handle_io(
++                    event.token(),
++                    readable,
++                    writable,
++                    self.poll.registry(),
++                    &mut self.scratch,
++                    now,
++                    &self.callbacks,
++                    &mut self.rng,
++                );
++            }
++            self.drive();
++        }
++
++        fn drive(&mut self) {
++            let now = crate::clock::now();
++            self.runtime.drive(self.poll.registry(), now, &mut NoLookups, &self.config, &self.callbacks, &mut self.rng);
++        }
++
++        /// Turns until `done`, for 15 s at most.
++        fn until(&mut self, done: impl Fn(&Self) -> bool) -> bool {
++            let started = Instant::now();
++            while !done(self) {
++                if started.elapsed() > Duration::from_secs(15) {
++                    return false;
++                }
++                self.turn();
++            }
++            true
++        }
++
++        fn send(&mut self, id: u64, tag: u32) {
++            let request = RpcRequest {
++                id: RequestId(id),
++                body: call(tag, &id.to_le_bytes()),
++                flags: RequestFlags::default(),
++                invoke_after: None,
++            };
++            self.runtime.send(request, crate::clock::now());
++        }
++
++        fn pause(&mut self, paused: bool) {
++            self.runtime.set_paused(paused, crate::clock::now(), self.poll.registry());
++        }
++
++        fn set_class(&mut self, dc_id: i16) {
++            let now = crate::clock::now();
++            self.runtime.set_obfuscation_dc_id(dc_id, now, self.poll.registry(), &self.callbacks, &mut self.rng);
++        }
++
++        fn offer(&mut self, key: BoundTemporaryKey) {
++            let now = crate::clock::now();
++            self.runtime.offer_temporary_key(key, self.poll.registry(), now, &self.callbacks, &mut self.rng);
++        }
++
++        fn shutdown(mut self) {
++            self.runtime.shutdown(self.poll.registry(), crate::clock::now());
++        }
++
++        fn key_in_use(&self) -> Option<u64> {
++            self.runtime.rpc.as_ref().map(|rpc| rpc.session().auth_key_id())
++        }
++
++        fn events(&self) -> Vec<EngineEvent> {
++            self.recorded.0.lock().unwrap().clone()
++        }
++
++        /// Each `TemporaryKeyInUse`: the key, whether the host gave it, the class it was made for and the
++        /// permanent key it is bound to.
++        fn in_use(&self) -> Vec<(u64, bool, i32, u64)> {
++            self.events()
++                .iter()
++                .filter_map(|event| match event {
++                    EngineEvent::TemporaryKeyInUse { key_id, adopted, dc_id, permanent_key_id, .. } => {
++                        Some((*key_id as u64, *adopted, *dc_id, *permanent_key_id as u64))
++                    }
++                    _ => None,
++                })
++                .collect()
++        }
++
++        fn created_keys(&self) -> usize {
++            self.events().iter().filter(|event| matches!(event, EngineEvent::AuthKeyCreated { .. })).count()
++        }
++
++        fn completions(&self, id: u64) -> usize {
++            self.events()
++                .iter()
++                .filter(|event| matches!(event, EngineEvent::Rpc(RpcEvent::Completed { id: done, .. }) if done.0 == id))
++                .count()
++        }
++
++        fn failures(&self, id: u64) -> Vec<(i32, String)> {
++            self.events()
++                .iter()
++                .filter_map(|event| match event {
++                    EngineEvent::Rpc(RpcEvent::Failed { id: failed, code, message, .. }) if failed.0 == id => {
++                        Some((*code, message.clone()))
++                    }
++                    _ => None,
++                })
++                .collect()
++        }
++
++        /// The temporary key the session made, bound and talks under, as the host's slot keeps it.
++        fn bound_key(&self) -> BoundTemporaryKey {
++            let events = self.events();
++            let (key_id, expires_at, permanent_key_id) = events
++                .iter()
++                .rev()
++                .find_map(|event| match event {
++                    EngineEvent::TemporaryKeyInUse { key_id, expires_at, adopted: false, permanent_key_id, .. } => {
++                        Some((*key_id as u64, *expires_at, *permanent_key_id as u64))
++                    }
++                    _ => None,
++                })
++                .expect("a temporary key in use");
++            let (key, salt) = events
++                .iter()
++                .find_map(|event| match event {
++                    EngineEvent::AuthKeyCreated { key, salt, expires_at: Some(_), .. } => {
++                        let key = AuthKey::from_slice(key).expect("256 bytes");
++                        (key.id() == key_id).then_some((key, *salt))
++                    }
++                    _ => None,
++                })
++                .expect("the key's AuthKeyCreated");
++            let now = crate::clock::now().unix;
++            BoundTemporaryKey {
++                material: AuthKeyMaterial {
++                    key,
++                    salts: vec![ServerSalt { salt, valid_since: now - 60.0, valid_until: now + 1800.0 }],
++                    init_hash: None,
++                },
++                expires_at,
++                bound_to: Some(permanent_key_id),
++            }
++        }
++
++        /// Another day-long key bound to the session's permanent key, as another slot of the host holds
++        /// one. It never goes out in these tests.
++        fn other_key(&self, seed: u64) -> BoundTemporaryKey {
++            let now = crate::clock::now().unix;
++            BoundTemporaryKey {
++                material: AuthKeyMaterial {
++                    key: random_key(seed),
++                    salts: vec![ServerSalt { salt: SERVER_SALT, valid_since: now - 60.0, valid_until: now + 1800.0 }],
++                    init_hash: None,
++                },
++                expires_at: (now + 86_400.0) as i32,
++                bound_to: Some(self.perm.id()),
++            }
++        }
++    }
++
++    fn live_server(perm: &AuthKey) -> TestServer {
++        TestServer::start(
++            vec![perm.clone()],
++            ServerOptions {
++                handshake: ServerHandshakeBehavior { live_time: true, ..Default::default() },
++                ..Default::default()
++            },
++        )
++    }
++
++    /// A worker talking under the Regular key K it made and bound, the key the host's Regular slot
++    /// then holds.
++    fn bound_worker(server: &TestServer, perm: &AuthKey) -> (Live, BoundTemporaryKey) {
++        let mut live = Live::new(server, perm);
++        live.send(1, 1);
++        assert!(live.until(|live| live.completions(1) == 1), "the first call never completed: {:?}", live.in_use());
++        let key = live.bound_key();
++        assert_eq!(live.key_in_use(), Some(key.material.key.id()));
++        (live, key)
++    }
++
++    /// Moves a paused worker to the media class and back as the host's `refresh` does, each move
++    /// followed by the offer of the new class's slot key (`media`, when the media slot has one, then
++    /// `back`): one batch before a single drive, or a drive after every command when `separated`.
++    fn move_and_back(live: &mut Live, media: Option<BoundTemporaryKey>, back: BoundTemporaryKey, separated: bool) {
++        let step = |live: &mut Live| {
++            if separated {
++                live.drive();
++            }
++        };
++        live.set_class(MEDIA);
++        step(live);
++        if let Some(media) = media {
++            live.offer(media);
++            step(live);
++        }
++        live.set_class(REGULAR);
++        step(live);
++        live.offer(back);
++        live.drive();
++    }
++
++    /// Two refreshes of the host reach the worker in one drain of its queue, as when its reactor was
++    /// busy: to the media class with the media slot's key, and back with the Regular slot's key K, the
++    /// key the session talked under. K is taken back at once for the Regular class, without a
++    /// handshake. The call the server had fails once as TEMP_KEY_ROTATED, the one sent during the pause
++    /// runs once, under K, and nothing connects before the pause ends.
++    #[test]
++    fn a_move_to_the_media_class_and_back_in_one_batch_takes_the_regular_key_again() {
++        let perm = random_key(4401);
++        let server = live_server(&perm);
++        let (mut live, regular) = bound_worker(&server, &perm);
++        let regular_id = regular.material.key.id();
++        let media = live.other_key(4402);
++        let media_id = media.material.key.id();
++        live.send(2, TAG_NEVER);
++        assert!(live.until(|_| server.executions(TAG_NEVER) == 1), "call 2 never reached the server");
++        live.pause(true);
++        live.send(3, 3);
++        let (handshakes, connections) = server.with_stats(|stats| (stats.handshakes, stats.connections));
++
++        move_and_back(&mut live, Some(media), regular, false);
++
++        let in_use = live.in_use();
++        assert_eq!(live.key_in_use(), Some(regular_id), "K was not taken back; keys in use {in_use:x?}");
++        assert_eq!(
++            in_use[1..],
++            [(media_id, true, i32::from(MEDIA), perm.id()), (regular_id, true, i32::from(REGULAR), perm.id())],
++            "each move took its class's key"
++        );
++        assert_eq!(live.failures(2), [(500, "TEMP_KEY_ROTATED".to_string())], "the call in flight fails once");
++        assert!(live.failures(3).is_empty(), "the call sent during the pause failed: {:?}", live.failures(3));
++        for _ in 0..50 {
++            live.turn();
++        }
++        assert!(live.runtime.connection.is_none(), "a paused session connected");
++        assert_eq!(server.with_stats(|stats| stats.connections), connections, "a paused session connected");
++
++        live.pause(false);
++        assert!(live.until(|live| live.completions(3) == 1), "call 3 never completed: {:?}", live.failures(3));
++        let (made, ran) = server.with_stats(|stats| (stats.handshakes, stats.executed_with_key.clone()));
++        let ran3: Vec<u64> = ran.iter().filter(|(tag, _)| *tag == 3).map(|(_, key)| *key).collect();
++        assert_eq!(made, handshakes, "a key was made instead of taking K back");
++        assert_eq!(ran3, [regular_id], "call 3 ran other than once under K");
++        assert_eq!(live.failures(2).len(), 1);
++        assert_eq!(server.executions(TAG_NEVER), 1);
++        assert_eq!(live.created_keys(), 1);
++        live.shutdown();
++    }
++
++    /// The same batch while the media slot is empty: the move back offers K right after the move away.
++    #[test]
++    fn a_move_to_the_media_class_and_back_in_one_batch_without_a_media_key_takes_the_regular_key_again() {
++        let perm = random_key(4401);
++        let server = live_server(&perm);
++        let (mut live, regular) = bound_worker(&server, &perm);
++        let regular_id = regular.material.key.id();
++        live.pause(true);
++        let handshakes = server.with_stats(|stats| stats.handshakes);
++
++        move_and_back(&mut live, None, regular, false);
++
++        let in_use = live.in_use();
++        assert_eq!(live.key_in_use(), Some(regular_id), "K was not taken back; keys in use {in_use:x?}");
++        assert_eq!(in_use[1..], [(regular_id, true, i32::from(REGULAR), perm.id())]);
++        live.pause(false);
++        live.send(2, 2);
++        assert!(live.until(|live| live.completions(2) == 1), "call 2 never completed: {:?}", live.failures(2));
++        assert_eq!(server.with_stats(|stats| stats.handshakes), handshakes, "a key was made instead of taking K back");
++        live.shutdown();
++    }
++
++    /// Control: the same moves with the session driven after every command.
++    #[test]
++    fn a_move_to_the_media_class_and_back_with_drives_between_takes_each_offered_key() {
++        let perm = random_key(4401);
++        let server = live_server(&perm);
++        let (mut live, regular) = bound_worker(&server, &perm);
++        let regular_id = regular.material.key.id();
++        let media = live.other_key(4402);
++        let media_id = media.material.key.id();
++        live.pause(true);
++        let handshakes = server.with_stats(|stats| stats.handshakes);
++
++        move_and_back(&mut live, Some(media), regular, true);
++
++        assert_eq!(live.key_in_use(), Some(regular_id));
++        assert_eq!(
++            live.in_use()[1..],
++            [(media_id, true, i32::from(MEDIA), perm.id()), (regular_id, true, i32::from(REGULAR), perm.id())]
++        );
++        live.pause(false);
++        live.send(2, 2);
++        assert!(live.until(|live| live.completions(2) == 1), "call 2 never completed: {:?}", live.failures(2));
++        assert_eq!(server.with_stats(|stats| stats.handshakes), handshakes);
++        live.shutdown();
++    }
++
++    /// Without a class change an offer replaces no key in use: neither K itself, with the class command
++    /// repeating the class the session has, nor another key, which waits. The call in flight goes on.
++    /// The class change that follows drops K, and the waiting key was offered for the old class: it is
++    /// not taken for the new one.
++    #[test]
++    fn offers_wait_while_the_key_is_in_use_and_a_class_change_forgets_them() {
++        let perm = random_key(4401);
++        let server = live_server(&perm);
++        let (mut live, regular) = bound_worker(&server, &perm);
++        let regular_id = regular.material.key.id();
++        let other = live.other_key(4403);
++        live.send(2, TAG_NEVER);
++        assert!(live.until(|_| server.executions(TAG_NEVER) == 1), "call 2 never reached the server");
++
++        live.set_class(REGULAR);
++        live.offer(regular);
++        live.offer(other);
++        live.drive();
++        for _ in 0..50 {
++            live.turn();
++        }
++        assert_eq!(live.key_in_use(), Some(regular_id));
++        assert_eq!(live.in_use().len(), 1, "keys in use {:x?}", live.in_use());
++        assert!(live.failures(2).is_empty(), "the call in flight failed: {:?}", live.failures(2));
++        assert!(live.runtime.connection.is_some(), "the connection went");
++        live.send(3, 3);
++        assert!(live.until(|live| live.completions(3) == 1), "call 3 never completed: {:?}", live.failures(3));
++
++        live.pause(true);
++        live.set_class(MEDIA);
++        live.drive();
++        assert_eq!(live.key_in_use(), None, "a key offered for the Regular class was taken for the media class");
++        assert_eq!(live.in_use().len(), 1);
++        assert_eq!(live.failures(2), [(500, "TEMP_KEY_ROTATED".to_string())]);
++        assert_eq!(live.created_keys(), 1);
++        live.shutdown();
++    }
++
++    /// The move back offers K with a binding to another permanent key: it is refused, and the session
++    /// makes a key of its own once the pause ends.
++    #[test]
++    fn a_move_to_the_media_class_and_back_refuses_the_key_bound_to_another_permanent_key() {
++        let perm = random_key(4401);
++        let server = live_server(&perm);
++        let (mut live, regular) = bound_worker(&server, &perm);
++        let regular_id = regular.material.key.id();
++        let foreign = BoundTemporaryKey { bound_to: Some(perm.id() ^ 1), ..regular };
++        live.pause(true);
++        let handshakes = server.with_stats(|stats| stats.handshakes);
++
++        move_and_back(&mut live, None, foreign, false);
++
++        assert_eq!(live.key_in_use(), None, "the key bound to another permanent key was taken");
++        assert_eq!(live.in_use().len(), 1);
++        live.pause(false);
++        live.send(2, 2);
++        assert!(live.until(|live| live.completions(2) == 1), "call 2 never completed: {:?}", live.failures(2));
++        assert_eq!(server.with_stats(|stats| stats.handshakes), handshakes + 1, "no key was made instead");
++        let made = live.in_use().last().copied().expect("a key in use");
++        assert!(made.0 != regular_id && !made.1 && made.2 == i32::from(REGULAR), "keys in use {:x?}", live.in_use());
++        live.shutdown();
++    }
++
++    /// The same batch reaching a worker still making its first key: the handshake goes with its
++    /// connection, no key made for the old class is reported, and the offered keys are taken.
++    #[test]
++    fn a_move_to_the_media_class_and_back_during_a_handshake_takes_the_offered_keys() {
++        let perm = random_key(4401);
++        let server = live_server(&perm);
++        let (first, regular) = bound_worker(&server, &perm);
++        let regular_id = regular.material.key.id();
++        first.shutdown();
++        let mut live = Live::new(&server, &perm);
++        live.send(1, 1);
++        assert!(live.until(|live| live.runtime.handshake.is_some()), "no handshake started");
++        let media = live.other_key(4402);
++        let media_id = media.material.key.id();
++        let handshakes = server.with_stats(|stats| stats.handshakes);
++        live.pause(true);
++
++        move_and_back(&mut live, Some(media), regular, false);
++
++        assert!(live.runtime.handshake.is_none());
++        assert_eq!(live.key_in_use(), Some(regular_id));
++        assert_eq!(
++            live.in_use(),
++            [(media_id, true, i32::from(MEDIA), perm.id()), (regular_id, true, i32::from(REGULAR), perm.id())]
++        );
++        live.pause(false);
++        assert!(live.until(|live| live.completions(1) == 1), "call 1 never completed: {:?}", live.failures(1));
++        assert_eq!(server.with_stats(|stats| stats.handshakes), handshakes, "the handshake went on");
++        assert_eq!(live.created_keys(), 0);
++        live.shutdown();
++    }
+ }
+ 
+ #[cfg(test)]
 diff --git a/crates/mtproto-engine/src/types.rs b/crates/mtproto-engine/src/types.rs
 index d97db54..20fc8d0 100644
 --- a/crates/mtproto-engine/src/types.rs
@@ -1767,7 +2343,7 @@ index d97db54..20fc8d0 100644
              pfs: None,
              web: None,
 diff --git a/crates/mtproto-engine/src/worker.rs b/crates/mtproto-engine/src/worker.rs
-index b0e3986..b1313e9 100644
+index b0e3986..8ad3d17 100644
 --- a/crates/mtproto-engine/src/worker.rs
 +++ b/crates/mtproto-engine/src/worker.rs
 @@ -9,6 +9,7 @@ use mtproto_core::crypto::OsRandom;
@@ -1795,7 +2371,7 @@ index b0e3986..b1313e9 100644
              let addresses = resolve_blocking(&lookup_host, port);
              let _ = sender.send(Command::Resolved { host: lookup_host, port, addresses });
              let _ = waker.wake();
-@@ -356,6 +358,11 @@ impl Worker {
+@@ -356,9 +358,14 @@ impl Worker {
                          session.set_addresses(addresses, now, self.poll.registry());
                      }
                  }
@@ -1806,7 +2382,11 @@ index b0e3986..b1313e9 100644
 +                }
                  Command::SetObfuscationDcId(handle, dc_id) => {
                      if let Some(session) = self.sessions.get_mut(&handle) {
-                         session.set_obfuscation_dc_id(dc_id, now, self.poll.registry());
+-                        session.set_obfuscation_dc_id(dc_id, now, self.poll.registry());
++                        session.set_obfuscation_dc_id(dc_id, now, self.poll.registry(), &self.callbacks, &mut self.rng);
+                     }
+                 }
+                 Command::SetProxy(handle, proxy) => {
 diff --git a/crates/mtproto-engine/tests/engine.rs b/crates/mtproto-engine/tests/engine.rs
 index 38a9daa..e6da0ad 100644
 --- a/crates/mtproto-engine/tests/engine.rs
@@ -3017,6 +3597,67 @@ index fbe7814..0f523d5 100644
 +    engine.send(session, host_request(30, 30, None, false));
 +    assert!(collector.wait_completed(session, 30));
 +    assert_eq!(server.executions(30), 1);
++}
+diff --git a/crates/mtproto-engine/tests/pfs_host_offers.rs b/crates/mtproto-engine/tests/pfs_host_offers.rs
+index 875e240..fd54b15 100644
+--- a/crates/mtproto-engine/tests/pfs_host_offers.rs
++++ b/crates/mtproto-engine/tests/pfs_host_offers.rs
+@@ -494,3 +494,56 @@ fn an_unknown_binding_setup_key_does_not_run_the_first_call_under_the_old_key()
+     let call2 = ran.iter().find(|(tag, _)| *tag == 2).map(|(_, perm)| *perm);
+     assert_eq!(call2, Some(new_perm.id()), "the session's first call ran under the old permanent key");
+ }
++
++/// A host moves a worker to the media class and back as tdesktop's refresh does: paused, the class's
++/// obfuscation id, then the offer of that class's key. Whether the worker applies the commands in one
++/// drain of its queue or apart, the Regular key comes back for the Regular class without a handshake,
++/// and the call sent during the pause runs once, under it.
++#[test]
++fn a_move_to_the_media_class_and_back_takes_the_offered_regular_key_again() {
++    for apart in [false, true] {
++        let server = server();
++        let collector = Arc::new(Collector::default());
++        let engine = engine(&collector);
++        let worker = |obfuscation_dc_id: i16| {
++            let mut worker = setup(&server, Some(perm()), pfs(86_400));
++            worker.role = SessionRole::Worker { requires_auth_token: false };
++            worker.keep_connected = true;
++            worker.idle_disconnect_after = None;
++            worker.obfuscation_dc_id = obfuscation_dc_id;
++            worker
++        };
++        let media_maker = engine.create_session(worker(-10_002));
++        let session = engine.create_session(worker(10_002));
++        engine.send(media_maker, request(1));
++        engine.send(session, request(2));
++        assert!(collector.wait_completed(media_maker, 1) && collector.wait_completed(session, 2));
++        let media = collector.bound_key(media_maker);
++        let regular = collector.bound_key(session);
++        let (media_id, regular_id) = (media.material.key.id() as i64, regular.material.key.id() as i64);
++        let handshakes = server.with_stats(|stats| stats.handshakes);
++        let wait = || {
++            if apart {
++                std::thread::sleep(Duration::from_millis(200));
++            }
++        };
++
++        engine.set_paused(session, true);
++        engine.send(session, request(3));
++        engine.set_obfuscation_dc_id(session, -10_002);
++        engine.offer_temporary_key(session, media);
++        wait();
++        engine.set_obfuscation_dc_id(session, 10_002);
++        engine.offer_temporary_key(session, regular);
++        wait();
++        engine.set_paused(session, false);
++        assert!(collector.wait_completed(session, 3), "apart {apart}: events {:?}", collector.of(session));
++        let in_use = collector.in_use(session);
++        let (made, ran) = server.with_stats(|stats| (stats.handshakes, stats.executed_with_key.clone()));
++        engine.shutdown();
++        let call3: Vec<i64> = ran.iter().filter(|(tag, _)| *tag == 3).map(|(_, key)| *key as i64).collect();
++        assert_eq!(in_use[1..], [(media_id, true), (regular_id, true)], "apart {apart}: keys in use {in_use:x?}");
++        assert_eq!(made, handshakes, "apart {apart}: a key was made instead of taking the Regular key again");
++        assert_eq!(call3, [regular_id], "apart {apart}: call 3 ran other than once under the Regular key");
++    }
 +}
 diff --git a/crates/mtproto-engine/tests/pfs_idle_cost.rs b/crates/mtproto-engine/tests/pfs_idle_cost.rs
 index 7cfa30c..c3d31af 100644
@@ -4238,9 +4879,34 @@ index c5686c6..44fc61b 100644
 +    }
 +}
 diff --git a/docs/swift-integration.md b/docs/swift-integration.md
-index 8977917..c974efa 100644
+index 8977917..d234fe2 100644
 --- a/docs/swift-integration.md
 +++ b/docs/swift-integration.md
+@@ -313,17 +313,17 @@ is created with `pfs_lifetime = tempKeyExpiration` (24 h) and `pfs_make_permanen
+   bound to another permanent key, and drops what it kept when the permanent key changes.
+ - Whenever the context gets another key for that selector (another session, MtProtoKit's refresh), it is
+   offered with `mt_session_offer_temporary_key`; the engine keeps it and takes it the next time it needs a
+-  key (expiry, the server dropping the old one, a class change) instead of a handshake.
++  key (expiry, the server dropping the old one) instead of a handshake.
+ - Keys the engine made are written with `rustEngineBoundTo` = the permanent key the engine reports in
+   `TemporaryKeyInUse` (`request_id`). MTContext's temporary-key refresher skips keys with that attribute:
+   the engine rotates them itself, over HTTP too, and two refreshers would make two keys a day.
+ - An address class change sends the new obfuscation id first: the engine drops the temporary key of the
+-  old class and the session offers the context's key for the new class. Calls in flight when a
+-  temporary key has to go (a class change, or no quiet moment before the key's end) fail in the engine
+-  as `500 TEMP_KEY_ROTATED`; the session sends them again under the new key when the request's
+-  `shouldContinueAfterError` allows a server error, as MtProtoKit re-sends after a key change, and fails
+-  them otherwise. Keys are made with the obfuscation id as the handshake's `dc` (test offset, negative for
+-  media), as MtProtoKit and tdlib do.
++  old class at once, and the context's key the session offers for the new class right after is taken
++  without a handshake. Calls in flight when a temporary key has to go (a class change, or no quiet
++  moment before the key's end) fail in the engine as `500 TEMP_KEY_ROTATED`; the session sends them
++  again under the new key when the request's `shouldContinueAfterError` allows a server error, as
++  MtProtoKit re-sends after a key change, and fails them otherwise. Keys are made with the obfuscation
++  id as the handshake's `dc` (test offset, negative for media), as MtProtoKit and tdlib do.
+ - `AUTH_KEY_PERM_EMPTY` and `-404` are handled inside the engine (rebind or a new temporary key); the
+   session never drops the permanent key for them.
+ 
 @@ -639,8 +639,11 @@ exactly as `MTTcpConnection` does; iOS only.
  The C ABI in `crates/mtproto-ffi/include/mtproto_engine.h` follows these rules. Any other host must
  follow them too.
