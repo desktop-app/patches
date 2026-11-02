@@ -2,8 +2,10 @@ mtproto-engine: build and pass its tests on Windows, Windows 7 included,
 abort on a panic on an engine thread, give the host explicit HTTP
 addresses, host-ordered dependents and reset causes (ABI 6), leave no
 cipher or connection key state in freed or vacated memory, report the
-engine's panics to the host (ABI 7), and let the host admit the route
-of each connection a session opens (ABI 8).
+engine's panics to the host (ABI 7), let the host admit the route of
+each connection a session opens (ABI 8), and wipe the session setups a
+host hands it, and every command it posts to its workers, before it
+frees them.
 
 Upstream: https://github.com/TelegramMessenger/mtproto-engine
 Branch: main
@@ -14,7 +16,7 @@ Apply with `git apply` right after checking out that revision.
 Builds for i686-win7-windows-msvc and x86_64-win7-windows-msvc (std built
 from source with -Z build-std and +crt-static) and aarch64-pc-windows-msvc.
 Every hunk is Windows-gated, or moves a test helper unchanged off Windows,
-except six changes, made for every platform. First, the engine's threads
+except seven changes, made for every platform. First, the engine's threads
 (mtproto-main, mtproto-worker-N, mtproto-resolver) run under an
 abort-on-panic guard, so a host built with panic = "unwind" ends the
 process on a panic there, as the engine's own panic = "abort" profile does,
@@ -157,10 +159,16 @@ adds the host's side of it to mtproto_engine.h:
 The callback is process-wide. It is called on the panicking thread (an
 engine thread, or the caller's inside an mt_* call) before the process
 ends, with the thread's name and the message, strings that live for the
-call. The host may end the process there; if the callback returns, the
-engine aborts. A later call replaces the callback and its context; NULL
-removes it. The ABI version checks and docs/swift-integration.md
-follow. Tests:
+call. The host may end the process there. If the callback returns, the
+process still ends, though not always by an abort: a panic on an engine
+thread aborts it (0xC0000409 on Windows 8 and later, which only WER
+sees), and so does one inside an mt_* call, except when panics unwind
+on Windows and nothing above the call catches the panic, as on a host's
+main thread: there it is a C++ exception no frame handles (0xE06D7363),
+which the process's unhandled-exception filter, such as a crash
+handler's, takes before the call could abort. A later call replaces the
+callback and its context; NULL removes it. The ABI version checks and
+docs/swift-integration.md follow. Tests:
 mtproto-engine engine_thread::tests::a_panic_on_an_engine_thread_is_reported_with_its_thread_name_before_the_abort,
 mtproto-engine engine_thread::tests::a_panic_inside_an_engine_call_is_reported_before_the_abort,
 mtproto-engine engine_thread::tests::a_panic_outside_engine_code_is_not_reported_and_still_unwinds,
@@ -231,6 +239,28 @@ mtproto-ffi ffi_abi8::the_header_declares_abi_8,
 mtproto-ffi ffi_abi8::only_an_admission_through_the_c_abi_opens_the_connection,
 mtproto-ffi ffi_abi8::an_http_link_asks_for_its_http_address_with_mt_route_http,
 mtproto-ffi ffi_abi8::turning_admission_off_lets_a_waiting_session_connect.
+
+Seventh, the engine wipes the session setups a host hands it, and every
+command it posts to its workers, before it frees them. A value built on
+the host's thread, such as the session setup mt_session_create
+converts, leaves bytes unused (a None field's payload, padding) that
+keep what that thread's stack held there, a proxy key in one seen case,
+and the engine freed every copy unwiped: the command carrying it in the
+channel's blocks, the box it came in, and the session table holding the
+runtime that kept it, whose growth and removals leave copies of their
+own. Now every command reaches its worker in a box of its own, so the
+channel moves a pointer; the session setup, PFS setup, offered
+temporary key, environment and web endpoint a command carries each have
+a box of their own; and each session runtime lives boxed in the table,
+so a rehash or a removal moves a pointer. Each of these boxes keeps its
+value in a private holder that, in safe code, drops the value where it
+lies or hands it to the worker that takes it out, and then zeroizes a
+byte array laid over all of its space (a repr(u8) enum, as the cipher
+holder of the fourth change). The address lists a host gives are not
+covered: on 64-bit targets an address without a secret keeps its None's
+16 unused bytes in the list. No C ABI change. Tests:
+mtproto-ffi sec_rows_zeroize::a_session_created_through_the_c_abi_leaves_no_host_stack_bytes_in_freed_memory,
+mtproto-ffi sec_rows_zeroize::values_later_calls_hand_a_session_leave_no_host_stack_bytes_in_freed_memory.
 
 Test gated off on Windows, with its reason in the source:
 - mtproto-engine interface::tests::loopback_resolves_to_lo0 (Windows):
@@ -1543,10 +1573,10 @@ index 1e7ed2e..4ac7070 100644
  }
 diff --git a/crates/mtproto-engine/src/engine_thread.rs b/crates/mtproto-engine/src/engine_thread.rs
 new file mode 100644
-index 0000000..af8523a
+index 0000000..1ab3c49
 --- /dev/null
 +++ b/crates/mtproto-engine/src/engine_thread.rs
-@@ -0,0 +1,226 @@
+@@ -0,0 +1,225 @@
 +use std::cell::{Cell, OnceCell};
 +use std::io;
 +use std::marker::PhantomData;
@@ -1609,10 +1639,9 @@ index 0000000..af8523a
 +/// Reports each panic of engine code, on a thread the engine started or in a scope of [`enter_engine_code`], to
 +/// `report`; `None` stops the reports. `report` gets the name of the panicking thread, empty for a thread the engine
 +/// did not start, and `<message> at <file>:<line>:<column>`. It is called on the panicking thread before any unwinding,
-+/// so before the engine ends the process, and it may end the process itself; if it returns, the panic hook set before
-+/// runs as it did and the panic goes on. Panics outside engine code, such as another Rust library's on a host thread,
-+/// are not reported. Nothing changes until the first reporter installs the engine's panic hook in front of the one
-+/// already set.
++/// and it may end the process itself; if it returns, the panic hook set before runs as it did and the panic goes on.
++/// Panics outside engine code, such as another Rust library's on a host thread, are not reported. Nothing changes until
++/// the first reporter installs the engine's panic hook in front of the one already set.
 +pub fn report_panics_to(report: Option<fn(thread: &str, message: &str)>) {
 +    *REPORTER.lock().unwrap_or_else(PoisonError::into_inner) = report;
 +    if report.is_some() {
@@ -1916,7 +1945,7 @@ index 09abb61..5945a6d 100644
 +    }
  }
 diff --git a/crates/mtproto-engine/src/lib.rs b/crates/mtproto-engine/src/lib.rs
-index 774f5a2..8f3dc93 100644
+index 774f5a2..5c7acdb 100644
 --- a/crates/mtproto-engine/src/lib.rs
 +++ b/crates/mtproto-engine/src/lib.rs
 @@ -2,6 +2,7 @@
@@ -1927,7 +1956,15 @@ index 774f5a2..8f3dc93 100644
  mod host_stream;
  mod http_link;
  mod interface;
-@@ -24,13 +25,14 @@ pub use mtproto_core;
+@@ -11,6 +12,7 @@ mod route_hints;
+ mod session_runtime;
+ mod types;
+ mod uploads;
++mod wiped;
+ mod worker;
+ 
+ use std::io;
+@@ -24,19 +26,21 @@ pub use mtproto_core;
  use mtproto_core::rpc::{ApiEnvironment, RequestId, RpcRequest, SessionRole, Verification};
  
  pub use clock::{monotonic_seconds, now, unix_seconds};
@@ -1943,8 +1980,17 @@ index 774f5a2..8f3dc93 100644
 +    SessionSetup, TransportPreference, WebEndpoint,
  };
  use uploads::Uploads;
- use worker::{Command, WAKER_TOKEN, Worker};
-@@ -97,10 +99,12 @@ impl Engine {
+-use worker::{Command, WAKER_TOKEN, Worker};
++use wiped::Wiped;
++use worker::{Command, Envelope, WAKER_TOKEN, Worker};
+ 
+ struct WorkerHandle {
+-    sender: Mutex<Sender<Command>>,
++    sender: Mutex<Sender<Envelope>>,
+     waker: Arc<Waker>,
+     wake_pending: Arc<AtomicBool>,
+     thread: Mutex<Option<JoinHandle<()>>>,
+@@ -97,10 +101,12 @@ impl Engine {
              .sharing_uploads(uploads.clone())
              .sharing_route_hints(hints.clone())
              .sharing_host_streams(streams.clone(), Arc::new(host_stream::WorkerSignal::new(waker.clone())));
@@ -1961,7 +2007,34 @@ index 774f5a2..8f3dc93 100644
              inner.workers.push(WorkerHandle {
                  sender: Mutex::new(sender),
                  waker,
-@@ -185,10 +189,32 @@ impl Engine {
+@@ -126,7 +132,7 @@ impl Engine {
+ 
+     fn post(&self, handle: SessionHandle, command: Command) {
+         let worker = self.worker_for(handle);
+-        let sent = worker.sender.lock().is_ok_and(|sender| sender.send(command).is_ok());
++        let sent = worker.sender.lock().is_ok_and(|sender| sender.send(Wiped::boxed(command)).is_ok());
+         if sent {
+             worker.notify();
+         }
+@@ -134,7 +140,7 @@ impl Engine {
+ 
+     fn broadcast(&self, make: impl Fn() -> Command) {
+         for worker in &self.inner.workers {
+-            let sent = worker.sender.lock().is_ok_and(|sender| sender.send(make()).is_ok());
++            let sent = worker.sender.lock().is_ok_and(|sender| sender.send(Wiped::boxed(make())).is_ok());
+             if sent {
+                 worker.notify();
+             }
+@@ -153,7 +159,7 @@ impl Engine {
+         };
+         let serial = self.inner.next_session.fetch_add(1, Ordering::Relaxed);
+         let handle = SessionHandle((serial << WORKER_BITS) | worker as u64);
+-        self.post(handle, Command::Create { handle, setup: Box::new(setup) });
++        self.post(handle, Command::Create { handle, setup: Wiped::boxed(setup) });
+         handle
+     }
+ 
+@@ -185,10 +191,32 @@ impl Engine {
          self.post(handle, Command::SetAddresses(handle, addresses));
      }
  
@@ -1994,6 +2067,50 @@ index 774f5a2..8f3dc93 100644
      /// Which transports the session may use, and the port HTTP goes to (None: each address's own).
      pub fn set_transport(&self, handle: SessionHandle, transport: TransportPreference, http_port: Option<u16>) {
          self.post(handle, Command::SetTransport(handle, transport, http_port));
+@@ -201,14 +229,14 @@ impl Engine {
+         if setup.public_keys.is_empty() {
+             return false;
+         }
+-        self.post(handle, Command::EnablePfs(handle, Box::new(setup)));
++        self.post(handle, Command::EnablePfs(handle, Wiped::boxed(setup)));
+         true
+     }
+ 
+     /// A temporary key already bound to the session's permanent key, made by another session or kept
+     /// from an earlier run: the session takes it instead of making one whenever it needs a new key.
+     pub fn offer_temporary_key(&self, handle: SessionHandle, key: BoundTemporaryKey) {
+-        self.post(handle, Command::OfferTemporaryKey(handle, Box::new(key)));
++        self.post(handle, Command::OfferTemporaryKey(handle, Wiped::boxed(key)));
+     }
+ 
+     /// With PFS and the permanent key from the host: whether this session may make the permanent key
+@@ -218,7 +246,7 @@ impl Engine {
+     }
+ 
+     pub fn update_environment(&self, handle: SessionHandle, environment: ApiEnvironment, noop: Option<RpcRequest>) {
+-        self.post(handle, Command::UpdateEnvironment(handle, Box::new(environment), noop));
++        self.post(handle, Command::UpdateEnvironment(handle, Wiped::boxed(environment), noop));
+     }
+ 
+     pub fn set_auth_token_ready(&self, handle: SessionHandle, ready: bool) {
+@@ -323,7 +351,7 @@ impl Engine {
+ 
+     /// Telegram Web's HTTPS endpoint the session may use as one more HTTP route (None: none).
+     pub fn set_web_endpoint(&self, handle: SessionHandle, endpoint: Option<WebEndpoint>) {
+-        self.post(handle, Command::SetWebEndpoint(handle, endpoint.map(Box::new)));
++        self.post(handle, Command::SetWebEndpoint(handle, endpoint.map(Wiped::boxed)));
+     }
+ 
+     /// Telegram Web's own endpoint for the session's datacenter and role (`WebEndpoint::telegram`).
+@@ -348,7 +376,7 @@ impl Drop for EngineInner {
+     fn drop(&mut self) {
+         for worker in &self.workers {
+             if let Ok(sender) = worker.sender.lock() {
+-                let _ = sender.send(Command::Shutdown);
++                let _ = sender.send(Wiped::boxed(Command::Shutdown));
+                 let _ = worker.waker.wake();
+             }
+         }
 diff --git a/crates/mtproto-engine/src/session_explorer_tests.rs b/crates/mtproto-engine/src/session_explorer_tests.rs
 index a61264a..9139d0b 100644
 --- a/crates/mtproto-engine/src/session_explorer_tests.rs
@@ -3997,8 +4114,107 @@ index d97db54..3b50bf4 100644
      /// Engine-wide, reported for session 0: what was learned about named networks changed; the host
      /// stores it and gives it back with `Engine::set_route_memory` on the next run.
      RouteMemory {
+diff --git a/crates/mtproto-engine/src/wiped.rs b/crates/mtproto-engine/src/wiped.rs
+new file mode 100644
+index 0000000..ea5f557
+--- /dev/null
++++ b/crates/mtproto-engine/src/wiped.rs
+@@ -0,0 +1,93 @@
++//! A box whose every byte is wiped before it is freed, for the values a host builds and hands the engine and for
++//! what the engine keeps of them. Such a value leaves bytes unused (a `None` field's payload, padding) that keep
++//! what the building thread's stack held, and every move copies them; in a box of its own the value moves as a
++//! pointer. When the value is dropped or taken out, a byte array laid over all of its space is written and
++//! zeroized, as mtproto-core's `WipedAes256` does. `Option::zeroize` is not used: it ends by writing a `None`
++//! copied from a stack temporary whose payload bytes are uninitialized, which puts stack bytes back.
++
++use std::ops::{Deref, DerefMut};
++
++use mtproto_core::Zeroize;
++
++/// The bytes that cover a value's slot after the tag: `align_of - 1 + size_of` of them. One registration per
++/// type (`overlay!`), as stable Rust computes no array length from a type parameter.
++pub(crate) trait Overlay: Sized {
++    type Bytes: Zeroize;
++    const ZERO: Self::Bytes;
++}
++
++/// `repr(u8)` puts the tag first and each variant's fields after it, so `Wiped` lies over every byte after the
++/// tag: the value's and the padding in front of it.
++#[repr(u8)]
++enum Slot<T: Overlay> {
++    Value(T),
++    Wiped(T::Bytes),
++}
++
++pub(crate) struct Wiped<T: Overlay>(Slot<T>);
++
++impl<T: Overlay> Wiped<T> {
++    #[inline(always)]
++    pub(crate) fn boxed(value: T) -> Box<Self> {
++        Box::new(Self(Slot::Value(value)))
++    }
++
++    /// The value, moved out into the caller's frame; the box is wiped before it is freed.
++    #[inline(always)]
++    pub(crate) fn take(mut self: Box<Self>) -> T {
++        match std::mem::replace(&mut self.0, Slot::Wiped(T::ZERO)) {
++            Slot::Value(value) => value,
++            Slot::Wiped(_) => unreachable!("only take and drop wipe the value"),
++        }
++    }
++}
++
++impl<T: Overlay> Deref for Wiped<T> {
++    type Target = T;
++
++    fn deref(&self) -> &T {
++        match &self.0 {
++            Slot::Value(value) => value,
++            Slot::Wiped(_) => unreachable!("only take and drop wipe the value"),
++        }
++    }
++}
++
++impl<T: Overlay> DerefMut for Wiped<T> {
++    fn deref_mut(&mut self) -> &mut T {
++        match &mut self.0 {
++            Slot::Value(value) => value,
++            Slot::Wiped(_) => unreachable!("only take and drop wipe the value"),
++        }
++    }
++}
++
++impl<T: Overlay> Drop for Wiped<T> {
++    fn drop(&mut self) {
++        // The assignment drops the value where it lies; the volatile writes then survive the free that follows.
++        self.0 = Slot::Wiped(T::ZERO);
++        if let Slot::Wiped(bytes) = &mut self.0 {
++            bytes.zeroize();
++        }
++    }
++}
++
++macro_rules! overlay {
++    ($($value:ty),* $(,)?) => {$(
++        impl Overlay for $value {
++            type Bytes = [u8; align_of::<$value>() - 1 + size_of::<$value>()];
++            const ZERO: Self::Bytes = [0; align_of::<$value>() - 1 + size_of::<$value>()];
++        }
++        const _: () = assert!(size_of::<Slot<$value>>() == align_of::<$value>() + size_of::<$value>());
++    )*};
++}
++
++overlay!(
++    crate::worker::Command,
++    crate::types::SessionSetup,
++    crate::session_runtime::SessionRuntime,
++    crate::types::PfsSetup,
++    crate::types::BoundTemporaryKey,
++    mtproto_core::rpc::ApiEnvironment,
++    crate::types::WebEndpoint,
++);
 diff --git a/crates/mtproto-engine/src/worker.rs b/crates/mtproto-engine/src/worker.rs
-index b0e3986..8ef1428 100644
+index b0e3986..975fbdf 100644
 --- a/crates/mtproto-engine/src/worker.rs
 +++ b/crates/mtproto-engine/src/worker.rs
 @@ -9,6 +9,7 @@ use mtproto_core::crypto::OsRandom;
@@ -4009,7 +4225,28 @@ index b0e3986..8ef1428 100644
  use crate::http_link::TOKENS_PER_SESSION;
  use crate::resolver::resolve_blocking;
  use crate::session_runtime::{Resolution, Resolve, SessionRuntime};
-@@ -35,8 +36,11 @@ pub enum Command {
+@@ -16,6 +17,7 @@ use crate::types::{
+     AuthKeyMaterial, DcAddress, EngineCallbacks, EngineConfig, EngineEvent, ProxyConfig, SessionHandle, SessionSetup,
+ };
+ use crate::uploads::Uploads;
++use crate::wiped::Wiped;
+ 
+ pub const WAKER_TOKEN: Token = Token(usize::MAX);
+ 
+@@ -26,8 +28,11 @@ fn session_token(token: Token) -> Token {
+ const MAX_POLL_WAIT: f64 = 60.0;
+ const SHRINK_INTERVAL: f64 = 30.0;
+ 
++/// std's channel copies each message whole into blocks it frees unwiped; a command in a box of its own is a pointer.
++pub type Envelope = Box<Wiped<Command>>;
++
+ pub enum Command {
+-    Create { handle: SessionHandle, setup: Box<SessionSetup> },
++    Create { handle: SessionHandle, setup: Box<Wiped<SessionSetup>> },
+     Destroy(SessionHandle),
+     Send(SessionHandle, RpcRequest),
+     Cancel(SessionHandle, RequestId),
+@@ -35,15 +40,18 @@ pub enum Command {
      SetOnline(SessionHandle, bool),
      SetAuthKey(SessionHandle, Option<AuthKeyMaterial>),
      SetAddresses(SessionHandle, Vec<DcAddress>),
@@ -4019,18 +4256,92 @@ index b0e3986..8ef1428 100644
 +    SetRouteAdmission(SessionHandle, bool),
 +    AdmitRoute(SessionHandle, u64, bool),
      SetTransport(SessionHandle, crate::types::TransportPreference, Option<u16>),
-     SetWebEndpoint(SessionHandle, Option<Box<crate::types::WebEndpoint>>),
+-    SetWebEndpoint(SessionHandle, Option<Box<crate::types::WebEndpoint>>),
++    SetWebEndpoint(SessionHandle, Option<Box<Wiped<crate::types::WebEndpoint>>>),
      UseTelegramWeb(SessionHandle, bool),
-@@ -81,7 +85,7 @@ impl Resolve for ThreadResolver {
+-    EnablePfs(SessionHandle, Box<crate::types::PfsSetup>),
+-    OfferTemporaryKey(SessionHandle, Box<crate::types::BoundTemporaryKey>),
++    EnablePfs(SessionHandle, Box<Wiped<crate::types::PfsSetup>>),
++    OfferTemporaryKey(SessionHandle, Box<Wiped<crate::types::BoundTemporaryKey>>),
+     AllowPermanentKey(SessionHandle, bool),
+-    UpdateEnvironment(SessionHandle, Box<ApiEnvironment>, Option<RpcRequest>),
++    UpdateEnvironment(SessionHandle, Box<Wiped<ApiEnvironment>>, Option<RpcRequest>),
+     SetAuthTokenReady(SessionHandle, bool),
+     ResolveVerification(SessionHandle, RequestId, Verification),
+     FailRequest(SessionHandle, RequestId, i32, String),
+@@ -59,7 +67,7 @@ pub enum Command {
+ }
+ 
+ struct ThreadResolver {
+-    sender: Sender<Command>,
++    sender: Sender<Envelope>,
+     waker: Arc<Waker>,
+     in_flight: HashMap<(String, u16), (Vec<SessionHandle>, f64)>,
+ }
+@@ -81,9 +89,9 @@ impl Resolve for ThreadResolver {
          let waker = self.waker.clone();
          let host = host.to_string();
          let lookup_host = host.clone();
 -        let spawned = std::thread::Builder::new().name("mtproto-resolver".into()).spawn(move || {
 +        let spawned = engine_thread::spawn(std::thread::Builder::new().name("mtproto-resolver".into()), move || {
              let addresses = resolve_blocking(&lookup_host, port);
-             let _ = sender.send(Command::Resolved { host: lookup_host, port, addresses });
+-            let _ = sender.send(Command::Resolved { host: lookup_host, port, addresses });
++            let _ = sender.send(Wiped::boxed(Command::Resolved { host: lookup_host, port, addresses }));
              let _ = waker.wake();
-@@ -356,9 +360,14 @@ impl Worker {
+         });
+         if spawned.is_err() {
+@@ -96,10 +104,11 @@ impl Resolve for ThreadResolver {
+ 
+ pub struct Worker {
+     poll: Poll,
+-    receiver: Receiver<Command>,
++    receiver: Receiver<Envelope>,
+     wake_pending: Arc<AtomicBool>,
+     resolver: ThreadResolver,
+-    sessions: HashMap<SessionHandle, SessionRuntime>,
++    /// Boxed, so a rehash or a removal moves a pointer, and dropping one wipes the whole runtime.
++    sessions: HashMap<SessionHandle, Box<Wiped<SessionRuntime>>>,
+     tokens: HashMap<Token, SessionHandle>,
+     next_token: usize,
+     callbacks: Arc<dyn EngineCallbacks>,
+@@ -118,8 +127,8 @@ pub struct Worker {
+ impl Worker {
+     pub fn new(
+         poll: Poll,
+-        receiver: Receiver<Command>,
+-        sender: Sender<Command>,
++        receiver: Receiver<Envelope>,
++        sender: Sender<Envelope>,
+         waker: Arc<Waker>,
+         wake_pending: Arc<AtomicBool>,
+         callbacks: Arc<dyn EngineCallbacks>,
+@@ -292,13 +301,13 @@ impl Worker {
+     }
+ 
+     fn drain_commands(&mut self, now: mtproto_core::session::Now) -> bool {
+-        while let Ok(command) = self.receiver.try_recv() {
+-            match command {
++        while let Ok(envelope) = self.receiver.try_recv() {
++            match envelope.take() {
+                 Command::Shutdown => return false,
+                 Command::Create { handle, setup } => {
+                     let token = Token(self.next_token);
+                     self.next_token += TOKENS_PER_SESSION;
+-                    let mut runtime = SessionRuntime::new(handle, *setup, token, now, &mut self.rng);
++                    let mut runtime = SessionRuntime::new(handle, setup.take(), token, now, &mut self.rng);
+                     runtime.share_uploads(self.uploads.clone());
+                     runtime.share_route_hints(self.hints.clone());
+                     if let Some(signal) = &self.signal {
+@@ -306,7 +315,7 @@ impl Worker {
+                     }
+                     runtime.set_network_available(self.network_available, now, self.poll.registry());
+                     self.tokens.insert(token, handle);
+-                    self.sessions.insert(handle, runtime);
++                    self.sessions.insert(handle, Wiped::boxed(runtime));
+                 }
+                 Command::Destroy(handle) => {
+                     if let Some(mut session) = self.sessions.remove(&handle) {
+@@ -356,9 +365,14 @@ impl Worker {
                          session.set_addresses(addresses, now, self.poll.registry());
                      }
                  }
@@ -4046,7 +4357,7 @@ index b0e3986..8ef1428 100644
                      }
                  }
                  Command::SetProxy(handle, proxy) => {
-@@ -366,6 +375,16 @@ impl Worker {
+@@ -366,14 +380,30 @@ impl Worker {
                          session.set_proxy(proxy, now, self.poll.registry());
                      }
                  }
@@ -4062,7 +4373,41 @@ index b0e3986..8ef1428 100644
 +                }
                  Command::EnablePfs(handle, setup) => {
                      if let Some(session) = self.sessions.get_mut(&handle) {
-                         session.enable_pfs(*setup, now, self.poll.registry(), &self.callbacks, &mut self.rng);
+-                        session.enable_pfs(*setup, now, self.poll.registry(), &self.callbacks, &mut self.rng);
++                        session.enable_pfs(setup.take(), now, self.poll.registry(), &self.callbacks, &mut self.rng);
+                     }
+                 }
+                 Command::OfferTemporaryKey(handle, key) => {
+                     if let Some(session) = self.sessions.get_mut(&handle) {
+-                        session.offer_temporary_key(*key, self.poll.registry(), now, &self.callbacks, &mut self.rng);
++                        session.offer_temporary_key(
++                            key.take(),
++                            self.poll.registry(),
++                            now,
++                            &self.callbacks,
++                            &mut self.rng,
++                        );
+                     }
+                 }
+                 Command::AllowPermanentKey(handle, allowed) => {
+@@ -388,7 +418,7 @@ impl Worker {
+                 }
+                 Command::SetWebEndpoint(handle, endpoint) => {
+                     if let Some(session) = self.sessions.get_mut(&handle) {
+-                        session.set_web_endpoint(endpoint.map(|endpoint| *endpoint), self.poll.registry(), now);
++                        session.set_web_endpoint(endpoint.map(Wiped::take), self.poll.registry(), now);
+                     }
+                 }
+                 Command::UseTelegramWeb(handle, test) => {
+@@ -400,7 +430,7 @@ impl Worker {
+                 }
+                 Command::UpdateEnvironment(handle, environment, noop) => {
+                     if let Some(session) = self.sessions.get_mut(&handle) {
+-                        session.update_environment(*environment, noop, now);
++                        session.update_environment(environment.take(), noop, now);
+                     }
+                 }
+                 Command::SetAuthTokenReady(handle, ready) => {
 diff --git a/crates/mtproto-engine/tests/engine.rs b/crates/mtproto-engine/tests/engine.rs
 index 38a9daa..e6da0ad 100644
 --- a/crates/mtproto-engine/tests/engine.rs
@@ -6270,7 +6615,7 @@ index 8b16bc3..95642b7 100644
 +find-msvc-tools = "=0.1.13"
 +windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
 diff --git a/crates/mtproto-ffi/include/mtproto_engine.h b/crates/mtproto-ffi/include/mtproto_engine.h
-index 4f4afe5..5e3645c 100644
+index 4f4afe5..5f54a7f 100644
 --- a/crates/mtproto-ffi/include/mtproto_engine.h
 +++ b/crates/mtproto-ffi/include/mtproto_engine.h
 @@ -138,6 +138,15 @@ enum {
@@ -6342,14 +6687,19 @@ index 4f4afe5..5e3645c 100644
  enum {
      MTConnectionStateNetworkAvailable = 1 << 0,
      MTConnectionStateConnected = 1 << 1,
-@@ -255,6 +292,14 @@ typedef struct {
+@@ -255,6 +292,19 @@ typedef struct {
  
  typedef void (*MTEventCallback)(void *context, MTSessionHandle session, const MTEvent *event);
  typedef void (*MTLogCallback)(void *context, int32_t level, MTString message);
 +/* Panics of engine code, for the whole process: called on the panicking thread (one the engine
 +   started, or the caller's inside an mt_* call) before the process ends, with the thread's name
 +   (empty for a thread the engine did not start) and the message with its location; the strings live
-+   for the call. The host may end the process there; if the callback returns, the engine aborts.
++   for the call. The host may end the process there. If the callback returns, the process still
++   ends, though not always by an abort: a panic on an engine thread aborts it (on Windows 8 and
++   later a fail-fast, 0xC0000409, that only WER sees), and so does one inside an mt_* call, except
++   when panics unwind on Windows and nothing above the call catches the panic, as on a host's main
++   thread: there it is a C++ exception no frame handles (0xE06D7363), which the process's
++   unhandled-exception filter, such as a crash handler's, takes before the call could abort.
 +   Other Rust code's panics, outside the engine's threads and mt_* calls, are not reported. A later
 +   call replaces the callback and its context; NULL removes it. */
 +typedef void (*MTPanicCallback)(void *context, MTString thread, MTString message);
@@ -6357,7 +6707,7 @@ index 4f4afe5..5e3645c 100644
  
  MTEngine *mt_engine_create(uint32_t worker_threads, void *context, MTEventCallback on_event, MTLogCallback on_log);
  void mt_engine_destroy(MTEngine *engine);
-@@ -316,6 +361,21 @@ void mt_session_set_auth_key(MTEngine *engine, MTSessionHandle session, MTBytes
+@@ -316,6 +366,21 @@ void mt_session_set_auth_key(MTEngine *engine, MTSessionHandle session, MTBytes
  void mt_session_set_addresses(MTEngine *engine, MTSessionHandle session, const MTAddress *addresses, size_t count);
  void mt_session_set_obfuscation_dc_id(MTEngine *engine, MTSessionHandle session, int16_t dc_id);
  void mt_session_set_proxy(MTEngine *engine, MTSessionHandle session, const MTProxy *proxy);
@@ -6379,7 +6729,7 @@ index 4f4afe5..5e3645c 100644
  
  enum {
      MTTransportTcp = 0,
-@@ -326,6 +386,11 @@ enum {
+@@ -326,6 +391,11 @@ enum {
  /* Which transports the session may use; HTTP goes to `http_port`, or to each address's own port
     when it is 0. Auto stays on TCP while TCP answers and moves to HTTP while it does not. */
  void mt_session_set_transport(MTEngine *engine, MTSessionHandle session, uint8_t transport, uint16_t http_port);
@@ -7753,6 +8103,273 @@ index 8a9c32b..73cdbd2 100644
 -    assert_eq!(mt_engine_abi_version(), 5);
 +    assert_eq!(mt_engine_abi_version(), 8);
  }
+diff --git a/crates/mtproto-ffi/tests/sec_rows_zeroize.rs b/crates/mtproto-ffi/tests/sec_rows_zeroize.rs
+index 84ec57f..6afcaba 100644
+--- a/crates/mtproto-ffi/tests/sec_rows_zeroize.rs
++++ b/crates/mtproto-ffi/tests/sec_rows_zeroize.rs
+@@ -1,6 +1,8 @@
+ //! H-03: a key the engine creates reaches the host as a secret buffer, wiped when the host frees it; once the
+ //! engine is destroyed no copy of it is left in memory the engine freed. The scanning allocator from
+ //! mtproto-core's tests looks for the key in every heap block the test thread or an engine thread frees.
++//! Nor do the bytes a host thread's stack held, which the values it hands the engine keep where they leave
++//! bytes unused, reach a heap block that thread or an engine thread frees.
+ 
+ #[path = "../../mtproto-core/tests/support/freed_memory.rs"]
+ mod freed_memory;
+@@ -10,6 +12,8 @@ use std::sync::Mutex;
+ use std::sync::atomic::{AtomicUsize, Ordering};
+ use std::time::{Duration, Instant};
+ 
++use mtproto_engine::mtproto_core::auth_key::AuthKey;
++use mtproto_engine::mtproto_core::test_support::test_rsa_public_key_pem;
+ use mtproto_engine_ffi::*;
+ use mtproto_testserver::*;
+ 
+@@ -155,3 +159,244 @@ fn a_created_key_is_wiped_when_the_host_frees_it_and_after_engine_destroy() {
+     assert!(watch.found().is_empty(), "left in freed memory by the engine: {:?}", watch.found());
+     drop(server);
+ }
++
++/// Distinct bytes, so that each of the 16 rotations is a needle of its own.
++const STACK_SECRET: [u8; 16] = {
++    let mut secret = [0u8; 16];
++    let mut index = 0;
++    while index < 16 {
++        secret[index] = 0x3du8.wrapping_add((index as u8).wrapping_mul(29));
++        index += 1;
++    }
++    secret
++};
++
++const PROXY_SECRET: [u8; 17] =
++    [0xdd, 0x0b, 0x8e, 0x25, 0xc4, 0x71, 0x13, 0xfa, 0x66, 0x39, 0xd2, 0x84, 0x4f, 0xe0, 0x17, 0xab, 0x58];
++
++/// Fills 64 KiB of stack below the caller's frame with the secret: the frames of the caller's next call lie there,
++/// so a value built in them keeps the secret wherever it leaves bytes unused.
++#[inline(never)]
++fn paint_the_stack(secret: &[u8; 16]) {
++    let mut painted = [0u8; 64 * 1024];
++    for (index, byte) in painted.iter_mut().enumerate() {
++        *byte = secret[index % secret.len()];
++    }
++    std::hint::black_box(&mut painted);
++}
++
++/// Every rotation of the secret, so that any 16 painted bytes in a freed block match, whatever their alignment.
++fn watch_the_stack_secret(watch: &mut freed_memory::Watch) {
++    let twice: [u8; 32] = core::array::from_fn(|index| STACK_SECRET[index % STACK_SECRET.len()]);
++    for rotation in 0..STACK_SECRET.len() {
++        watch.secret("host stack secret", &twice[rotation..rotation + STACK_SECRET.len()]);
++    }
++}
++
++/// Runs a leg on a thread of its own, as a host's thread calls the engine: unnamed, so not an engine thread, and
++/// with room for the paint.
++fn on_a_host_thread<T: Send + 'static>(leg: impl FnOnce() -> T + Send + 'static) -> T {
++    std::thread::Builder::new().stack_size(2 * 1024 * 1024).spawn(leg).unwrap().join().unwrap()
++}
++
++/// What a leg left in freed memory up to the engine's free, and whether its calibration found the paint after.
++struct Leg {
++    found: Vec<&'static str>,
++    calibrated: bool,
++}
++
++/// The leg's result, read once the engine is freed and its threads joined; then the calibration: a value built over
++/// a fresh paint and freed unwiped must be found. It comes last, so its block is freed after the result is read.
++fn finish(watch: &freed_memory::Watch) -> Leg {
++    let found = watch.found();
++    paint_the_stack(&STACK_SECRET);
++    free_a_value_built_over_the_paint();
++    let calibrated = watch.found().contains(&"host stack secret");
++    watch.stop();
++    Leg { found, calibrated }
++}
++
++/// A `None` whose payload type has no niche, built in this frame over the paint: 71 of its 72 bytes are unused.
++#[inline(never)]
++fn free_a_value_built_over_the_paint() {
++    let value = std::hint::black_box(Option::<[u64; 8]>::None);
++    freed_memory::free_unwiped_copy(&value);
++}
++
++/// What Telegram's `EngineSessionPrivate::start` creates a session with: no addresses and no proxy (later calls
++/// set them), the persistent key, the built-in public keys and its environment, paused and kept connected, under
++/// PFS, with the temporary key it keeps for the slot or none.
++struct TelegramStart {
++    persistent_key: [u8; 256],
++    persistent_key_id: i64,
++    temporary_key: [u8; 256],
++    pem: String,
++}
++
++impl TelegramStart {
++    fn new() -> Self {
++        let persistent_key = core::array::from_fn(|index| (index as u8).wrapping_mul(7) ^ 0xa3);
++        let persistent_key_id = AuthKey::from_slice(&persistent_key).expect("a 256-byte key").id() as i64;
++        let temporary_key = core::array::from_fn(|index| (index as u8).wrapping_mul(11) ^ 0x6c);
++        Self { persistent_key, persistent_key_id, temporary_key, pem: test_rsa_public_key_pem() }
++    }
++
++    fn temporary_key(&self) -> MTTemporaryKey {
++        MTTemporaryKey {
++            key: bytes(&self.temporary_key),
++            expires_at: mtproto_engine::unix_seconds() as i32 + 86400,
++            bound_to: self.persistent_key_id,
++            salts: std::ptr::null(),
++            salt_count: 0,
++            has_init_hash: 0,
++            init_hash: string(""),
++        }
++    }
++}
++
++fn environment() -> MTEnvironment {
++    MTEnvironment {
++        layer: 230,
++        api_id: 1,
++        device_model: string("Desktop"),
++        system_version: string("Windows 11"),
++        app_version: string("6.3 x64"),
++        system_lang_code: string("en-US"),
++        lang_pack: string("tdesktop"),
++        lang_code: string("en"),
++        has_proxy: 0,
++        proxy_address: string(""),
++        proxy_port: 0,
++        has_params: 0,
++        params: bytes(&[]),
++        init_hash: string(""),
++        disable_updates: 0,
++    }
++}
++
++fn no_proxy() -> MTProxy {
++    MTProxy { kind: 0, host: string(""), port: 0, username: string(""), password: string(""), secret: bytes(&[]) }
++}
++
++fn create_as_telegram_does(engine: *mut MTEngine, start: &TelegramStart, offered: bool) -> u64 {
++    let pems = [string(&start.pem)];
++    let environment = environment();
++    let temporary_key = start.temporary_key();
++    let setup = MTSessionSetup {
++        datacenter_id: 2,
++        obfuscation_dc_id: 2,
++        role: 0,
++        framing: 0,
++        addresses: std::ptr::null(),
++        address_count: 0,
++        proxy: no_proxy(),
++        auth_key: bytes(&start.persistent_key),
++        salts: std::ptr::null(),
++        salt_count: 0,
++        has_init_hash: 0,
++        init_hash: string(""),
++        generate_key: 0,
++        public_keys_pem: pems.as_ptr(),
++        public_key_count: pems.len(),
++        temp_key_expires_in: 0,
++        environment: &environment,
++        time_difference: 0.0,
++        online: 0,
++        paused: 1,
++        keep_connected: 1,
++        idle_disconnect_after: 0.0,
++        request_timeout: 0.0,
++        pfs_lifetime: 86400,
++        pfs_make_permanent_key: 0,
++        pfs_temporary_key: if offered { &temporary_key } else { std::ptr::null() },
++    };
++    unsafe { mt_session_create(engine, &setup) }
++}
++
++/// The engine is made before the paint; from arming on, every call is made over a fresh paint, from the session's
++/// creation to the engine's free.
++fn a_session_created_and_destroyed(offered: bool) -> Leg {
++    let start = TelegramStart::new();
++    let engine = unsafe { mt_engine_create(2, std::ptr::null_mut(), None, None) };
++    assert!(!engine.is_null());
++    let mut watch = freed_memory::watch();
++    watch_the_stack_secret(&mut watch);
++    freed_memory::only_threads(freed_memory::is_engine_thread);
++    watch.arm();
++    watch.arm_every_thread();
++    paint_the_stack(&STACK_SECRET);
++    let session = create_as_telegram_does(engine, &start, offered);
++    paint_the_stack(&STACK_SECRET);
++    unsafe { mt_session_destroy(engine, session) };
++    paint_the_stack(&STACK_SECRET);
++    unsafe { mt_engine_destroy(engine) };
++    let leg = finish(&watch);
++    assert_ne!(session, 0, "the session was created");
++    leg
++}
++
++#[test]
++fn a_session_created_through_the_c_abi_leaves_no_host_stack_bytes_in_freed_memory() {
++    let legs = [
++        ("no offered key", on_a_host_thread(|| a_session_created_and_destroyed(false))),
++        ("an offered key", on_a_host_thread(|| a_session_created_and_destroyed(true))),
++    ];
++    let uncalibrated: Vec<_> = legs.iter().filter(|(_, leg)| !leg.calibrated).map(|(name, _)| *name).collect();
++    assert!(uncalibrated.is_empty(), "the calibration found no paint, so these legs show nothing: {uncalibrated:?}");
++    let leaks: Vec<_> =
++        legs.iter().filter(|(_, leg)| !leg.found.is_empty()).map(|(name, leg)| (*name, &leg.found)).collect();
++    assert!(leaks.is_empty(), "left in freed memory: {leaks:?}");
++}
++
++/// A session created as Telegram does is handed values through the later calls, each over a fresh paint.
++fn a_session_handed_values() -> Leg {
++    let start = TelegramStart::new();
++    let pems = [string(&start.pem)];
++    let proxy = MTProxy { kind: 2, host: string("127.0.0.1"), port: 443, secret: bytes(&PROXY_SECRET), ..no_proxy() };
++    let environment = environment();
++    let endpoint = MTWebEndpoint {
++        host: string("venus.web.telegram.org"),
++        port: 443,
++        path: string("/apiw1"),
++        address: string(""),
++        ws_path: string("/apiws"),
++    };
++    let temporary_key = start.temporary_key();
++    let engine = unsafe { mt_engine_create(2, std::ptr::null_mut(), None, None) };
++    assert!(!engine.is_null());
++    let mut watch = freed_memory::watch();
++    watch_the_stack_secret(&mut watch);
++    freed_memory::only_threads(freed_memory::is_engine_thread);
++    watch.arm();
++    watch.arm_every_thread();
++    paint_the_stack(&STACK_SECRET);
++    let session = create_as_telegram_does(engine, &start, false);
++    paint_the_stack(&STACK_SECRET);
++    unsafe { mt_session_set_proxy(engine, session, &proxy) };
++    paint_the_stack(&STACK_SECRET);
++    unsafe { mt_session_set_proxy(engine, session, std::ptr::null()) };
++    paint_the_stack(&STACK_SECRET);
++    unsafe { mt_session_update_environment(engine, session, &environment, std::ptr::null()) };
++    paint_the_stack(&STACK_SECRET);
++    unsafe { mt_session_set_web_endpoint(engine, session, &endpoint) };
++    paint_the_stack(&STACK_SECRET);
++    let enabled =
++        unsafe { mt_session_enable_pfs(engine, session, 86400, pems.as_ptr(), pems.len(), 0, std::ptr::null()) };
++    paint_the_stack(&STACK_SECRET);
++    unsafe { mt_session_offer_temporary_key(engine, session, &temporary_key) };
++    paint_the_stack(&STACK_SECRET);
++    unsafe { mt_session_destroy(engine, session) };
++    paint_the_stack(&STACK_SECRET);
++    unsafe { mt_engine_destroy(engine) };
++    let leg = finish(&watch);
++    assert_ne!(session, 0, "the session was created");
++    assert_eq!(enabled, 1, "the public key was taken");
++    leg
++}
++
++#[test]
++fn values_later_calls_hand_a_session_leave_no_host_stack_bytes_in_freed_memory() {
++    let leg = on_a_host_thread(a_session_handed_values);
++    assert!(leg.calibrated, "the calibration found no paint, so the leg shows nothing");
++    assert!(leg.found.is_empty(), "left in freed memory: {:?}", leg.found);
++}
 diff --git a/crates/mtproto-fuzz/src/targets.rs b/crates/mtproto-fuzz/src/targets.rs
 index 038a1da..3476be3 100644
 --- a/crates/mtproto-fuzz/src/targets.rs
@@ -8202,7 +8819,7 @@ index 732c740..9958f2c 100644
          let invoke_after = (bits & 512 != 0 && id > 1).then(|| RequestId(1 + cursor.below(id as usize - 1) as u64));
          RpcClient::send(self, RpcRequest { id: RequestId(id), body, flags, invoke_after }, now);
 diff --git a/security/requirements.tsv b/security/requirements.tsv
-index 9e691fe..b8d35e9 100644
+index 9e691fe..8c15299 100644
 --- a/security/requirements.tsv
 +++ b/security/requirements.tsv
 @@ -172,7 +172,7 @@ K-18	handshake	TD-AUTHKEY-2	A stalled handshake has a deadline and is retried on
@@ -8210,7 +8827,7 @@ index 9e691fe..b8d35e9 100644
  H-01	hardening	TD-TRANSPORT-1 (hardening)	A partial frame that averages under 512 B/s after a 15 s grace is abandoned; slow links above that are never cut	FIXED	engine	trickling_or_noisy_connections_are_abandoned_and_requests_complete,slow_link_trickling_bytes_never_times_out,chained_frames_without_answers_do_not_keep_a_dead_connection	With the 4 MiB cap a fake frame trickled at the floor holds a session at most about 2.3 h. 2026-10-06: the grace is given once per fresh packet, matched quick ack or handshake step, so empty frames cannot hold a dead connection.
  H-02	hardening	DOC-CRYPTO-11 (hardening)	Debug output never prints proxy secrets or session verification tokens	FIXED	engine	debug_output_redacts_proxy_secrets_and_verification_tokens	
 -H-03	hardening	DOC-CRYPTO-11 (hardening)	Obfuscation keys, proxy secrets (ProxySecret, DcAddress, ProxyConfig, SOCKS5 password) and secret FFI payloads dropped after shutdown are zeroized	FIXED	engine	the_freed_memory_scanner_finds_secrets_freed_without_wiping,proxy_secrets_leave_no_copy_in_freed_memory,obfuscation_keys_and_keystreams_leave_no_copy_in_freed_memory,a_transport_stream_leaves_no_proxy_secret_or_obfuscation_key_in_freed_memory,engine_secret_types_are_wiped_when_dropped,a_session_with_an_address_secret_leaves_no_secret_in_freed_memory,a_created_key_leaves_no_copy_in_freed_memory_when_the_engine_shuts_down,a_created_key_is_wiped_when_the_host_frees_it_and_after_engine_destroy,a_fake_tls_stream_leaves_no_proxy_key_in_freed_memory,a_standard_base64_proxy_secret_leaves_no_partial_decoding_in_freed_memory,socks5_credentials_leave_no_copy_in_freed_memory,http_proxy_credentials_leave_no_copy_in_freed_memory,a_session_through_an_authenticating_socks5_proxy_leaves_no_password_in_freed_memory,a_session_through_a_fake_tls_mtproxy_leaves_no_proxy_key_in_freed_memory	Checked with a scanning allocator on the test and engine threads. The named types wipe themselves, but copies do not (ignored tests): Socks5Auth and the SOCKS5 request in the write buffer, the fake-TLS key in TlsState, HTTP Basic credentials, and a partly decoded standard-base64 secret. Engine copies (Socks5Auth, write buffer, fake-TLS state, HTTP proxy auth, base64 fallback, HTTP transport proxy credentials) wiped since 2026-10-07.
-+H-03	hardening	DOC-CRYPTO-11 (hardening)	Obfuscation keys, proxy secrets (ProxySecret, DcAddress, ProxyConfig, SOCKS5 password) and secret FFI payloads dropped after shutdown are zeroized	FIXED	engine	the_freed_memory_scanner_finds_secrets_freed_without_wiping,proxy_secrets_leave_no_copy_in_freed_memory,obfuscation_keys_and_keystreams_leave_no_copy_in_freed_memory,a_transport_stream_leaves_no_proxy_secret_or_obfuscation_key_in_freed_memory,engine_secret_types_are_wiped_when_dropped,a_session_with_an_address_secret_leaves_no_secret_in_freed_memory,a_created_key_leaves_no_copy_in_freed_memory_when_the_engine_shuts_down,a_created_key_is_wiped_when_the_host_frees_it_and_after_engine_destroy,a_fake_tls_stream_leaves_no_proxy_key_in_freed_memory,a_standard_base64_proxy_secret_leaves_no_partial_decoding_in_freed_memory,socks5_credentials_leave_no_copy_in_freed_memory,http_proxy_credentials_leave_no_copy_in_freed_memory,a_session_through_an_authenticating_socks5_proxy_leaves_no_password_in_freed_memory,a_session_through_a_fake_tls_mtproxy_leaves_no_proxy_key_in_freed_memory,a_closed_connection_leaves_no_obfuscation_or_proxy_key_in_its_session_slot	Checked with a scanning allocator on the test and engine threads. The named types wipe themselves, but copies do not (ignored tests): Socks5Auth and the SOCKS5 request in the write buffer, the fake-TLS key in TlsState, HTTP Basic credentials, and a partly decoded standard-base64 secret. Engine copies (Socks5Auth, write buffer, fake-TLS state, HTTP proxy auth, base64 fallback, HTTP transport proxy credentials) wiped since 2026-10-07. The whole AES state (both halves of aes's key schedule union) and the state of closed or moved connections (each boxed and dropped where it lies) wiped since 2026-11-02.
++H-03	hardening	DOC-CRYPTO-11 (hardening)	Obfuscation keys, proxy secrets (ProxySecret, DcAddress, ProxyConfig, SOCKS5 password) and secret FFI payloads dropped after shutdown are zeroized	FIXED	engine	the_freed_memory_scanner_finds_secrets_freed_without_wiping,proxy_secrets_leave_no_copy_in_freed_memory,obfuscation_keys_and_keystreams_leave_no_copy_in_freed_memory,a_transport_stream_leaves_no_proxy_secret_or_obfuscation_key_in_freed_memory,engine_secret_types_are_wiped_when_dropped,a_session_with_an_address_secret_leaves_no_secret_in_freed_memory,a_created_key_leaves_no_copy_in_freed_memory_when_the_engine_shuts_down,a_created_key_is_wiped_when_the_host_frees_it_and_after_engine_destroy,a_fake_tls_stream_leaves_no_proxy_key_in_freed_memory,a_standard_base64_proxy_secret_leaves_no_partial_decoding_in_freed_memory,socks5_credentials_leave_no_copy_in_freed_memory,http_proxy_credentials_leave_no_copy_in_freed_memory,a_session_through_an_authenticating_socks5_proxy_leaves_no_password_in_freed_memory,a_session_through_a_fake_tls_mtproxy_leaves_no_proxy_key_in_freed_memory,a_closed_connection_leaves_no_obfuscation_or_proxy_key_in_its_session_slot,a_session_created_through_the_c_abi_leaves_no_host_stack_bytes_in_freed_memory,values_later_calls_hand_a_session_leave_no_host_stack_bytes_in_freed_memory	Checked with a scanning allocator on the test and engine threads. The named types wipe themselves, but copies do not (ignored tests): Socks5Auth and the SOCKS5 request in the write buffer, the fake-TLS key in TlsState, HTTP Basic credentials, and a partly decoded standard-base64 secret. Engine copies (Socks5Auth, write buffer, fake-TLS state, HTTP proxy auth, base64 fallback, HTTP transport proxy credentials) wiped since 2026-10-07. The whole AES state (both halves of aes's key schedule union) and the state of closed or moved connections (each boxed and dropped where it lies) wiped since 2026-11-02. The engine's copies of the values a host hands it, whose unused bytes keep what the host's stack held (each command, the session setup and the other values commands carry in boxes, and each session runtime), wiped since 2026-11-02; the address lists a host gives are not.
  H-05	hardening	engine (hardening)	RSA public keys from PEM/DER never panic; only 2048-bit moduli with an odd exponent of at least 3 are accepted	FIXED	engine	rejects_garbage,spki_and_pkcs1_agree,production_key_parses_with_expected_fingerprint,public_exponent_must_be_odd_and_at_least_three	Also fuzzed by the rsa target. The exponent check is new.
  H-04	hardening	engine (hardening)	No attacker-reachable panic in packet, handshake or transport parsing	OK	engine	decrypt_never_panics,handshake_never_panics_on_garbage,hostile_server_faults_never_break_exactly_once_delivery	
  T-24	transport	DOC-TRANSPORT-17 (errors)	HTTP: transport errors arrive as HTTP status codes and the body is ignored	FIXED	engine	status_codes_are_transport_errors_and_their_bodies_are_dropped,http_404_follows_the_key_rejection_rule,transport_flood_status_backs_off_and_retransmits	Error bodies are discarded up to 64 KiB.
