@@ -1,0 +1,13 @@
+diff --git a/src/plugins/platforms/windows/qwindowswindow.cpp b/src/plugins/platforms/windows/qwindowswindow.cpp
+--- a/src/plugins/platforms/windows/qwindowswindow.cpp
++++ b/src/plugins/platforms/windows/qwindowswindow.cpp
+@@ -2752,7 +2752,8 @@ void QWindowsWindow::setWindowState(Qt::WindowStates state)
+ 
+ bool QWindowsWindow::isFullScreen_sys() const
+ {
+-    return isFullScreenGeometry(geometry_sys());
++    return !(style() & (WS_DLGFRAME | WS_THICKFRAME))
++        && isFullScreenGeometry(geometry_sys());
+ }
+ 
+ /*!
