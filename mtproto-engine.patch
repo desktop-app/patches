@@ -3,9 +3,10 @@ abort on a panic on an engine thread, give the host explicit HTTP
 addresses, host-ordered dependents and reset causes (ABI 6), leave no
 cipher or connection key state in freed or vacated memory, report the
 engine's panics to the host (ABI 7), let the host admit the route of
-each connection a session opens (ABI 8), and wipe the session setups a
+each connection a session opens (ABI 8), wipe the session setups a
 host hands it, and every command it posts to its workers, before it
-frees them.
+frees them, and let the host resolve a proxy's host name, keeping a
+session's reconnect backoff across the name's addresses (ABI 9).
 
 Upstream: https://github.com/TelegramMessenger/mtproto-engine
 Branch: main
@@ -16,7 +17,7 @@ Apply with `git apply` right after checking out that revision.
 Builds for i686-win7-windows-msvc and x86_64-win7-windows-msvc (std built
 from source with -Z build-std and +crt-static) and aarch64-pc-windows-msvc.
 Every hunk is Windows-gated, or moves a test helper unchanged off Windows,
-except seven changes, made for every platform. First, the engine's threads
+except eight changes, made for every platform. First, the engine's threads
 (mtproto-main, mtproto-worker-N, mtproto-resolver) run under an
 abort-on-panic guard, so a host built with panic = "unwind" ends the
 process on a panic there, as the engine's own panic = "abort" profile does,
@@ -137,10 +138,10 @@ mtproto-engine sec_rows_zeroize::a_closed_connection_leaves_no_obfuscation_or_pr
 
 Fifth, the engine reports its own panics to the host before the process
 ends. A thread the engine starts runs as engine code for its whole
-life, and every mt_* entry point (46, mt_set_panic_callback and the
-sixth change's two included) begins with one line,
-let _engine = enter_engine_code();, which runs the calling thread as
-engine code for the whole call. mtproto-engine exports
+life, and every mt_* entry point (47, mt_set_panic_callback, the sixth
+change's two and the eighth change's one included) begins with one
+line, let _engine = enter_engine_code();, which runs the calling thread
+as engine code for the whole call. mtproto-engine exports
 enter_engine_code and report_panics_to; the first reporter set
 installs, once, a panic hook chained in front of the one already set,
 and until then nothing changes. For a panic of engine code the hook
@@ -225,8 +226,8 @@ mtproto-engine host_endpoints::a_paused_session_given_a_new_proxy_connects_only_
 mtproto-engine host_endpoints::a_call_outstanding_across_a_paused_proxy_switch_runs_and_completes_once,
 mtproto-engine host_endpoints::auto_forwards_http_to_the_hosts_http_addresses_through_a_proxy_that_refuses_connect.
 
-ABI 8 (mt_engine_abi_version() returns 8; no struct layout changes)
-adds it to mtproto_engine.h:
+ABI 8 (no struct layout changes; ABI 9 of the eighth change
+builds on it) adds it to mtproto_engine.h:
   void mt_session_set_route_admission(MTEngine *engine, MTSessionHandle session, uint8_t required);
   void mt_session_admit_route(MTEngine *engine, MTSessionHandle session, MTRequestId admission, uint8_t admitted);
 and MTEventKindRouteRequired (37): request_id the admission to answer,
@@ -261,6 +262,65 @@ covered: on 64-bit targets an address without a secret keeps its None's
 16 unused bytes in the list. No C ABI change. Tests:
 mtproto-ffi sec_rows_zeroize::a_session_created_through_the_c_abi_leaves_no_host_stack_bytes_in_freed_memory,
 mtproto-ffi sec_rows_zeroize::values_later_calls_hand_a_session_leave_no_host_stack_bytes_in_freed_memory.
+
+Eighth, a host that resolves a proxy's host name itself, where the
+system resolver may not answer it, gives a session the name's addresses
+in the order to try them, and the session tries them in turn and keeps
+its reconnect backoff across them. Before, such a host could only give
+one of them as the proxy, and moving to the next, a different proxy,
+started the backoff over. The addresses are used while the session's
+proxy (SOCKS5, MTProxy or HTTP) has that name as its host, each at the
+proxy's port, and kept across proxy changes, one name at a time, so the
+proxy and its list may come in either order. While the session holds
+them it never looks the name up, for a TCP connection, an HTTP link or
+an Auto HTTP probe: each failed attempt goes to the next address while
+the failure count, and with it the reconnect delay, keeps growing, as
+for a name the engine resolves itself, so the delays and the proxy
+connection issues are those of a single address, and after the last
+address the next round starts over from the first, with no lookup, no
+expiry and the count kept. An address a connection answered on goes
+first from then on. A later list for the name takes over from the next
+attempt and resets nothing (the failure count, the delay, the
+connection in place); the same list again changes nothing. The first
+list for a name lets a session without a connection try at once, as an
+answer to its own lookup does. Entries that are not IP literals, and
+repeats, are skipped; an empty list, or one without a literal, gives
+the name back to the system resolver at its next lookup. A system
+answer for the name that comes while a list is held, to a lookup asked
+before it, is ignored: it counts no failure, moves no attempt and
+installs no addresses. While connected through a proxy whose host is a
+name, the session's EngineEvent::ConnectionState also names the address
+of that name it reached: its TCP connection's, or that of an HTTP link
+that answered. A proxy given as an IP literal, and a name without a
+list, connect as before. A test drives three addresses that each fail
+at once, and one such address, on a virtual clock, idle for five
+minutes and with a call waiting for two, and finds the same delays and
+as many attempts; it needs listeners on 127.0.0.2 to 127.0.0.4 and
+skips, saying so, where they cannot be bound. Tests:
+mtproto-engine session_runtime::tests::a_proxy_name_the_host_answers_for_rotates_with_the_failures_and_is_never_looked_up,
+mtproto-engine session_runtime::tests::the_backoff_keeps_growing_across_the_proxy_addresses_the_host_gives,
+mtproto-engine session_runtime::tests::a_new_list_for_the_proxy_name_keeps_the_backoff_and_the_connection,
+mtproto-engine session_runtime::tests::a_system_answer_for_a_name_the_host_answers_for_changes_nothing,
+mtproto-engine session_runtime::tests::http_through_a_named_proxy_uses_the_hosts_addresses,
+mtproto-engine proxy_addresses::an_address_that_starts_accepting_carries_the_session_at_its_next_turn,
+mtproto-engine proxy_addresses::an_http_link_names_the_address_reached_and_an_ip_literal_proxy_names_none.
+
+ABI 9 (mt_engine_abi_version() returns 9; no struct layout changes)
+adds it to mtproto_engine.h:
+  void mt_session_set_proxy_addresses(MTEngine *engine, MTSessionHandle session, MTString host, const MTString *addresses, size_t count);
+and text2 of MTEventKindConnectionState (18), empty before: while
+connected through a proxy whose host is a name, the address of that
+name the session reached, as an IP literal without the port, and empty
+otherwise; over HTTP it comes once a link answered, so a state that
+says connected may come first with text2 empty. text stays the proxy as
+host:port. host is the proxy's host name and addresses its count
+addresses as text, count 0 for an empty list; the strings are copied
+during the call and the addresses parsed on the session's worker, not
+on the host's thread, and the seventh change's test of later calls
+hands a session this one too. A null engine is ignored. The ABI version
+checks and docs/swift-integration.md follow. Tests:
+mtproto-ffi ffi_abi9::the_header_declares_abi_9,
+mtproto-ffi ffi_abi9::a_named_proxy_connects_only_through_the_addresses_the_host_gives.
 
 Test gated off on Windows, with its reason in the source:
 - mtproto-engine interface::tests::loopback_resolves_to_lo0 (Windows):
@@ -1945,7 +2005,7 @@ index 09abb61..5945a6d 100644
 +    }
  }
 diff --git a/crates/mtproto-engine/src/lib.rs b/crates/mtproto-engine/src/lib.rs
-index 774f5a2..5c7acdb 100644
+index 774f5a2..a65bef2 100644
 --- a/crates/mtproto-engine/src/lib.rs
 +++ b/crates/mtproto-engine/src/lib.rs
 @@ -2,6 +2,7 @@
@@ -2034,7 +2094,7 @@ index 774f5a2..5c7acdb 100644
          handle
      }
  
-@@ -185,10 +191,32 @@ impl Engine {
+@@ -185,10 +191,46 @@ impl Engine {
          self.post(handle, Command::SetAddresses(handle, addresses));
      }
  
@@ -2048,6 +2108,20 @@ index 774f5a2..5c7acdb 100644
          self.post(handle, Command::SetProxy(handle, proxy));
      }
  
++    /// The addresses the proxy host name `host` resolves to, in the order to try them, from the host's own
++    /// resolver. While the session's proxy (`set_proxy`) has `host` as its host, the session never looks the
++    /// name up (TCP connections, HTTP links, Auto probes) and goes to these at the proxy's port: each failed
++    /// attempt moves to the next while the failure count, and with it the reconnect delay, keeps growing;
++    /// after the last it starts over from the first, an address that answered first from then on. One name
++    /// is kept at a time, across proxy changes. A later list for it takes over from the next attempt and
++    /// resets nothing (the failure count, the delay, the connection in place); the first one lets a session
++    /// without a connection try at once. Entries that are not IP literals are skipped, and a list without
++    /// any gives the name back to the system resolver. `EngineEvent::ConnectionState` reports which address
++    /// the link reached.
++    pub fn set_proxy_addresses(&self, handle: SessionHandle, host: String, addresses: Vec<String>) {
++        self.post(handle, Command::SetProxyAddresses(handle, host, addresses));
++    }
++
 +    /// While `required`, the session opens no connection of its own (a TCP connection, a racer, an HTTP
 +    /// link, an Auto HTTP probe, a TCP recheck) before the host admitted it: it reports
 +    /// `EngineEvent::RouteRequired` and waits for `admit_route`. One admission opens one attempt, in the
@@ -2067,7 +2141,7 @@ index 774f5a2..5c7acdb 100644
      /// Which transports the session may use, and the port HTTP goes to (None: each address's own).
      pub fn set_transport(&self, handle: SessionHandle, transport: TransportPreference, http_port: Option<u16>) {
          self.post(handle, Command::SetTransport(handle, transport, http_port));
-@@ -201,14 +229,14 @@ impl Engine {
+@@ -201,14 +243,14 @@ impl Engine {
          if setup.public_keys.is_empty() {
              return false;
          }
@@ -2084,7 +2158,7 @@ index 774f5a2..5c7acdb 100644
      }
  
      /// With PFS and the permanent key from the host: whether this session may make the permanent key
-@@ -218,7 +246,7 @@ impl Engine {
+@@ -218,7 +260,7 @@ impl Engine {
      }
  
      pub fn update_environment(&self, handle: SessionHandle, environment: ApiEnvironment, noop: Option<RpcRequest>) {
@@ -2093,7 +2167,7 @@ index 774f5a2..5c7acdb 100644
      }
  
      pub fn set_auth_token_ready(&self, handle: SessionHandle, ready: bool) {
-@@ -323,7 +351,7 @@ impl Engine {
+@@ -323,7 +365,7 @@ impl Engine {
  
      /// Telegram Web's HTTPS endpoint the session may use as one more HTTP route (None: none).
      pub fn set_web_endpoint(&self, handle: SessionHandle, endpoint: Option<WebEndpoint>) {
@@ -2102,7 +2176,7 @@ index 774f5a2..5c7acdb 100644
      }
  
      /// Telegram Web's own endpoint for the session's datacenter and role (`WebEndpoint::telegram`).
-@@ -348,7 +376,7 @@ impl Drop for EngineInner {
+@@ -348,7 +390,7 @@ impl Drop for EngineInner {
      fn drop(&mut self) {
          for worker in &self.workers {
              if let Ok(sender) = worker.sender.lock() {
@@ -2225,7 +2299,7 @@ index a61264a..9139d0b 100644
 +    assert_eq!(server.executions(1), 1);
 +}
 diff --git a/crates/mtproto-engine/src/session_http.rs b/crates/mtproto-engine/src/session_http.rs
-index c1ab28f..09db9a7 100644
+index c1ab28f..d54c4db 100644
 --- a/crates/mtproto-engine/src/session_http.rs
 +++ b/crates/mtproto-engine/src/session_http.rs
 @@ -11,10 +11,13 @@ use mtproto_core::transport::{
@@ -2244,7 +2318,22 @@ index c1ab28f..09db9a7 100644
  
  /// How long a request carrying queries lets the server wait for their answers before it answers
  /// anyway: a quick answer comes back on it, a slow one later on a parked long poll, and the round
-@@ -288,20 +291,30 @@ impl SessionRuntime {
+@@ -171,6 +174,14 @@ impl HttpState {
+         self.answered
+     }
+ 
++    /// The address of the name `host`:`port` that a connection which decrypted a packet went to.
++    pub(super) fn proven_address(&self, host: &str, port: u16) -> Option<SocketAddr> {
++        self.named
++            .iter()
++            .find(|(token, ((name, at), _))| name == host && *at == port && self.proven.contains(token))
++            .map(|(_, (_, address))| *address)
++    }
++
+     pub(super) fn first_more_readable(&self) -> Option<Token> {
+         self.more_readable.first().copied()
+     }
+@@ -288,20 +299,30 @@ impl SessionRuntime {
          self.http = Some(http);
      }
  
@@ -2288,7 +2377,7 @@ index c1ab28f..09db9a7 100644
          if let Some(web) = self.web_endpoint() {
              candidates.push(HttpCandidate { host: web.host.clone(), port: web.port, web: true });
          }
-@@ -465,6 +478,12 @@ impl SessionRuntime {
+@@ -465,6 +486,12 @@ impl SessionRuntime {
              },
          };
          let token = self.http_free_token()?;
@@ -2301,7 +2390,7 @@ index c1ab28f..09db9a7 100644
          let route = self.http_route(&host, port);
          match HttpConn::connect(registry, token, socket_address, route, socks, choice, now.mono) {
              Ok(conn) => {
-@@ -588,7 +607,7 @@ impl SessionRuntime {
+@@ -588,7 +615,7 @@ impl SessionRuntime {
          self.open_http_conn(registry, now, resolver, callbacks)
      }
  
@@ -2310,7 +2399,7 @@ index c1ab28f..09db9a7 100644
      pub(super) fn http_route_possible(&self) -> bool {
          !self.setup.proxy_blocks_http() && !self.http_candidates().is_empty()
      }
-@@ -2020,6 +2039,9 @@ impl SessionRuntime {
+@@ -2020,6 +2047,9 @@ impl SessionRuntime {
                  Resolution::Pending => return Ok(None),
              },
          };
@@ -2320,7 +2409,7 @@ index c1ab28f..09db9a7 100644
          let route = self.http_route(&host, port);
          match HttpConn::connect(registry, token, socket_address, route, socks, choice, now.mono) {
              Ok(conn) => Ok(Some((conn, named))),
-@@ -2112,8 +2134,18 @@ impl SessionRuntime {
+@@ -2112,8 +2142,18 @@ impl SessionRuntime {
          self.auto.round_timed_out = false;
          let mut pending = false;
          if !plain.is_empty() {
@@ -2341,7 +2430,7 @@ index c1ab28f..09db9a7 100644
              pending |= self.start_http_probe(ProbeKind::Plain, choice, registry, now, resolver, rng);
          }
          let websocket_demoted = now.mono < self.auto.websocket_retry_at;
-@@ -2203,7 +2235,9 @@ impl SessionRuntime {
+@@ -2203,7 +2243,9 @@ impl SessionRuntime {
          }
          if self.auto.probes.is_empty() {
              self.auto.round_open = false;
@@ -2352,7 +2441,7 @@ index c1ab28f..09db9a7 100644
          }
      }
  
-@@ -2479,6 +2513,10 @@ impl SessionRuntime {
+@@ -2479,6 +2521,10 @@ impl SessionRuntime {
              self.auto.tcp_recheck_at = now.mono + super::RESOLVE_RETRY_MAX;
              return;
          };
@@ -2363,7 +2452,7 @@ index c1ab28f..09db9a7 100644
          let socks = self.tunnel_for(&address);
          let transport = mtproto_core::transport::TransportConfig {
              framing: self.setup.framing,
-@@ -2513,6 +2551,30 @@ impl SessionRuntime {
+@@ -2513,6 +2559,30 @@ impl SessionRuntime {
              now.mono + recheck_interval(self.setup.tcp_recheck_after, self.auto.tcp_recheck_failures);
      }
  
@@ -2394,7 +2483,7 @@ index c1ab28f..09db9a7 100644
      /// The TCP recheck answered: the session leaves HTTP, and the verified connection takes over.
      pub(super) fn switch_back_to_tcp(&mut self, registry: &Registry, now: Now, callbacks: &Arc<dyn EngineCallbacks>) {
          self.log(callbacks, LogLevel::Info, "a TCP route answers again; leaving HTTP");
-@@ -2565,6 +2627,42 @@ impl SessionRuntime {
+@@ -2565,6 +2635,42 @@ impl SessionRuntime {
  #[cfg(test)]
  mod tests {
      use super::staggered_wait;
@@ -2484,9 +2573,16 @@ index 5eaf872..2aea1f5 100644
          fail_transmitted: bool,
          registry: &Registry,
 diff --git a/crates/mtproto-engine/src/session_runtime.rs b/crates/mtproto-engine/src/session_runtime.rs
-index 69a7dc6..505d557 100644
+index 69a7dc6..68b011d 100644
 --- a/crates/mtproto-engine/src/session_runtime.rs
 +++ b/crates/mtproto-engine/src/session_runtime.rs
+@@ -1,5 +1,5 @@
+ use std::collections::{HashMap, VecDeque};
+-use std::net::SocketAddr;
++use std::net::{IpAddr, SocketAddr};
+ use std::sync::Arc;
+ 
+ use mio::{Registry, Token};
 @@ -24,7 +24,7 @@ use crate::connection::{ChunkStatus, Connection, ConnectionError};
  use crate::resolver::parse_literal;
  use crate::types::{
@@ -2567,7 +2663,26 @@ index 69a7dc6..505d557 100644
      racer_check: Option<RacerCheck>,
      racer_failures: u32,
      racer_retry_at: f64,
-@@ -229,6 +270,7 @@ pub struct SessionRuntime {
+@@ -175,7 +216,7 @@ pub struct SessionRuntime {
+     timeout_fired: bool,
+     reported_key_required: bool,
+     network_available: bool,
+-    last_state: Option<(ConnectionState, Option<String>)>,
++    last_state: Option<(ConnectionState, Option<String>, Option<IpAddr>)>,
+     progress: Option<ProgressTracking>,
+     frame_watch: Option<FrameWatch>,
+     acknowledged_out: u64,
+@@ -203,6 +244,9 @@ pub struct SessionRuntime {
+     dns_failed: HashMap<(String, u16), Vec<SocketAddr>>,
+     /// The lookup a TCP connection attempt waits for.
+     awaiting_resolution: Option<(String, u16)>,
++    /// A proxy host name and its addresses from the host's own resolver (`set_proxy_addresses`): lookups of
++    /// the name, while it is the proxy's host, are answered from them.
++    proxy_addresses: Option<(String, Vec<IpAddr>)>,
+     unavailable_probe_at: f64,
+     closed: bool,
+     auth_token_ready: bool,
+@@ -229,6 +273,7 @@ pub struct SessionRuntime {
      host_streams: Option<(Arc<crate::host_stream::HostStreams>, Arc<crate::host_stream::WorkerSignal>)>,
      /// Set while the requests go back to the host for another session (`drain`).
      drain: Option<drain::DrainState>,
@@ -2575,7 +2690,15 @@ index 69a7dc6..505d557 100644
  }
  
  impl SessionRuntime {
-@@ -297,6 +339,7 @@ impl SessionRuntime {
+@@ -278,6 +323,7 @@ impl SessionRuntime {
+             dns: HashMap::new(),
+             dns_failed: HashMap::new(),
+             awaiting_resolution: None,
++            proxy_addresses: None,
+             unavailable_probe_at: 0.0,
+             closed: false,
+             auth_token_ready: true,
+@@ -297,6 +343,7 @@ impl SessionRuntime {
              network_generation: 0,
              host_streams: None,
              drain: None,
@@ -2583,7 +2706,7 @@ index 69a7dc6..505d557 100644
              setup,
          };
          let cdn = runtime.setup.role == SessionRole::Cdn;
-@@ -315,7 +358,7 @@ impl SessionRuntime {
+@@ -315,7 +362,7 @@ impl SessionRuntime {
          if let Some(http) = &self.http {
              return http.first_more_readable();
          }
@@ -2592,7 +2715,7 @@ index 69a7dc6..505d557 100644
      }
  
      fn has_link(&self) -> bool {
-@@ -327,7 +370,7 @@ impl SessionRuntime {
+@@ -327,7 +374,7 @@ impl SessionRuntime {
      }
  
      fn free_token(&self) -> Token {
@@ -2601,7 +2724,7 @@ index 69a7dc6..505d557 100644
          if used == Some(self.token) { self.race_token() } else { self.token }
      }
  
-@@ -391,7 +434,7 @@ impl SessionRuntime {
+@@ -391,7 +438,7 @@ impl SessionRuntime {
                  if self.auto.on_websocket {
                      rpc.session_mut().set_keepalive_cap(Some(websocket::WEBSOCKET_KEEPALIVE));
                  }
@@ -2610,7 +2733,7 @@ index 69a7dc6..505d557 100644
                      rpc.connection_opened(now);
                  }
                  for pending in self.queued.drain(..) {
-@@ -476,10 +519,17 @@ impl SessionRuntime {
+@@ -476,10 +523,17 @@ impl SessionRuntime {
          }
          if request.invoke_after.is_some_and(|after| self.rotated.contains(&after)) {
              self.note_rotated(request.id);
@@ -2630,7 +2753,7 @@ index 69a7dc6..505d557 100644
                  response_time: now.unix + self.time_difference(),
                  duration: 0.0,
              });
-@@ -522,6 +572,7 @@ impl SessionRuntime {
+@@ -522,6 +576,7 @@ impl SessionRuntime {
          }
          self.setup.paused = paused;
          if paused {
@@ -2638,7 +2761,7 @@ index 69a7dc6..505d557 100644
              self.cancel_http_probe(registry);
              self.close_connection(registry, now, false);
          } else {
-@@ -592,6 +643,7 @@ impl SessionRuntime {
+@@ -592,6 +647,7 @@ impl SessionRuntime {
  
      pub fn set_addresses(&mut self, addresses: Vec<DcAddress>, now: Now, registry: &Registry) {
          if self.setup.addresses != addresses {
@@ -2646,7 +2769,7 @@ index 69a7dc6..505d557 100644
              self.reset_auto(registry, now, false);
              self.setup.addresses = addresses;
              self.address_cursor = 0;
-@@ -603,15 +655,45 @@ impl SessionRuntime {
+@@ -603,15 +659,45 @@ impl SessionRuntime {
          }
      }
  
@@ -2696,7 +2819,7 @@ index 69a7dc6..505d557 100644
              }
              self.close_connection(registry, now, false);
              self.next_attempt_at = now.mono;
-@@ -620,6 +702,7 @@ impl SessionRuntime {
+@@ -620,6 +706,7 @@ impl SessionRuntime {
  
      pub fn set_proxy(&mut self, proxy: Option<ProxyConfig>, now: Now, registry: &Registry) {
          if self.setup.proxy != proxy {
@@ -2704,7 +2827,63 @@ index 69a7dc6..505d557 100644
              self.reset_auto(registry, now, true);
              self.setup.proxy = proxy;
              self.forget_routes();
-@@ -641,6 +724,7 @@ impl SessionRuntime {
+@@ -631,6 +718,55 @@ impl SessionRuntime {
+         }
+     }
+ 
++    /// The addresses the host's own resolver gave for the proxy host name `host`, in its order
++    /// (`Engine::set_proxy_addresses`): lookups of the name take them from the next one on, and the failure
++    /// count, the delay and the connection in place stay. The first list for the name lets a session
++    /// waiting for a connection try at once, as an answer to its own lookup does.
++    pub fn set_proxy_addresses(&mut self, host: String, addresses: Vec<String>, now: Now) {
++        let mut parsed: Vec<IpAddr> = Vec::with_capacity(addresses.len());
++        for address in addresses.iter().filter_map(|address| parse_literal(address, 0)) {
++            if !parsed.contains(&address.ip()) {
++                parsed.push(address.ip());
++            }
++        }
++        let held = self.proxy_addresses.as_ref().filter(|(name, _)| *name == host).map(|(_, held)| held);
++        if held.map_or(parsed.is_empty(), |held| *held == parsed) {
++            return;
++        }
++        let first = held.is_none();
++        if let Some((previous, _)) = self.proxy_addresses.take()
++            && previous != host
++        {
++            self.forget_proxy_lookups(&previous);
++        }
++        self.forget_proxy_lookups(&host);
++        if parsed.is_empty() {
++            return;
++        }
++        if first {
++            if self.connection.is_none() {
++                self.next_attempt_at = self.next_attempt_at.min(now.mono);
++            }
++            if self.awaiting_resolution.as_ref().is_some_and(|(name, _)| *name == host) {
++                self.awaiting_resolution = None;
++            }
++        }
++        self.proxy_addresses = Some((host, parsed));
++    }
++
++    /// Drops the addresses the session keeps for `host` while it is the proxy's host: the next connection
++    /// takes them anew.
++    fn forget_proxy_lookups(&mut self, host: &str) {
++        let Some((proxy_host, port)) = self.setup.proxy_host().filter(|(proxy_host, _)| *proxy_host == host) else {
++            return;
++        };
++        let key = format!("{proxy_host}:{port}");
++        if self.resolved.as_ref().is_some_and(|resolved| resolved.key == key) {
++            self.resolved = None;
++        }
++        self.dns.retain(|(name, _), _| name != host);
++    }
++
+     pub fn set_transport(
+         &mut self,
+         transport: crate::types::TransportPreference,
+@@ -641,6 +777,7 @@ impl SessionRuntime {
          if self.setup.transport == transport && self.setup.http_port == http_port {
              return;
          }
@@ -2712,7 +2891,7 @@ index 69a7dc6..505d557 100644
          self.setup.transport = transport;
          self.setup.http_port = http_port;
          self.reset_auto(registry, now, false);
-@@ -658,6 +742,127 @@ impl SessionRuntime {
+@@ -658,6 +795,127 @@ impl SessionRuntime {
          self.flaps = 0;
      }
  
@@ -2840,7 +3019,7 @@ index 69a7dc6..505d557 100644
      /// Starts running PFS on a session created without it: its key becomes the permanent key, and
      /// the session reconnects to talk under a temporary one.
      pub fn enable_pfs(
-@@ -848,7 +1053,7 @@ impl SessionRuntime {
+@@ -848,7 +1106,7 @@ impl SessionRuntime {
      fn refresh_uploads(&mut self, now: Now) {
          let mut own = self.rpc.as_ref().map_or(0, |rpc| rpc.session().upload_backlog(now));
          if own > 0 {
@@ -2849,7 +3028,71 @@ index 69a7dc6..505d557 100644
              if let Some(rate) = self.rpc.as_ref().and_then(|rpc| rpc.session().uplink_rate()) {
                  self.uploads.note_rate(rate);
              }
-@@ -1290,6 +1495,10 @@ impl SessionRuntime {
+@@ -1174,14 +1432,17 @@ impl SessionRuntime {
+                     Some(cached) => {
+                         cached.addresses[failures.saturating_sub(cached.failures_at) as usize % cached.addresses.len()]
+                     }
+-                    None => match resolver.resolve(self.handle, &host, port) {
++                    None => match self.look_up(&host, port, resolver) {
+                         Resolution::Resolved(addresses) if !addresses.is_empty() => {
+                             let addresses = self.answered_first(&key, addresses);
+                             let first = addresses[0];
++                            // The host's answer holds until it is replaced or withdrawn, which drops this.
++                            let lifetime =
++                                if self.host_answer(&host, port).is_some() { f64::INFINITY } else { DNS_TTL };
+                             self.resolved = Some(ResolvedHost {
+                                 key,
+                                 addresses,
+-                                expires_at: now.mono + DNS_TTL,
++                                expires_at: now.mono + lifetime,
+                                 failures_at: failures,
+                             });
+                             first
+@@ -1205,7 +1466,22 @@ impl SessionRuntime {
+         }
+     }
+ 
+-    /// A host's addresses from this session's cache, or from the resolver.
++    /// The addresses the host gave for `host` (`set_proxy_addresses`), while `host`:`port` is the proxy's.
++    fn host_answer(&self, host: &str, port: u16) -> Option<&[IpAddr]> {
++        let (name, addresses) = self.proxy_addresses.as_ref()?;
++        (name == host && self.setup.proxy_host() == Some((host, port))).then_some(addresses.as_slice())
++    }
++
++    /// `host`'s addresses at `port`: those the host gave for its proxy's name, with no lookup, or else the
++    /// resolver's.
++    fn look_up(&self, host: &str, port: u16, resolver: &mut dyn Resolve) -> Resolution {
++        match self.host_answer(host, port) {
++            Some(addresses) => Resolution::Resolved(addresses.iter().map(|ip| SocketAddr::new(*ip, port)).collect()),
++            None => resolver.resolve(self.handle, host, port),
++        }
++    }
++
++    /// A host's addresses from this session's cache, or else as `look_up` finds them.
+     pub(super) fn resolve_cached(&mut self, host: &str, port: u16, resolver: &mut dyn Resolve, now: Now) -> Resolution {
+         let key = (host.to_string(), port);
+         if let Some((addresses, expires_at)) = self.dns.get(&key)
+@@ -1213,7 +1489,7 @@ impl SessionRuntime {
+         {
+             return Resolution::Resolved(addresses.clone());
+         }
+-        let resolution = resolver.resolve(self.handle, host, port);
++        let resolution = self.look_up(host, port, resolver);
+         if let Resolution::Resolved(addresses) = &resolution {
+             let lifetime = if addresses.is_empty() { RESOLVE_RETRY_MIN } else { DNS_TTL };
+             self.dns.insert(key, (addresses.clone(), now.mono + lifetime));
+@@ -1222,6 +1498,10 @@ impl SessionRuntime {
+     }
+ 
+     pub fn on_resolved(&mut self, host: &str, port: u16, addresses: Vec<SocketAddr>, now: Now) {
++        // A lookup asked before the host gave the name's addresses: theirs stand.
++        if self.host_answer(host, port).is_some() {
++            return;
++        }
+         let lifetime = if addresses.is_empty() { RESOLVE_RETRY_MIN } else { DNS_TTL };
+         self.dns.insert((host.to_string(), port), (addresses.clone(), now.mono + lifetime));
+         if self.http_connects_to(host, port) {
+@@ -1290,6 +1570,10 @@ impl SessionRuntime {
              Pick::Ready(index, socket_address, address) => (index, socket_address, address),
              pick => return self.defer_connection(pick, now),
          };
@@ -2860,7 +3103,7 @@ index 69a7dc6..505d557 100644
          let socks = self.tunnel_for(&address);
          let transport = TransportConfig {
              framing: self.setup.framing,
-@@ -1405,6 +1614,10 @@ impl SessionRuntime {
+@@ -1405,6 +1689,10 @@ impl SessionRuntime {
          {
              socket_address = other;
          }
@@ -2871,7 +3114,7 @@ index 69a7dc6..505d557 100644
          let transport = TransportConfig {
              framing: self.setup.framing,
              dc_id: self.setup.obfuscation_dc_id,
-@@ -1606,6 +1819,15 @@ impl SessionRuntime {
+@@ -1606,6 +1894,15 @@ impl SessionRuntime {
              return;
          }
          if verified {
@@ -2887,7 +3130,7 @@ index 69a7dc6..505d557 100644
              if self.http.is_some() {
                  self.switch_back_to_tcp(registry, now, callbacks);
              } else if self.auto.on_websocket {
-@@ -1705,7 +1927,7 @@ impl SessionRuntime {
+@@ -1705,7 +2002,7 @@ impl SessionRuntime {
              let result = self.connection.as_mut().expect("connection").handle_writable(registry, now.mono);
              if self.racer.is_some()
                  && self.racer_check.is_none()
@@ -2896,7 +3139,7 @@ index 69a7dc6..505d557 100644
              {
                  self.drop_racer(registry);
              }
-@@ -1774,7 +1996,7 @@ impl SessionRuntime {
+@@ -1774,7 +2071,7 @@ impl SessionRuntime {
                  return false;
              }
              self.log(callbacks, LogLevel::Info, &format!("connection closed: {error}"));
@@ -2905,7 +3148,7 @@ index 69a7dc6..505d557 100644
              let reason = self.close_reason.take();
              let dropped = match reason {
                  Some(CloseReason::ServerRejected) => DropReason::KeyInvalid,
-@@ -1832,7 +2054,7 @@ impl SessionRuntime {
+@@ -1832,7 +2129,7 @@ impl SessionRuntime {
      /// would hold a dead connection for ever.
      fn frame_is_progressing(&mut self, now: Now) -> bool {
          let Some(received) =
@@ -2914,7 +3157,7 @@ index 69a7dc6..505d557 100644
          else {
              return false;
          };
-@@ -2295,6 +2517,19 @@ impl SessionRuntime {
+@@ -2295,6 +2592,19 @@ impl SessionRuntime {
          config: &EngineConfig,
          callbacks: &Arc<dyn EngineCallbacks>,
          rng: &mut OsRandom,
@@ -2934,7 +3177,7 @@ index 69a7dc6..505d557 100644
      ) {
          if self.drive_drain(now, registry, callbacks) {
              return;
-@@ -2411,7 +2646,7 @@ impl SessionRuntime {
+@@ -2411,7 +2721,7 @@ impl SessionRuntime {
          let mut silence = false;
          if failure.is_none()
              && let Some(rpc) = &mut self.rpc
@@ -2943,16 +3186,47 @@ index 69a7dc6..505d557 100644
              && self.handshake.is_none()
              && let Err(error) = rpc.handle_timeout(now)
          {
-@@ -2525,7 +2760,7 @@ impl SessionRuntime {
+@@ -2524,8 +2834,8 @@ impl SessionRuntime {
+         }
      }
  
-     pub fn connection_state(&self) -> (ConnectionState, Option<String>) {
+-    pub fn connection_state(&self) -> (ConnectionState, Option<String>) {
 -        let connected = self.connection.as_ref().is_some_and(Connection::is_established)
++    pub fn connection_state(&self) -> (ConnectionState, Option<String>, Option<IpAddr>) {
 +        let connected = self.connection.as_deref().is_some_and(Connection::is_established)
              || self.http.as_ref().is_some_and(HttpState::is_connected);
          let received = self.connection_received_packet() || self.http.as_ref().is_some_and(HttpState::answered);
          let key_unbound = self.rpc.is_some() && self.pfs.as_ref().is_some_and(|pfs| pfs.perm.is_some() && !pfs.bound);
-@@ -2754,7 +2989,13 @@ impl Drop for SessionRuntime {
+@@ -2540,15 +2850,25 @@ impl SessionRuntime {
+                     || (self.http.is_some() && !received && (self.rejections >= 3 || self.open_failures() >= 3))),
+             awaiting_key_binding: connected && received && key_unbound,
+         };
+-        (state, self.setup.proxy.as_ref().map(ProxyConfig::display_address))
++        (state, self.setup.proxy.as_ref().map(ProxyConfig::display_address), self.proxy_reached())
++    }
++
++    /// The address of the proxy's host name the link reached, while connected through it.
++    fn proxy_reached(&self) -> Option<IpAddr> {
++        let (host, port) = self.setup.proxy_host().filter(|(host, port)| parse_literal(host, *port).is_none())?;
++        if let Some(connection) = self.connection.as_deref().filter(|connection| connection.is_established()) {
++            return Some(connection.target.ip());
++        }
++        let http = self.http.as_ref().filter(|http| http.is_connected())?;
++        http.proven_address(host, port).map(|address| address.ip())
+     }
+ 
+     fn report_state(&mut self, _now: Now, callbacks: &Arc<dyn EngineCallbacks>) {
+         let current = self.connection_state();
+         if self.last_state.as_ref() != Some(&current) {
+             self.last_state = Some(current.clone());
+-            callbacks
+-                .on_event(self.handle, EngineEvent::ConnectionState { state: current.0, proxy_address: current.1 });
++            let (state, proxy_address, proxy_reached) = current;
++            callbacks.on_event(self.handle, EngineEvent::ConnectionState { state, proxy_address, proxy_reached });
+         }
+     }
+ 
+@@ -2754,7 +3074,13 @@ impl Drop for SessionRuntime {
  #[cfg(test)]
  mod tests {
      use super::*;
@@ -2966,7 +3240,7 @@ index 69a7dc6..505d557 100644
  
      struct ScriptedResolver {
          answers: VecDeque<Vec<SocketAddr>>,
-@@ -2820,6 +3061,1055 @@ mod tests {
+@@ -2820,6 +3146,1342 @@ mod tests {
          );
          assert_eq!(resolver.calls, 3);
      }
@@ -4019,6 +4293,293 @@ index 69a7dc6..505d557 100644
 +        assert_eq!(tcp.taken(), 1);
 +        gate.shutdown();
 +    }
++
++    use crate::types::KeyGeneration;
++    use mtproto_core::transport::{RECONNECT_DELAYS, URGENT_RECONNECT_DELAYS};
++
++    /// A SOCKS5 proxy at a name no resolver answers (RFC 6761).
++    fn named_proxy(port: u16) -> ProxyConfig {
++        ProxyConfig::Socks5 { host: "proxy.invalid".into(), port, username: None, password: None }
++    }
++
++    fn texts(addresses: &[&str]) -> Vec<String> {
++        addresses.iter().map(|address| address.to_string()).collect()
++    }
++
++    fn at_proxy(last: u8) -> SocketAddr {
++        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)), 1080)
++    }
++
++    fn datacenter() -> DcAddress {
++        DcAddress { host: "149.154.167.51".into(), port: 443, secret: None }
++    }
++
++    /// A main session through the named proxy at port 1080.
++    fn named_proxy_runtime(now: Now) -> SessionRuntime {
++        let mut setup = SessionSetup::new(2, SessionRole::Main, vec![datacenter()]);
++        setup.proxy = Some(named_proxy(1080));
++        SessionRuntime::new(SessionHandle(1), setup, Token(1), now, &mut OsRandom::new())
++    }
++
++    /// The targets of `count` attempts in a row that each fail.
++    fn failing_picks(runtime: &mut SessionRuntime, count: usize, now: Now) -> Vec<SocketAddr> {
++        (0..count)
++            .map(|_| {
++                let pick = ready_address(runtime.pick_address_at(0, &mut NoLookups, now));
++                runtime.failures += 1;
++                pick
++            })
++            .collect()
++    }
++
++    /// A resolver whose lookups never come back.
++    struct Unanswered;
++
++    impl Resolve for Unanswered {
++        fn resolve(&mut self, _session: SessionHandle, _host: &str, _port: u16) -> Resolution {
++            Resolution::Pending
++        }
++    }
++
++    /// The addresses the host gives for its proxy's name are tried one per failed attempt, in its order, and
++    /// the name is never looked up: not after a round over all of them, not after `DNS_TTL`. The address
++    /// that answered goes first from then on; entries that are no IP literal are skipped, and one listed
++    /// twice is tried once a round. An empty list gives the name back to the resolver.
++    #[test]
++    fn a_proxy_name_the_host_answers_for_rotates_with_the_failures_and_is_never_looked_up() {
++        let now = Now { mono: 1000.0, unix: 1_727_000_000.0 };
++        let mut runtime = named_proxy_runtime(now);
++        runtime.set_proxy_addresses("proxy.invalid".into(), texts(&["192.0.2.1", "192.0.2.2", "192.0.2.3"]), now);
++        let [a, b, c] = [1, 2, 3].map(at_proxy);
++        assert_eq!(failing_picks(&mut runtime, 7, now), [a, b, c, a, b, c, a], "one address per failed attempt");
++        let later = Now { mono: now.mono + DNS_TTL + 1.0, unix: now.unix + DNS_TTL + 1.0 };
++        assert_eq!(failing_picks(&mut runtime, 3, later), [b, c, a], "the round did not go on past DNS_TTL");
++
++        runtime.note_resolved_address_answered(b);
++        assert_eq!(runtime.failures, 0);
++        assert_eq!(failing_picks(&mut runtime, 6, later), [b, c, a, b, c, a], "the address that answered is not first");
++
++        let list = texts(&["proxy.example", "192.0.2.4", "[2001:db8::1]", "192.0.2.4"]);
++        runtime.set_proxy_addresses("proxy.invalid".into(), list, later);
++        let v6 = SocketAddr::new("2001:db8::1".parse().unwrap(), 1080);
++        assert_eq!(failing_picks(&mut runtime, 4, later), [at_proxy(4), v6, at_proxy(4), v6]);
++
++        let mut resolver = ScriptedResolver { answers: VecDeque::from([vec![at_proxy(9)]]), calls: 0 };
++        runtime.set_proxy_addresses("proxy.invalid".into(), Vec::new(), later);
++        assert_eq!(ready_address(runtime.pick_address_at(0, &mut resolver, later)), at_proxy(9));
++        assert_eq!(resolver.calls, 1, "an empty list did not give the name back to the resolver");
++    }
++
++    /// Listeners on 127.0.0.2, .3 and .4 at one port, so that a connection to each opens without an error (a
++    /// refusal inside `connect` would take another path); None where 127.0.0.2 cannot be bound.
++    fn loopback_listeners() -> Option<Vec<std::net::TcpListener>> {
++        let bind = |last: u8, port: u16| std::net::TcpListener::bind((Ipv4Addr::new(127, 0, 0, last), port));
++        for _ in 0..20 {
++            let first = bind(2, 0).ok()?;
++            let port = first.local_addr().ok()?.port();
++            if let (Ok(second), Ok(third)) = (bind(3, port), bind(4, port)) {
++                return Some(vec![first, second, third]);
++            }
++        }
++        None
++    }
++
++    /// When an attempt opened (seconds into the run), where to, and the delay to the next one once it failed.
++    type Attempt = (f64, SocketAddr, f64);
++
++    /// A main session through the proxy `proxy.invalid`:`port`, whose addresses the host gives as `ips`, on
++    /// the virtual clock for `window` seconds: every connection it opens fails at once, unpolled, and each
++    /// drive comes a millisecond after the next attempt is due. Its delays draw on `jitter`. With `urgent`
++    /// the session has no key yet and makes one, so a call waits in `queued` all along: a call a keyed
++    /// session has not sent yet is no waiting work.
++    fn failing_attempts(ips: &[IpAddr], port: u16, jitter: u64, urgent: bool, window: f64) -> Vec<Attempt> {
++        let mut setup = gate_setup(vec![datacenter()], Vec::new(), TransportPreference::Tcp);
++        setup.proxy = Some(named_proxy(port));
++        let mut gate = Gate::new(setup.clone(), false);
++        if urgent {
++            setup.key_generation = Some(KeyGeneration {
++                public_keys: vec![ServerHandshake::new(ServerHandshakeBehavior::default()).public_key()],
++                temporary_expires_in: None,
++            });
++            gate.runtime = SessionRuntime::new(SessionHandle(1), setup, Token(16), gate.start, &mut gate.rng);
++            gate.send(1);
++        }
++        assert_eq!(gate.runtime.has_waiting_work(), urgent);
++        gate.runtime.jitter_state = jitter;
++        let now = gate.now();
++        gate.runtime.set_proxy_addresses("proxy.invalid".into(), ips.iter().map(IpAddr::to_string).collect(), now);
++        let mut attempts = Vec::new();
++        loop {
++            let due = gate.runtime.next_attempt_at - gate.start.mono + 0.001;
++            if due >= window {
++                break;
++            }
++            gate.elapsed = gate.elapsed.max(due);
++            gate.drive();
++            let failures = gate.runtime.failures;
++            let Some(target) = gate.runtime.connection.as_ref().map(|connection| connection.target) else {
++                panic!("no attempt {} s in, when one was due", gate.elapsed);
++            };
++            let issues = gate.runtime.connection_state().0.proxy_has_connection_issues;
++            assert_eq!(issues, failures >= 3, "proxy trouble after {failures} failures");
++            let now = gate.now();
++            gate.runtime.close_connection(gate.poll.registry(), now, true);
++            assert_eq!(gate.runtime.failures, failures + 1);
++            attempts.push((gate.elapsed, target, gate.runtime.next_attempt_at - now.mono));
++        }
++        let mut reported: Vec<bool> = gate
++            .recorded
++            .0
++            .lock()
++            .unwrap()
++            .iter()
++            .filter_map(|event| match event {
++                EngineEvent::ConnectionState { state, .. } => Some(state.proxy_has_connection_issues),
++                _ => None,
++            })
++            .collect();
++        reported.dedup();
++        assert_eq!(reported, [false, true], "proxy trouble was not reported once and for good");
++        gate.shutdown();
++        attempts
++    }
++
++    /// Every attempt to the three addresses the host gives for the proxy's name fails at once. The session
++    /// tries them in turn while its delay climbs the reconnect ladder to its longest step and stays there:
++    /// the same delays and the same number of attempts in the window as against one address, idle for five
++    /// minutes and with a call waiting for two.
++    #[test]
++    fn the_backoff_keeps_growing_across_the_proxy_addresses_the_host_gives() {
++        let Some(listeners) = loopback_listeners() else {
++            eprintln!("skipped: 127.0.0.2 cannot be bound here");
++            return;
++        };
++        let addresses: Vec<SocketAddr> = listeners.iter().map(|listener| listener.local_addr().unwrap()).collect();
++        let ips: Vec<IpAddr> = addresses.iter().map(SocketAddr::ip).collect();
++        let port = addresses[0].port();
++        const JITTER: u64 = 0x2545_f491_4f6c_dd1d;
++        let runs = [(false, &RECONNECT_DELAYS[..], 300.0), (true, &URGENT_RECONNECT_DELAYS[..], 120.0)];
++        for (urgent, ladder, window) in runs {
++            let three = failing_attempts(&ips, port, JITTER, urgent, window);
++            assert!(three.len() >= 40, "urgent {urgent}: {} attempts", three.len());
++            for (n, (at, target, delay)) in three.iter().enumerate() {
++                assert_eq!(*target, addresses[n % 3], "urgent {urgent}: attempt {n}, {at} s in");
++                let step = ladder[n.min(ladder.len() - 1)];
++                assert!(
++                    (delay - step).abs() <= step * RECONNECT_JITTER + 1e-9,
++                    "urgent {urgent}: {delay} s after failure {}, the ladder's step {step} s",
++                    n + 1
++                );
++            }
++            let one = failing_attempts(&ips[..1], port, JITTER, urgent, window);
++            assert_eq!(three.len(), one.len(), "urgent {urgent}: other than as many attempts as against one address");
++            let delays = |attempts: &[Attempt]| attempts.iter().map(|attempt| attempt.2).collect::<Vec<_>>();
++            assert_eq!(delays(&three), delays(&one), "urgent {urgent}");
++        }
++    }
++
++    /// The host's addresses come while the session waits for its own lookup of the proxy's name: it tries at
++    /// once, at the first of them, and the lookup's late answer is not taken. The same list again changes
++    /// nothing; another one leaves the connection in place, and once connections fail, the failure count and
++    /// the delay stay while the next attempt goes to the new list's first address, or to the one that
++    /// answered.
++    #[test]
++    fn a_new_list_for_the_proxy_name_keeps_the_backoff_and_the_connection() {
++        let mut proxy = Sink::new();
++        let port = proxy.port();
++        let mut setup = gate_setup(vec![datacenter()], Vec::new(), TransportPreference::Tcp);
++        setup.proxy = Some(named_proxy(port));
++        let mut gate = Gate::new(setup, false);
++        let now = gate.now();
++        gate.runtime.drive(gate.poll.registry(), now, &mut Unanswered, &gate.config, &gate.callbacks, &mut gate.rng);
++        assert_eq!(gate.runtime.awaiting_resolution, Some(("proxy.invalid".to_string(), port)));
++        assert_eq!(gate.runtime.next_attempt_at, now.mono + RESOLVE_WAIT);
++
++        gate.elapsed += 1.0;
++        let now = gate.now();
++        gate.runtime.set_proxy_addresses("proxy.invalid".into(), texts(&["127.0.0.1"]), now);
++        assert_eq!(gate.runtime.next_attempt_at, now.mono, "the first list did not let the session try at once");
++        assert_eq!(gate.runtime.awaiting_resolution, None);
++        gate.runtime.on_resolved("proxy.invalid", port, vec![address(9)], now);
++        assert_eq!((gate.runtime.failures, gate.runtime.next_attempt_at), (0, now.mono));
++        gate.drive();
++        let local = SocketAddr::from(([127, 0, 0, 1], port));
++        let target = |gate: &Gate| gate.runtime.connection.as_ref().map(|connection| connection.target);
++        assert_eq!(target(&gate), Some(local));
++
++        let started = |gate: &Gate| gate.runtime.connection.as_ref().map(|connection| connection.started_at);
++        let opened = started(&gate);
++        gate.runtime.set_proxy_addresses("proxy.invalid".into(), texts(&["127.0.0.1"]), now);
++        assert!(gate.runtime.resolved.is_some(), "the same list again dropped the addresses in use");
++        gate.runtime.set_proxy_addresses("proxy.invalid".into(), texts(&["127.0.0.1", "192.0.2.1"]), now);
++        gate.drive_for(1.0, 0.25);
++        assert_eq!(started(&gate), opened, "a new list closed the connection in place");
++        assert_eq!(proxy.taken(), 1);
++
++        let now = gate.now();
++        gate.runtime.close_connection(gate.poll.registry(), now, true);
++        gate.drive();
++        assert_eq!(target(&gate), Some(local));
++        gate.runtime.close_connection(gate.poll.registry(), now, true);
++        let backoff = (gate.runtime.failures, gate.runtime.next_attempt_at);
++        assert_eq!(backoff.0, 2);
++        assert!(backoff.1 > now.mono);
++        gate.runtime.set_proxy_addresses("proxy.invalid".into(), texts(&["192.0.2.2", "192.0.2.3"]), now);
++        assert_eq!((gate.runtime.failures, gate.runtime.next_attempt_at), backoff, "a new list reset the backoff");
++        let next = |gate: &mut Gate, now: Now| ready_address(gate.runtime.pick_address_at(0, &mut NoLookups, now));
++        let at = |last: u8| SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, last)), port);
++        assert_eq!(next(&mut gate, now), at(2));
++
++        gate.runtime.note_resolved_address_answered(at(3));
++        let backoff = (gate.runtime.failures, gate.runtime.next_attempt_at);
++        gate.runtime.set_proxy_addresses("proxy.invalid".into(), texts(&["192.0.2.4", "192.0.2.3", "192.0.2.5"]), now);
++        assert_eq!((gate.runtime.failures, gate.runtime.next_attempt_at), backoff);
++        assert_eq!(next(&mut gate, now), at(3), "the address that answered is not first in the new list");
++        gate.shutdown();
++    }
++
++    /// A system lookup of the proxy's name asked before the host gave its addresses comes back after them:
++    /// an empty answer counts no failure and moves no attempt, and other addresses are not taken.
++    #[test]
++    fn a_system_answer_for_a_name_the_host_answers_for_changes_nothing() {
++        let now = Now { mono: 1000.0, unix: 1_727_000_000.0 };
++        let mut runtime = named_proxy_runtime(now);
++        runtime.set_proxy_addresses("proxy.invalid".into(), texts(&["192.0.2.1", "192.0.2.2", "192.0.2.3"]), now);
++        assert_eq!(failing_picks(&mut runtime, 1, now), [at_proxy(1)]);
++        runtime.next_attempt_at = now.mono + 0.3;
++        let before = (runtime.failures, runtime.next_attempt_at);
++        runtime.on_resolved("proxy.invalid", 1080, Vec::new(), now);
++        assert_eq!((runtime.failures, runtime.next_attempt_at), before, "an empty answer counted");
++        runtime.on_resolved("proxy.invalid", 1080, vec![at_proxy(9)], now);
++        assert_eq!((runtime.failures, runtime.next_attempt_at), before);
++        assert_eq!(failing_picks(&mut runtime, 3, now), [at_proxy(2), at_proxy(3), at_proxy(1)]);
++        match runtime.resolve_cached("proxy.invalid", 1080, &mut NoLookups, now) {
++            Resolution::Resolved(addresses) => assert_eq!(addresses, [1, 2, 3].map(at_proxy), "HTTP took the answer"),
++            Resolution::Pending => panic!("the name is looked up"),
++        }
++    }
++
++    /// Auto behind the named proxy: once two TCP attempts failed, the HTTP probe goes through the proxy at
++    /// the address the host gave, without a lookup.
++    #[test]
++    fn http_through_a_named_proxy_uses_the_hosts_addresses() {
++        let mut proxy = Sink::new();
++        let route = DcAddress { host: "149.154.167.51".into(), port: 80, secret: None };
++        let mut setup = gate_setup(vec![datacenter()], vec![route], TransportPreference::Auto);
++        setup.proxy = Some(named_proxy(proxy.port()));
++        let mut gate = Gate::new(setup, false);
++        let now = gate.now();
++        gate.runtime.set_proxy_addresses("proxy.invalid".into(), texts(&["127.0.0.1"]), now);
++        gate.runtime.failures = http::AUTO_HTTP_AFTER_FAILURES;
++        gate.runtime.next_attempt_at = now.mono + 10.0;
++        gate.drive();
++        assert_eq!(gate.runtime.auto.probes.len(), 1, "{}", gate.auto());
++        assert!(gate.runtime.connection.is_none());
++        assert_eq!(proxy.taken(), 1, "the probe did not reach the address the host gave");
++        let cached = gate.runtime.dns.get(&("proxy.invalid".to_string(), proxy.port())).map(|(addresses, _)| addresses);
++        assert_eq!(cached, Some(&vec![SocketAddr::from(([127, 0, 0, 1], proxy.port()))]));
++        gate.shutdown();
++    }
  }
  
  #[cfg(test)]
@@ -4059,7 +4620,7 @@ index dac0431..f6d2578 100644
          self.note_route_http_needed(now);
          self.note_websocket_adopted(now);
 diff --git a/crates/mtproto-engine/src/types.rs b/crates/mtproto-engine/src/types.rs
-index d97db54..3b50bf4 100644
+index d97db54..a3b8681 100644
 --- a/crates/mtproto-engine/src/types.rs
 +++ b/crates/mtproto-engine/src/types.rs
 @@ -210,6 +210,10 @@ pub struct SessionSetup {
@@ -4097,7 +4658,16 @@ index d97db54..3b50bf4 100644
  #[derive(Debug, Clone, PartialEq)]
  pub enum EngineEvent {
      Rpc(RpcEvent),
-@@ -467,6 +481,16 @@ pub enum EngineEvent {
+@@ -412,6 +426,8 @@ pub enum EngineEvent {
+     ConnectionState {
+         state: ConnectionState,
+         proxy_address: Option<String>,
++        /// While connected through a proxy whose host is a name: the address of that name the link reached.
++        proxy_reached: Option<std::net::IpAddr>,
+     },
+     AuthKeyRequired,
+     AuthKeyInvalid {
+@@ -467,6 +483,16 @@ pub enum EngineEvent {
          age: f64,
      },
      Closed,
@@ -4214,7 +4784,7 @@ index 0000000..ea5f557
 +    crate::types::WebEndpoint,
 +);
 diff --git a/crates/mtproto-engine/src/worker.rs b/crates/mtproto-engine/src/worker.rs
-index b0e3986..975fbdf 100644
+index b0e3986..b8b991b 100644
 --- a/crates/mtproto-engine/src/worker.rs
 +++ b/crates/mtproto-engine/src/worker.rs
 @@ -9,6 +9,7 @@ use mtproto_core::crypto::OsRandom;
@@ -4246,13 +4816,14 @@ index b0e3986..975fbdf 100644
      Destroy(SessionHandle),
      Send(SessionHandle, RpcRequest),
      Cancel(SessionHandle, RequestId),
-@@ -35,15 +40,18 @@ pub enum Command {
+@@ -35,15 +40,19 @@ pub enum Command {
      SetOnline(SessionHandle, bool),
      SetAuthKey(SessionHandle, Option<AuthKeyMaterial>),
      SetAddresses(SessionHandle, Vec<DcAddress>),
 +    SetHttpAddresses(SessionHandle, Vec<DcAddress>),
      SetObfuscationDcId(SessionHandle, i16),
      SetProxy(SessionHandle, Option<ProxyConfig>),
++    SetProxyAddresses(SessionHandle, String, Vec<String>),
 +    SetRouteAdmission(SessionHandle, bool),
 +    AdmitRoute(SessionHandle, u64, bool),
      SetTransport(SessionHandle, crate::types::TransportPreference, Option<u16>),
@@ -4269,7 +4840,7 @@ index b0e3986..975fbdf 100644
      SetAuthTokenReady(SessionHandle, bool),
      ResolveVerification(SessionHandle, RequestId, Verification),
      FailRequest(SessionHandle, RequestId, i32, String),
-@@ -59,7 +67,7 @@ pub enum Command {
+@@ -59,7 +68,7 @@ pub enum Command {
  }
  
  struct ThreadResolver {
@@ -4278,7 +4849,7 @@ index b0e3986..975fbdf 100644
      waker: Arc<Waker>,
      in_flight: HashMap<(String, u16), (Vec<SessionHandle>, f64)>,
  }
-@@ -81,9 +89,9 @@ impl Resolve for ThreadResolver {
+@@ -81,9 +90,9 @@ impl Resolve for ThreadResolver {
          let waker = self.waker.clone();
          let host = host.to_string();
          let lookup_host = host.clone();
@@ -4290,7 +4861,7 @@ index b0e3986..975fbdf 100644
              let _ = waker.wake();
          });
          if spawned.is_err() {
-@@ -96,10 +104,11 @@ impl Resolve for ThreadResolver {
+@@ -96,10 +105,11 @@ impl Resolve for ThreadResolver {
  
  pub struct Worker {
      poll: Poll,
@@ -4304,7 +4875,7 @@ index b0e3986..975fbdf 100644
      tokens: HashMap<Token, SessionHandle>,
      next_token: usize,
      callbacks: Arc<dyn EngineCallbacks>,
-@@ -118,8 +127,8 @@ pub struct Worker {
+@@ -118,8 +128,8 @@ pub struct Worker {
  impl Worker {
      pub fn new(
          poll: Poll,
@@ -4315,7 +4886,7 @@ index b0e3986..975fbdf 100644
          waker: Arc<Waker>,
          wake_pending: Arc<AtomicBool>,
          callbacks: Arc<dyn EngineCallbacks>,
-@@ -292,13 +301,13 @@ impl Worker {
+@@ -292,13 +302,13 @@ impl Worker {
      }
  
      fn drain_commands(&mut self, now: mtproto_core::session::Now) -> bool {
@@ -4332,7 +4903,7 @@ index b0e3986..975fbdf 100644
                      runtime.share_uploads(self.uploads.clone());
                      runtime.share_route_hints(self.hints.clone());
                      if let Some(signal) = &self.signal {
-@@ -306,7 +315,7 @@ impl Worker {
+@@ -306,7 +316,7 @@ impl Worker {
                      }
                      runtime.set_network_available(self.network_available, now, self.poll.registry());
                      self.tokens.insert(token, handle);
@@ -4341,7 +4912,7 @@ index b0e3986..975fbdf 100644
                  }
                  Command::Destroy(handle) => {
                      if let Some(mut session) = self.sessions.remove(&handle) {
-@@ -356,9 +365,14 @@ impl Worker {
+@@ -356,9 +366,14 @@ impl Worker {
                          session.set_addresses(addresses, now, self.poll.registry());
                      }
                  }
@@ -4357,10 +4928,15 @@ index b0e3986..975fbdf 100644
                      }
                  }
                  Command::SetProxy(handle, proxy) => {
-@@ -366,14 +380,30 @@ impl Worker {
+@@ -366,14 +381,35 @@ impl Worker {
                          session.set_proxy(proxy, now, self.poll.registry());
                      }
                  }
++                Command::SetProxyAddresses(handle, host, addresses) => {
++                    if let Some(session) = self.sessions.get_mut(&handle) {
++                        session.set_proxy_addresses(host, addresses, now);
++                    }
++                }
 +                Command::SetRouteAdmission(handle, required) => {
 +                    if let Some(session) = self.sessions.get_mut(&handle) {
 +                        session.set_route_admission(required, now);
@@ -4390,7 +4966,7 @@ index b0e3986..975fbdf 100644
                      }
                  }
                  Command::AllowPermanentKey(handle, allowed) => {
-@@ -388,7 +418,7 @@ impl Worker {
+@@ -388,7 +424,7 @@ impl Worker {
                  }
                  Command::SetWebEndpoint(handle, endpoint) => {
                      if let Some(session) = self.sessions.get_mut(&handle) {
@@ -4399,7 +4975,7 @@ index b0e3986..975fbdf 100644
                      }
                  }
                  Command::UseTelegramWeb(handle, test) => {
-@@ -400,7 +430,7 @@ impl Worker {
+@@ -400,7 +436,7 @@ impl Worker {
                  }
                  Command::UpdateEnvironment(handle, environment, noop) => {
                      if let Some(session) = self.sessions.get_mut(&handle) {
@@ -5869,6 +6445,334 @@ index c7a7906..6d29a83 100644
  }
  
  fn measure(seconds: f64) -> f64 {
+diff --git a/crates/mtproto-engine/tests/proxy_addresses.rs b/crates/mtproto-engine/tests/proxy_addresses.rs
+new file mode 100644
+index 0000000..e0919ac
+--- /dev/null
++++ b/crates/mtproto-engine/tests/proxy_addresses.rs
+@@ -0,0 +1,322 @@
++//! The addresses a host gives for its proxy's host name (`Engine::set_proxy_addresses`), over real sockets: a
++//! session tries them in their order, one per attempt, while its reconnect delay climbs the ladder across them;
++//! once one starts accepting, the session's next attempt there connects, and the state it reports names the
++//! address it reached. An HTTP link names it too; a proxy given as an IP literal names none.
++
++use std::io::{Read, Write};
++use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::{Arc, Condvar, Mutex};
++use std::time::{Duration, Instant};
++
++use mtproto_engine::mtproto_core::auth_key::AuthKey;
++use mtproto_engine::mtproto_core::rpc::{RequestFlags, RequestId, RpcEvent, RpcRequest, SessionRole};
++use mtproto_engine::mtproto_core::session::ServerSalt;
++use mtproto_engine::mtproto_core::transport::{RECONNECT_DELAYS, RECONNECT_JITTER};
++use mtproto_engine::{
++    AuthKeyMaterial, DcAddress, Engine, EngineCallbacks, EngineConfig, EngineEvent, ProxyConfig, SessionHandle,
++    SessionSetup, TransportPreference, unix_seconds,
++};
++use mtproto_testserver::*;
++
++const WAIT: Duration = Duration::from_secs(20);
++/// A name no resolver answers (RFC 6761).
++const NAME: &str = "proxy.invalid";
++/// What a delay between two attempts, measured at the proxy, may take beyond the engine's own: the refusal's
++/// round trip and the timers' granularity.
++const SLACK: f64 = 0.25;
++
++#[derive(Default)]
++struct Collector {
++    events: Mutex<Vec<(SessionHandle, EngineEvent)>>,
++    condvar: Condvar,
++}
++
++impl EngineCallbacks for Collector {
++    fn on_event(&self, session: SessionHandle, event: EngineEvent) {
++        self.events.lock().unwrap().push((session, event));
++        self.condvar.notify_all();
++    }
++
++    fn on_log(&self, _level: mtproto_engine::LogLevel, message: &str) {
++        if std::env::var_os("MTPROTO_TEST_LOG").is_some() {
++            eprintln!("LOG {message}");
++        }
++    }
++}
++
++impl Collector {
++    fn wait<F: Fn(&[(SessionHandle, EngineEvent)]) -> bool>(&self, timeout: Duration, predicate: F) -> bool {
++        let deadline = Instant::now() + timeout;
++        let mut events = self.events.lock().unwrap();
++        loop {
++            if predicate(&events) {
++                return true;
++            }
++            let now = Instant::now();
++            if now >= deadline {
++                return false;
++            }
++            events = self.condvar.wait_timeout(events, deadline - now).unwrap().0;
++        }
++    }
++
++    fn states(&self, session: SessionHandle) -> Vec<State> {
++        states(&self.events.lock().unwrap(), session)
++    }
++}
++
++fn completed(events: &[(SessionHandle, EngineEvent)], session: SessionHandle, id: u64) -> usize {
++    events
++        .iter()
++        .filter(|(handle, event)| {
++            *handle == session
++                && matches!(event, EngineEvent::Rpc(RpcEvent::Completed { id: completed, .. }) if completed.0 == id)
++        })
++        .count()
++}
++
++/// A state the session reported: whether it was connected, its proxy, and the address it says it reached.
++type State = (bool, Option<String>, Option<IpAddr>);
++
++fn states(events: &[(SessionHandle, EngineEvent)], session: SessionHandle) -> Vec<State> {
++    events
++        .iter()
++        .filter_map(|(handle, event)| match event {
++            EngineEvent::ConnectionState { state, proxy_address, proxy_reached } if *handle == session => {
++                Some((state.connected, proxy_address.clone(), *proxy_reached))
++            }
++            _ => None,
++        })
++        .collect()
++}
++
++fn eventually(timeout: Duration, condition: impl Fn() -> bool) -> bool {
++    let deadline = Instant::now() + timeout;
++    loop {
++        if condition() {
++            return true;
++        }
++        if Instant::now() >= deadline {
++            return false;
++        }
++        std::thread::sleep(Duration::from_millis(5));
++    }
++}
++
++/// A connection a proxy address took: when, at which address, and whether it was relayed.
++#[derive(Clone, Copy, Debug)]
++struct Accepted {
++    at: Instant,
++    address: IpAddr,
++    relayed: bool,
++}
++
++/// One address of a SOCKS5 proxy. It refuses every CONNECT (reply 5, connection refused) and closes, as a
++/// proxy whose way out is down does, until it is switched to relay: from then on it passes every byte of the
++/// connections it takes both ways to the upstream SOCKS5 server. Each connection is recorded in a list it
++/// shares with the proxy's other addresses.
++struct Front {
++    relay: Arc<AtomicBool>,
++}
++
++impl Front {
++    fn start(listener: TcpListener, upstream: SocketAddr, accepted: &Arc<Mutex<Vec<Accepted>>>) -> Self {
++        let address = listener.local_addr().unwrap().ip();
++        let relay = Arc::new(AtomicBool::new(false));
++        let (relaying, accepted) = (relay.clone(), accepted.clone());
++        std::thread::spawn(move || {
++            for stream in listener.incoming() {
++                let Ok(client) = stream else { continue };
++                let relayed = relaying.load(Ordering::SeqCst);
++                accepted.lock().unwrap().push(Accepted { at: Instant::now(), address, relayed });
++                std::thread::spawn(move || {
++                    if relayed {
++                        relay_to(client, upstream);
++                    } else {
++                        let _ = refuse(client);
++                    }
++                });
++            }
++        });
++        Self { relay }
++    }
++
++    fn switch_to_relay(&self) {
++        self.relay.store(true, Ordering::SeqCst);
++    }
++}
++
++fn read(stream: &mut TcpStream, count: usize) -> std::io::Result<Vec<u8>> {
++    let mut buffer = vec![0u8; count];
++    stream.read_exact(&mut buffer)?;
++    Ok(buffer)
++}
++
++/// Takes the greeting without authentication, reads the CONNECT and refuses it.
++fn refuse(mut client: TcpStream) -> std::io::Result<()> {
++    client.set_read_timeout(Some(WAIT))?;
++    let greeting = read(&mut client, 2)?;
++    read(&mut client, greeting[1].into())?;
++    client.write_all(&[5, 0])?;
++    let request = read(&mut client, 4)?;
++    let length = match request[3] {
++        1 => 4,
++        4 => 16,
++        _ => usize::from(read(&mut client, 1)?[0]),
++    };
++    read(&mut client, length + 2)?;
++    client.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0])
++}
++
++/// Passes every byte both ways between the client and the upstream server.
++fn relay_to(client: TcpStream, upstream: SocketAddr) {
++    let Ok(server) = TcpStream::connect(upstream) else { return };
++    let _ = (client.set_nodelay(true), server.set_nodelay(true));
++    let (Ok(mut client_read), Ok(mut server_write)) = (client.try_clone(), server.try_clone()) else { return };
++    std::thread::spawn(move || {
++        let _ = std::io::copy(&mut client_read, &mut server_write);
++        let _ = server_write.shutdown(Shutdown::Both);
++    });
++    let (mut server_read, mut client_write) = (server, client);
++    let _ = std::io::copy(&mut server_read, &mut client_write);
++    let _ = client_write.shutdown(Shutdown::Both);
++}
++
++/// Listeners on 127.0.0.1 and ::1 at one port.
++fn listeners() -> (TcpListener, TcpListener) {
++    for _ in 0..20 {
++        let v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
++        let port = v4.local_addr().unwrap().port();
++        if let Ok(v6) = TcpListener::bind((Ipv6Addr::LOCALHOST, port)) {
++            return (v4, v6);
++        }
++    }
++    panic!("no port is free on both 127.0.0.1 and ::1");
++}
++
++fn salts() -> Vec<ServerSalt> {
++    let now = unix_seconds();
++    vec![ServerSalt { salt: SERVER_SALT, valid_since: now - 60.0, valid_until: now + 3600.0 }]
++}
++
++fn request(id: u64, tag: u32) -> RpcRequest {
++    RpcRequest {
++        id: RequestId(id),
++        body: call(tag, &id.to_le_bytes()),
++        flags: RequestFlags::default(),
++        invoke_after: None,
++    }
++}
++
++fn engine(collector: &Arc<Collector>) -> Engine {
++    Engine::new(EngineConfig { worker_threads: 1, ..EngineConfig::default() }, collector.clone()).unwrap()
++}
++
++fn socks5(host: &str, port: u16) -> ProxyConfig {
++    ProxyConfig::Socks5 { host: host.into(), port, username: None, password: None }
++}
++
++/// A main session through `proxy`, created paused, given a datacenter address the proxy takes it to.
++fn paused_session(engine: &Engine, key: &AuthKey, proxy: ProxyConfig, transport: TransportPreference) -> SessionHandle {
++    let address = DcAddress { host: "149.154.167.51".into(), port: 443, secret: None };
++    let mut setup = SessionSetup::new(2, SessionRole::Main, vec![address]);
++    setup.auth_key = Some(AuthKeyMaterial { key: key.clone(), salts: salts(), init_hash: None });
++    setup.proxy = Some(proxy);
++    setup.transport = transport;
++    setup.http_port = Some(80);
++    setup.paused = true;
++    engine.create_session(setup)
++}
++
++/// The proxy's name stands for 127.0.0.1, which refuses until it is switched to relay, and ::1, which keeps
++/// refusing. The session tries them in turn, a call waiting, while its delay climbs the reconnect ladder. Right
++/// after an attempt to 127.0.0.1 was refused, 127.0.0.1 relays: the next attempt goes to ::1, and one ordinary
++/// delay later the next goes to 127.0.0.1, connects and completes the call; no attempt to 127.0.0.1 fails after
++/// the switch, and the session says it reached 127.0.0.1.
++#[test]
++fn an_address_that_starts_accepting_carries_the_session_at_its_next_turn() {
++    let key = random_key(9101);
++    let server = TestServer::start(vec![key.clone()], ServerOptions { socks5: true, ..Default::default() });
++    let (v4, v6) = listeners();
++    let port = v4.local_addr().unwrap().port();
++    let accepted = Arc::new(Mutex::new(Vec::new()));
++    let switching = Front::start(v4, server.address, &accepted);
++    let _refusing = Front::start(v6, server.address, &accepted);
++    let collector = Arc::new(Collector::default());
++    let engine = engine(&collector);
++    let session = paused_session(&engine, &key, socks5(NAME, port), TransportPreference::Tcp);
++    engine.set_proxy_addresses(session, NAME.into(), vec!["127.0.0.1".into(), "::1".into()]);
++    engine.send(session, request(1, 1));
++    engine.set_paused(session, false);
++
++    let refused = 5;
++    let came = eventually(WAIT, || accepted.lock().unwrap().len() >= refused);
++    switching.switch_to_relay();
++    let done = came && collector.wait(WAIT, |events| completed(events, session, 1) == 1);
++    let accepts = accepted.lock().unwrap().clone();
++    let states = collector.states(session);
++    engine.shutdown();
++    let start = accepts.first().map(|accept| accept.at);
++    let shown: Vec<_> = accepts
++        .iter()
++        .map(|accept| (accept.at.duration_since(start.unwrap()).as_secs_f64(), accept.address, accept.relayed))
++        .collect();
++    eprintln!("accepted (s, address, relayed): {shown:?}; states: {states:?}");
++    assert!(came, "the session made fewer than {refused} attempts");
++    assert!(done, "the call did not complete once 127.0.0.1 relayed");
++
++    let [first, second] = [IpAddr::from(Ipv4Addr::LOCALHOST), IpAddr::from(Ipv6Addr::LOCALHOST)];
++    let order: Vec<_> = accepts.iter().map(|accept| (accept.address, accept.relayed)).collect();
++    let expected = [first, second, first, second, first, second, first];
++    let expected: Vec<_> = expected.iter().enumerate().map(|(n, address)| (*address, n == 6)).collect();
++    assert_eq!(order, expected, "other than one attempt per address in turn, the last one relayed");
++    for (n, pair) in accepts.windows(2).enumerate() {
++        let delay = pair[1].at.duration_since(pair[0].at).as_secs_f64();
++        let step = RECONNECT_DELAYS[n.min(RECONNECT_DELAYS.len() - 1)];
++        let (low, high) = (step * (1.0 - RECONNECT_JITTER) - 0.05, step * (1.0 + RECONNECT_JITTER) + SLACK);
++        assert!(low <= delay && delay <= high, "{delay} s after failure {}, the ladder's step {step} s", n + 1);
++    }
++
++    let proxy = Some(format!("{NAME}:{port}"));
++    assert!(states.iter().all(|(_, address, _)| *address == proxy), "{states:?}");
++    assert!(states.iter().any(|(connected, ..)| *connected), "no state said the session was connected");
++    for (connected, _, reached) in &states {
++        assert_eq!(*reached, connected.then_some(first), "{states:?}");
++    }
++}
++
++/// Through a proxy address that relays from the start: an HTTP session through the proxy's name says it
++/// reached the address the host gave, once a link answered, and a session whose proxy is the IP literal
++/// 127.0.0.1 connects to it as it is and names no address reached.
++#[test]
++fn an_http_link_names_the_address_reached_and_an_ip_literal_proxy_names_none() {
++    let key = random_key(9102);
++    let server = TestServer::start(vec![key.clone()], ServerOptions { socks5: true, ..Default::default() });
++    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
++    let port = listener.local_addr().unwrap().port();
++    let accepted = Arc::new(Mutex::new(Vec::new()));
++    Front::start(listener, server.address, &accepted).switch_to_relay();
++    let collector = Arc::new(Collector::default());
++    let engine = engine(&collector);
++    let http = paused_session(&engine, &key, socks5(NAME, port), TransportPreference::Http);
++    engine.set_proxy_addresses(http, NAME.into(), vec!["127.0.0.1".into()]);
++    let literal = paused_session(&engine, &key, socks5("127.0.0.1", port), TransportPreference::Tcp);
++    for (id, session) in [(1, http), (2, literal)] {
++        engine.send(session, request(id, 1));
++        engine.set_paused(session, false);
++    }
++    let local = IpAddr::from(Ipv4Addr::LOCALHOST);
++    let done = collector.wait(WAIT, |events| completed(events, http, 1) == 1 && completed(events, literal, 2) == 1);
++    let reached = (true, Some(format!("{NAME}:{port}")), Some(local));
++    let named = collector.wait(WAIT, |events| states(events, http).contains(&reached));
++    let (over_http, through_literal) = (collector.states(http), collector.states(literal));
++    engine.shutdown();
++    eprintln!("over HTTP: {over_http:?}; through the IP literal: {through_literal:?}");
++    assert!(done, "the calls did not complete through the proxy");
++    assert!(named, "no state of the HTTP session named the address it reached");
++    assert!(over_http.iter().all(|(_, _, reached)| reached.is_none() || *reached == Some(local)), "{over_http:?}");
++    assert!(through_literal.iter().any(|(connected, ..)| *connected), "{through_literal:?}");
++    let proxy = Some(format!("127.0.0.1:{port}"));
++    assert!(through_literal.iter().all(|(_, address, reached)| *address == proxy && reached.is_none()));
++}
 diff --git a/crates/mtproto-engine/tests/route_admission.rs b/crates/mtproto-engine/tests/route_admission.rs
 new file mode 100644
 index 0000000..ba084b3
@@ -6615,7 +7519,7 @@ index 8b16bc3..95642b7 100644
 +find-msvc-tools = "=0.1.13"
 +windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
 diff --git a/crates/mtproto-ffi/include/mtproto_engine.h b/crates/mtproto-ffi/include/mtproto_engine.h
-index 4f4afe5..5f54a7f 100644
+index 4f4afe5..a889712 100644
 --- a/crates/mtproto-ffi/include/mtproto_engine.h
 +++ b/crates/mtproto-ffi/include/mtproto_engine.h
 @@ -138,6 +138,15 @@ enum {
@@ -6634,7 +7538,7 @@ index 4f4afe5..5f54a7f 100644
  };
  
  typedef struct {
-@@ -161,6 +170,9 @@ typedef enum {
+@@ -161,11 +170,18 @@ typedef enum {
      MTEventKindInitHashStored = 10,
      MTEventKindInitHashCleared = 11,
      MTEventKindVerificationRequired = 12,
@@ -6644,7 +7548,16 @@ index 4f4afe5..5f54a7f 100644
      MTEventKindUpdatesReset = 13,
      MTEventKindUpdate = 14,
      MTEventKindTimeDifferenceUpdated = 15,
-@@ -206,6 +218,11 @@ typedef enum {
+     MTEventKindSaltsUpdated = 16,
+     MTEventKindPong = 17,
++    /* flags MTConnectionState*. text the session's proxy as host:port (a WEB proxy's host), empty
++       without one. text2, while connected through a proxy whose host is a name: the address of that
++       name the session reached (its TCP connection's, or that of an HTTP link that answered), as an IP
++       literal without the port; empty otherwise. */
+     MTEventKindConnectionState = 18,
+     MTEventKindAuthKeyRequired = 19,
+     MTEventKindAuthKeyInvalid = 20,
+@@ -206,6 +222,11 @@ typedef enum {
         came), otherwise it never ran there. value1: seconds to wait before sending it again, what is left
         of a flood wait or a server error's delay (0 when it may have run). */
      MTEventKindReleased = 36,
@@ -6656,7 +7569,7 @@ index 4f4afe5..5f54a7f 100644
  } MTEventKind;
  
  enum {
-@@ -213,10 +230,30 @@ enum {
+@@ -213,10 +234,30 @@ enum {
      MTAuthKeyCreatedPermanent = 1 << 1,
  };
  
@@ -6687,7 +7600,7 @@ index 4f4afe5..5f54a7f 100644
  enum {
      MTConnectionStateNetworkAvailable = 1 << 0,
      MTConnectionStateConnected = 1 << 1,
-@@ -255,6 +292,19 @@ typedef struct {
+@@ -255,6 +296,19 @@ typedef struct {
  
  typedef void (*MTEventCallback)(void *context, MTSessionHandle session, const MTEvent *event);
  typedef void (*MTLogCallback)(void *context, int32_t level, MTString message);
@@ -6707,10 +7620,26 @@ index 4f4afe5..5f54a7f 100644
  
  MTEngine *mt_engine_create(uint32_t worker_threads, void *context, MTEventCallback on_event, MTLogCallback on_log);
  void mt_engine_destroy(MTEngine *engine);
-@@ -316,6 +366,21 @@ void mt_session_set_auth_key(MTEngine *engine, MTSessionHandle session, MTBytes
+@@ -316,6 +370,37 @@ void mt_session_set_auth_key(MTEngine *engine, MTSessionHandle session, MTBytes
  void mt_session_set_addresses(MTEngine *engine, MTSessionHandle session, const MTAddress *addresses, size_t count);
  void mt_session_set_obfuscation_dc_id(MTEngine *engine, MTSessionHandle session, int16_t dc_id);
  void mt_session_set_proxy(MTEngine *engine, MTSessionHandle session, const MTProxy *proxy);
++/* The addresses host resolves to, in the order to try them, from the host's own resolver, for a proxy
++   host name the system resolver may not answer. They are used while the session's proxy (a SOCKS5,
++   MTProxy or HTTP proxy) has host as its host, each at the proxy's port. The session keeps them across
++   proxy changes, so the order of this call and mt_session_set_proxy does not matter, and keeps one
++   name at a time. While it holds a non-empty list for the name it never looks the name up (TCP
++   connections, HTTP links, Auto HTTP probes), also after every address failed: each failed attempt
++   moves to the next address while the failure count, and with it the reconnect delay, keeps growing,
++   as for a name the engine resolves itself, and after the last address it starts over from the first;
++   an address a connection answered on goes first from then on. A later list for the name takes over
++   from the next attempt and resets nothing (the failure count, the delay, the connection in place);
++   the same list again changes nothing. The first list for a name lets a session without a connection
++   try at once. Entries that are not IP literals, and repeats, are skipped; count 0, or no literal,
++   gives the name back to the system resolver at its next lookup. A system answer for the proxy's name
++   that comes while a list is held is ignored. MTEventKindConnectionState's text2 names the address a
++   connection reached. The strings are copied during the call; a null engine is ignored. */
++void mt_session_set_proxy_addresses(MTEngine *engine, MTSessionHandle session, MTString host, const MTString *addresses, size_t count);
 +/* Route admission, for a host that decides the route of each connection itself; off (0) by default.
 +   While required, the session opens no connection of its own (a TCP connection, a racer, an HTTP
 +   link, an Auto HTTP probe, a TCP recheck) before the host admitted it: it reports
@@ -6729,7 +7658,7 @@ index 4f4afe5..5f54a7f 100644
  
  enum {
      MTTransportTcp = 0,
-@@ -326,6 +391,11 @@ enum {
+@@ -326,6 +411,11 @@ enum {
  /* Which transports the session may use; HTTP goes to `http_port`, or to each address's own port
     when it is 0. Auto stays on TCP while TCP answers and moves to HTTP while it does not. */
  void mt_session_set_transport(MTEngine *engine, MTSessionHandle session, uint8_t transport, uint16_t http_port);
@@ -6742,7 +7671,7 @@ index 4f4afe5..5f54a7f 100644
  /* Telegram Web's endpoints on one front, through host streams; used only while a stream host is set
     and no proxy is. When TCP gets no answer, Auto tries the WebSocket endpoint (ws_path, carrying the
 diff --git a/crates/mtproto-ffi/src/lib.rs b/crates/mtproto-ffi/src/lib.rs
-index 68468db..09cbdba 100644
+index 68468db..8925330 100644
 --- a/crates/mtproto-ffi/src/lib.rs
 +++ b/crates/mtproto-ffi/src/lib.rs
 @@ -2,26 +2,26 @@
@@ -6774,7 +7703,7 @@ index 68468db..09cbdba 100644
  };
  
 -pub const ABI_VERSION: u32 = 5;
-+pub const ABI_VERSION: u32 = 8;
++pub const ABI_VERSION: u32 = 9;
  
  /// `MTEvent.flags` of `MTEventKindReleased`: the request may have reached the server.
  pub const RELEASED_MAY_HAVE_RUN: u32 = 1 << 0;
@@ -6804,7 +7733,25 @@ index 68468db..09cbdba 100644
  
  pub struct MTEngine {
      engine: Engine,
-@@ -381,6 +393,17 @@ impl EngineCallbacks for Bridge {
+@@ -297,7 +309,7 @@ impl EngineCallbacks for Bridge {
+                 event.value2 = packet_length as f64;
+                 self.emit(session, event, None);
+             }
+-            EngineEvent::ConnectionState { state, proxy_address } => {
++            EngineEvent::ConnectionState { state, proxy_address, proxy_reached } => {
+                 let mut event = blank(18);
+                 let mut flags = 0u32;
+                 if state.network_available {
+@@ -321,6 +333,8 @@ impl EngineCallbacks for Bridge {
+                 event.flags = flags;
+                 let address = proxy_address.unwrap_or_default();
+                 event.text = string_ref(&address);
++                let reached = proxy_reached.map(|reached| reached.to_string()).unwrap_or_default();
++                event.text2 = string_ref(&reached);
+                 self.emit(session, event, None);
+             }
+             EngineEvent::AuthKeyRequired => self.emit(session, blank(19), None),
+@@ -381,6 +395,17 @@ impl EngineCallbacks for Bridge {
                  self.emit(session, event, None);
              }
              EngineEvent::Closed => self.emit(session, blank(26), None),
@@ -6822,7 +7769,7 @@ index 68468db..09cbdba 100644
              EngineEvent::RouteMemory { memory } => self.emit(session, blank(35), Some(memory)),
          }
      }
-@@ -466,7 +489,17 @@ impl Bridge {
+@@ -466,7 +491,17 @@ impl Bridge {
                      }
                  }
              }
@@ -6841,7 +7788,7 @@ index 68468db..09cbdba 100644
              RpcEvent::Update { body } => self.emit(session, blank(14), Some(body)),
              RpcEvent::TimeDifferenceUpdated { difference } => {
                  let mut event = blank(15);
-@@ -646,6 +679,7 @@ unsafe fn request(value: &MTRequest) -> RpcRequest {
+@@ -646,6 +681,7 @@ unsafe fn request(value: &MTRequest) -> RpcRequest {
              timeout_timer: flags & 32 != 0,
              without_updates: flags & 64 != 0,
              delegate_retry_decisions: flags & 128 != 0,
@@ -6849,7 +7796,7 @@ index 68468db..09cbdba 100644
              expected_response_size: value.expected_response_size,
          },
          invoke_after: (value.invoke_after != 0).then_some(RequestId(value.invoke_after)),
-@@ -658,9 +692,41 @@ unsafe fn engine<'a>(pointer: *mut MTEngine) -> Option<&'a Engine> {
+@@ -658,9 +694,41 @@ unsafe fn engine<'a>(pointer: *mut MTEngine) -> Option<&'a Engine> {
  
  #[unsafe(no_mangle)]
  pub extern "C" fn mt_engine_abi_version() -> u32 {
@@ -6891,7 +7838,7 @@ index 68468db..09cbdba 100644
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_create(
      worker_threads: u32,
-@@ -668,6 +734,7 @@ pub unsafe extern "C" fn mt_engine_create(
+@@ -668,6 +736,7 @@ pub unsafe extern "C" fn mt_engine_create(
      on_event: MTEventCallback,
      on_log: MTLogCallback,
  ) -> *mut MTEngine {
@@ -6899,7 +7846,7 @@ index 68468db..09cbdba 100644
      let mut config = EngineConfig::default();
      if worker_threads > 0 {
          config.worker_threads = worker_threads as usize;
-@@ -682,6 +749,7 @@ pub unsafe extern "C" fn mt_engine_create(
+@@ -682,6 +751,7 @@ pub unsafe extern "C" fn mt_engine_create(
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_destroy(pointer: *mut MTEngine) {
@@ -6907,7 +7854,7 @@ index 68468db..09cbdba 100644
      if pointer.is_null() {
          return;
      }
-@@ -692,11 +760,13 @@ pub unsafe extern "C" fn mt_engine_destroy(pointer: *mut MTEngine) {
+@@ -692,11 +762,13 @@ pub unsafe extern "C" fn mt_engine_destroy(pointer: *mut MTEngine) {
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_next_request_id(pointer: *mut MTEngine) -> u64 {
@@ -6921,7 +7868,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_network_available(available != 0);
      }
-@@ -706,6 +776,7 @@ pub unsafe extern "C" fn mt_engine_set_network_available(pointer: *mut MTEngine,
+@@ -706,6 +778,7 @@ pub unsafe extern "C" fn mt_engine_set_network_available(pointer: *mut MTEngine,
  /// empty when unknown. What sessions learn about TCP and HTTP is remembered per key.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_set_network(pointer: *mut MTEngine, key: MTBytes) {
@@ -6929,7 +7876,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_network(&unsafe { bytes(key) });
      }
-@@ -714,6 +785,7 @@ pub unsafe extern "C" fn mt_engine_set_network(pointer: *mut MTEngine, key: MTBy
+@@ -714,6 +787,7 @@ pub unsafe extern "C" fn mt_engine_set_network(pointer: *mut MTEngine, key: MTBy
  /// The route memory an earlier run reported with `MTEventKindRouteMemoryChanged`.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_set_route_memory(pointer: *mut MTEngine, memory: MTBytes) {
@@ -6937,7 +7884,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_route_memory(&unsafe { bytes(memory) });
      }
-@@ -774,6 +846,7 @@ impl StreamHost for FfiStreamHost {
+@@ -774,6 +848,7 @@ impl StreamHost for FfiStreamHost {
  /// the engine.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_set_stream_host(pointer: *mut MTEngine, host: *const MTStreamHost) {
@@ -6945,7 +7892,7 @@ index 68468db..09cbdba 100644
      if pointer.is_null() {
          return;
      }
-@@ -788,6 +861,7 @@ pub unsafe extern "C" fn mt_engine_set_stream_host(pointer: *mut MTEngine, host:
+@@ -788,6 +863,7 @@ pub unsafe extern "C" fn mt_engine_set_stream_host(pointer: *mut MTEngine, host:
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_stream_opened(pointer: *mut MTEngine, stream: u64) {
@@ -6953,7 +7900,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.stream_opened(StreamId(stream));
      }
-@@ -796,6 +870,7 @@ pub unsafe extern "C" fn mt_stream_opened(pointer: *mut MTEngine, stream: u64) {
+@@ -796,6 +872,7 @@ pub unsafe extern "C" fn mt_stream_opened(pointer: *mut MTEngine, stream: u64) {
  /// 1 while the host may go on receiving; 0 when it should wait for the resume callback.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_stream_received(pointer: *mut MTEngine, stream: u64, bytes: MTBytes) -> u8 {
@@ -6961,7 +7908,7 @@ index 68468db..09cbdba 100644
      let Some(engine) = (unsafe { engine(pointer) }) else {
          return 0;
      };
-@@ -805,6 +880,7 @@ pub unsafe extern "C" fn mt_stream_received(pointer: *mut MTEngine, stream: u64,
+@@ -805,6 +882,7 @@ pub unsafe extern "C" fn mt_stream_received(pointer: *mut MTEngine, stream: u64,
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_stream_sent(pointer: *mut MTEngine, stream: u64, count: usize) {
@@ -6969,7 +7916,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.stream_sent(StreamId(stream), count);
      }
-@@ -813,6 +889,7 @@ pub unsafe extern "C" fn mt_stream_sent(pointer: *mut MTEngine, stream: u64, cou
+@@ -813,6 +891,7 @@ pub unsafe extern "C" fn mt_stream_sent(pointer: *mut MTEngine, stream: u64, cou
  /// The stream ended: `error` empty for a clean end.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_stream_closed(pointer: *mut MTEngine, stream: u64, error: MTString) {
@@ -6977,7 +7924,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          let error = unsafe { text(error) };
          engine.stream_closed(StreamId(stream), (!error.is_empty()).then_some(error));
-@@ -827,6 +904,7 @@ pub unsafe extern "C" fn mt_session_set_web_endpoint(
+@@ -827,6 +906,7 @@ pub unsafe extern "C" fn mt_session_set_web_endpoint(
      session: u64,
      endpoint: *const MTWebEndpoint,
  ) {
@@ -6985,7 +7932,7 @@ index 68468db..09cbdba 100644
      let Some(engine) = (unsafe { engine(pointer) }) else {
          return;
      };
-@@ -848,6 +926,7 @@ pub unsafe extern "C" fn mt_session_set_web_endpoint(
+@@ -848,6 +928,7 @@ pub unsafe extern "C" fn mt_session_set_web_endpoint(
  /// `/apiw1`, or `/apiws_test` and `/apiw_test1` for the test servers).
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_use_telegram_web(pointer: *mut MTEngine, session: u64, test: u8) {
@@ -6993,7 +7940,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.use_telegram_web(SessionHandle(session), test != 0);
      }
-@@ -855,6 +934,7 @@ pub unsafe extern "C" fn mt_session_use_telegram_web(pointer: *mut MTEngine, ses
+@@ -855,6 +936,7 @@ pub unsafe extern "C" fn mt_session_use_telegram_web(pointer: *mut MTEngine, ses
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_reset_connections(pointer: *mut MTEngine) {
@@ -7001,7 +7948,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.reset_connections();
      }
-@@ -862,6 +942,7 @@ pub unsafe extern "C" fn mt_engine_reset_connections(pointer: *mut MTEngine) {
+@@ -862,6 +944,7 @@ pub unsafe extern "C" fn mt_engine_reset_connections(pointer: *mut MTEngine) {
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_create(pointer: *mut MTEngine, setup: *const MTSessionSetup) -> u64 {
@@ -7009,7 +7956,7 @@ index 68468db..09cbdba 100644
      let (Some(engine), false) = (unsafe { engine(pointer) }, setup.is_null()) else {
          return 0;
      };
-@@ -931,6 +1012,7 @@ pub unsafe extern "C" fn mt_session_create(pointer: *mut MTEngine, setup: *const
+@@ -931,6 +1014,7 @@ pub unsafe extern "C" fn mt_session_create(pointer: *mut MTEngine, setup: *const
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_destroy(pointer: *mut MTEngine, session: u64) {
@@ -7017,7 +7964,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.destroy_session(SessionHandle(session));
      }
-@@ -938,6 +1020,7 @@ pub unsafe extern "C" fn mt_session_destroy(pointer: *mut MTEngine, session: u64
+@@ -938,6 +1022,7 @@ pub unsafe extern "C" fn mt_session_destroy(pointer: *mut MTEngine, session: u64
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_send(pointer: *mut MTEngine, session: u64, value: *const MTRequest) {
@@ -7025,7 +7972,7 @@ index 68468db..09cbdba 100644
      if let (Some(engine), false) = (unsafe { engine(pointer) }, value.is_null()) {
          engine.send(SessionHandle(session), unsafe { request(&*value) });
      }
-@@ -945,6 +1028,7 @@ pub unsafe extern "C" fn mt_session_send(pointer: *mut MTEngine, session: u64, v
+@@ -945,6 +1030,7 @@ pub unsafe extern "C" fn mt_session_send(pointer: *mut MTEngine, session: u64, v
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_cancel(pointer: *mut MTEngine, session: u64, id: u64) {
@@ -7033,7 +7980,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.cancel(SessionHandle(session), RequestId(id));
      }
-@@ -952,6 +1036,7 @@ pub unsafe extern "C" fn mt_session_cancel(pointer: *mut MTEngine, session: u64,
+@@ -952,6 +1038,7 @@ pub unsafe extern "C" fn mt_session_cancel(pointer: *mut MTEngine, session: u64,
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_paused(pointer: *mut MTEngine, session: u64, paused: u8) {
@@ -7041,7 +7988,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_paused(SessionHandle(session), paused != 0);
      }
-@@ -959,6 +1044,7 @@ pub unsafe extern "C" fn mt_session_set_paused(pointer: *mut MTEngine, session:
+@@ -959,6 +1046,7 @@ pub unsafe extern "C" fn mt_session_set_paused(pointer: *mut MTEngine, session:
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_online(pointer: *mut MTEngine, session: u64, online: u8) {
@@ -7049,7 +7996,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_online(SessionHandle(session), online != 0);
      }
-@@ -974,6 +1060,7 @@ pub unsafe extern "C" fn mt_session_set_auth_key(
+@@ -974,6 +1062,7 @@ pub unsafe extern "C" fn mt_session_set_auth_key(
      has_init_hash: u8,
      init_hash: MTString,
  ) {
@@ -7057,7 +8004,7 @@ index 68468db..09cbdba 100644
      let Some(engine) = (unsafe { engine(pointer) }) else {
          return;
      };
-@@ -995,6 +1082,7 @@ pub unsafe extern "C" fn mt_session_set_addresses(
+@@ -995,6 +1084,7 @@ pub unsafe extern "C" fn mt_session_set_addresses(
      values: *const MTAddress,
      count: usize,
  ) {
@@ -7065,7 +8012,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_addresses(SessionHandle(session), unsafe { addresses(values, count) });
      }
-@@ -1002,6 +1090,7 @@ pub unsafe extern "C" fn mt_session_set_addresses(
+@@ -1002,6 +1092,7 @@ pub unsafe extern "C" fn mt_session_set_addresses(
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_obfuscation_dc_id(pointer: *mut MTEngine, session: u64, dc_id: i16) {
@@ -7073,7 +8020,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_obfuscation_dc_id(SessionHandle(session), dc_id);
      }
-@@ -1009,12 +1098,32 @@ pub unsafe extern "C" fn mt_session_set_obfuscation_dc_id(pointer: *mut MTEngine
+@@ -1009,12 +1100,50 @@ pub unsafe extern "C" fn mt_session_set_obfuscation_dc_id(pointer: *mut MTEngine
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_proxy(pointer: *mut MTEngine, session: u64, value: *const MTProxy) {
@@ -7084,6 +8031,24 @@ index 68468db..09cbdba 100644
      }
  }
  
++/// The addresses the proxy host name `host` resolves to, in the order to try them, from the host's own
++/// resolver: while the session's proxy has `host` as its host, the session goes to them instead of looking
++/// the name up (`Engine::set_proxy_addresses`). The strings are copied during the call.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn mt_session_set_proxy_addresses(
++    pointer: *mut MTEngine,
++    session: u64,
++    host: MTString,
++    addresses: *const MTString,
++    count: usize,
++) {
++    let _engine = enter_engine_code();
++    if let Some(engine) = unsafe { engine(pointer) } {
++        let addresses = unsafe { slice(addresses, count) }.iter().map(|address| unsafe { text(*address) }).collect();
++        engine.set_proxy_addresses(SessionHandle(session), unsafe { text(host) }, addresses);
++    }
++}
++
 +/// While `required` is 1, the session opens no connection of its own before the host admitted it: it
 +/// reports `MTEventKindRouteRequired` and waits for `mt_session_admit_route`. 0 (the default) turns it off.
 +#[unsafe(no_mangle)]
@@ -7106,7 +8071,7 @@ index 68468db..09cbdba 100644
  /// The engine makes temporary keys that live `lifetime` seconds and binds them to the session's key,
  /// which becomes the permanent key, before anything else goes out. Without `make_permanent_key` a
  /// session with no key asks the host for the permanent key instead of making one. `temporary_key`, when
-@@ -1029,6 +1138,7 @@ pub unsafe extern "C" fn mt_session_enable_pfs(
+@@ -1029,6 +1158,7 @@ pub unsafe extern "C" fn mt_session_enable_pfs(
      make_permanent_key: u8,
      temporary_key: *const MTTemporaryKey,
  ) -> u8 {
@@ -7114,7 +8079,7 @@ index 68468db..09cbdba 100644
      let Some(engine) = (unsafe { engine(pointer) }) else {
          return 0;
      };
-@@ -1051,6 +1161,7 @@ pub unsafe extern "C" fn mt_session_offer_temporary_key(
+@@ -1051,6 +1181,7 @@ pub unsafe extern "C" fn mt_session_offer_temporary_key(
      session: u64,
      key: *const MTTemporaryKey,
  ) {
@@ -7122,7 +8087,7 @@ index 68468db..09cbdba 100644
      if let (Some(engine), false) = (unsafe { engine(pointer) }, key.is_null())
          && let Some(key) = unsafe { bound_temporary_key(&*key) }
      {
-@@ -1061,6 +1172,7 @@ pub unsafe extern "C" fn mt_session_offer_temporary_key(
+@@ -1061,6 +1192,7 @@ pub unsafe extern "C" fn mt_session_offer_temporary_key(
  /// Whether a PFS session without a permanent key may make one itself (1) or waits for the host's (0).
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_allow_permanent_key(pointer: *mut MTEngine, session: u64, allowed: u8) {
@@ -7130,7 +8095,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.allow_permanent_key(SessionHandle(session), allowed != 0);
      }
-@@ -1084,6 +1196,7 @@ unsafe fn bound_temporary_key(value: &MTTemporaryKey) -> Option<BoundTemporaryKe
+@@ -1084,6 +1216,7 @@ unsafe fn bound_temporary_key(value: &MTTemporaryKey) -> Option<BoundTemporaryKe
  /// `transport`: 0 TCP, 1 HTTP, 2 TCP falling back to HTTP. `http_port` 0 keeps each address's port.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_transport(pointer: *mut MTEngine, session: u64, transport: u8, http_port: u16) {
@@ -7138,7 +8103,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          let preference = match transport {
              1 => TransportPreference::Http,
-@@ -1094,6 +1207,22 @@ pub unsafe extern "C" fn mt_session_set_transport(pointer: *mut MTEngine, sessio
+@@ -1094,6 +1227,22 @@ pub unsafe extern "C" fn mt_session_set_transport(pointer: *mut MTEngine, sessio
      }
  }
  
@@ -7161,7 +8126,7 @@ index 68468db..09cbdba 100644
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_update_environment(
      pointer: *mut MTEngine,
-@@ -1101,6 +1230,7 @@ pub unsafe extern "C" fn mt_session_update_environment(
+@@ -1101,6 +1250,7 @@ pub unsafe extern "C" fn mt_session_update_environment(
      value: *const MTEnvironment,
      noop: *const MTRequest,
  ) {
@@ -7169,7 +8134,7 @@ index 68468db..09cbdba 100644
      if let (Some(engine), false) = (unsafe { engine(pointer) }, value.is_null()) {
          let noop = (!noop.is_null()).then(|| unsafe { request(&*noop) });
          engine.update_environment(SessionHandle(session), unsafe { environment(&*value) }, noop);
-@@ -1109,6 +1239,7 @@ pub unsafe extern "C" fn mt_session_update_environment(
+@@ -1109,6 +1259,7 @@ pub unsafe extern "C" fn mt_session_update_environment(
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_auth_token_ready(pointer: *mut MTEngine, session: u64, ready: u8) {
@@ -7177,7 +8142,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_auth_token_ready(SessionHandle(session), ready != 0);
      }
-@@ -1122,6 +1253,7 @@ pub unsafe extern "C" fn mt_session_resolve_apns(
+@@ -1122,6 +1273,7 @@ pub unsafe extern "C" fn mt_session_resolve_apns(
      nonce: MTString,
      secret: MTString,
  ) {
@@ -7185,7 +8150,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          let verification = Verification::Apns { nonce: unsafe { text(nonce) }, secret: unsafe { text(secret) } };
          engine.resolve_verification(SessionHandle(session), RequestId(id), verification);
-@@ -1130,6 +1262,7 @@ pub unsafe extern "C" fn mt_session_resolve_apns(
+@@ -1130,6 +1282,7 @@ pub unsafe extern "C" fn mt_session_resolve_apns(
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_resolve_recaptcha(pointer: *mut MTEngine, session: u64, id: u64, token: MTString) {
@@ -7193,7 +8158,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          let verification = Verification::Recaptcha { token: unsafe { text(token) } };
          engine.resolve_verification(SessionHandle(session), RequestId(id), verification);
-@@ -1144,6 +1277,7 @@ pub unsafe extern "C" fn mt_session_fail_request(
+@@ -1144,6 +1297,7 @@ pub unsafe extern "C" fn mt_session_fail_request(
      code: i32,
      message: MTString,
  ) {
@@ -7201,7 +8166,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.fail_request(SessionHandle(session), RequestId(id), code, unsafe { text(message) });
      }
-@@ -1151,6 +1285,7 @@ pub unsafe extern "C" fn mt_session_fail_request(
+@@ -1151,6 +1305,7 @@ pub unsafe extern "C" fn mt_session_fail_request(
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_decide_retry(pointer: *mut MTEngine, session: u64, id: u64, retry: u8) {
@@ -7209,7 +8174,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.decide_retry(SessionHandle(session), RequestId(id), retry != 0);
      }
-@@ -1158,6 +1293,7 @@ pub unsafe extern "C" fn mt_session_decide_retry(pointer: *mut MTEngine, session
+@@ -1158,6 +1313,7 @@ pub unsafe extern "C" fn mt_session_decide_retry(pointer: *mut MTEngine, session
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_invalidate_initialization(pointer: *mut MTEngine, session: u64) {
@@ -7217,7 +8182,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.invalidate_initialization(SessionHandle(session));
      }
-@@ -1165,6 +1301,7 @@ pub unsafe extern "C" fn mt_session_invalidate_initialization(pointer: *mut MTEn
+@@ -1165,6 +1321,7 @@ pub unsafe extern "C" fn mt_session_invalidate_initialization(pointer: *mut MTEn
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_time_difference(pointer: *mut MTEngine, session: u64, difference: f64) {
@@ -7225,7 +8190,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_time_difference(SessionHandle(session), difference);
      }
-@@ -1172,6 +1309,7 @@ pub unsafe extern "C" fn mt_session_set_time_difference(pointer: *mut MTEngine,
+@@ -1172,6 +1329,7 @@ pub unsafe extern "C" fn mt_session_set_time_difference(pointer: *mut MTEngine,
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_destroy_auth_key(pointer: *mut MTEngine, session: u64) {
@@ -7233,7 +8198,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.destroy_auth_key(SessionHandle(session));
      }
-@@ -1179,6 +1317,7 @@ pub unsafe extern "C" fn mt_session_destroy_auth_key(pointer: *mut MTEngine, ses
+@@ -1179,6 +1337,7 @@ pub unsafe extern "C" fn mt_session_destroy_auth_key(pointer: *mut MTEngine, ses
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_drain(pointer: *mut MTEngine, session: u64, deadline: f64) {
@@ -7241,7 +8206,7 @@ index 68468db..09cbdba 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.drain(SessionHandle(session), deadline);
      }
-@@ -1186,6 +1325,7 @@ pub unsafe extern "C" fn mt_session_drain(pointer: *mut MTEngine, session: u64,
+@@ -1186,6 +1345,7 @@ pub unsafe extern "C" fn mt_session_drain(pointer: *mut MTEngine, session: u64,
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_buffer_data(buffer: *const MTBuffer) -> *const u8 {
@@ -7249,7 +8214,7 @@ index 68468db..09cbdba 100644
      if buffer.is_null() {
          return std::ptr::null();
      }
-@@ -1194,6 +1334,7 @@ pub unsafe extern "C" fn mt_buffer_data(buffer: *const MTBuffer) -> *const u8 {
+@@ -1194,6 +1354,7 @@ pub unsafe extern "C" fn mt_buffer_data(buffer: *const MTBuffer) -> *const u8 {
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_buffer_length(buffer: *const MTBuffer) -> usize {
@@ -7257,7 +8222,7 @@ index 68468db..09cbdba 100644
      if buffer.is_null() {
          return 0;
      }
-@@ -1202,7 +1343,128 @@ pub unsafe extern "C" fn mt_buffer_length(buffer: *const MTBuffer) -> usize {
+@@ -1202,7 +1363,128 @@ pub unsafe extern "C" fn mt_buffer_length(buffer: *const MTBuffer) -> usize {
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_buffer_free(buffer: *mut MTBuffer) {
@@ -7306,7 +8271,7 @@ index 68468db..09cbdba 100644
 +            assert_eq!(lines[body + 1], "let _engine = enter_engine_code();", "{line}");
 +        }
 +        let exported = lines.iter().filter(|line| **line == "#[unsafe(no_mangle)]").count();
-+        assert_eq!((entry_points, exported), (46, 46), "every exported function is an mt_* entry point");
++        assert_eq!((entry_points, exported), (47, 47), "every exported function is an mt_* entry point");
 +    }
 +
 +    const CHILD: &str = "MTPROTO_FFI_PANIC_CHILD";
@@ -7387,7 +8352,7 @@ index 68468db..09cbdba 100644
 +    }
 +}
 diff --git a/crates/mtproto-ffi/tests/ffi.rs b/crates/mtproto-ffi/tests/ffi.rs
-index d0da713..ab2f03e 100644
+index d0da713..887a2be 100644
 --- a/crates/mtproto-ffi/tests/ffi.rs
 +++ b/crates/mtproto-ffi/tests/ffi.rs
 @@ -51,7 +51,7 @@ fn c_abi_end_to_end() {
@@ -7395,7 +8360,7 @@ index d0da713..ab2f03e 100644
      let engine = unsafe { mt_engine_create(2, sink as *const Sink as *mut c_void, Some(on_event), None) };
      assert!(!engine.is_null());
 -    assert_eq!(mt_engine_abi_version(), 5);
-+    assert_eq!(mt_engine_abi_version(), 8);
++    assert_eq!(mt_engine_abi_version(), 9);
      let host = server.address.ip().to_string();
      let address = MTAddress { host: string(&host), port: server.address.port(), secret: bytes(&[]) };
      let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
@@ -7414,7 +8379,7 @@ index d0da713..ab2f03e 100644
 +    }
 +    let _: MTPanicCallback = None::<unsafe extern "C" fn(*mut c_void, MTString, MTString)>;
 +    let _: unsafe extern "C" fn(*mut c_void, MTPanicCallback) = mt_set_panic_callback;
-+    assert_eq!(mt_engine_abi_version(), 8);
++    assert_eq!(mt_engine_abi_version(), 9);
 +}
 +
  #[test]
@@ -7458,7 +8423,7 @@ index d0da713..ab2f03e 100644
          ("MTString".into(), size_of::<MTString>()),
 diff --git a/crates/mtproto-ffi/tests/ffi_abi6.rs b/crates/mtproto-ffi/tests/ffi_abi6.rs
 new file mode 100644
-index 0000000..70f6a65
+index 0000000..77f4b26
 --- /dev/null
 +++ b/crates/mtproto-ffi/tests/ffi_abi6.rs
 @@ -0,0 +1,298 @@
@@ -7674,7 +8639,7 @@ index 0000000..70f6a65
 +    }
 +    assert_eq!((UPDATES_RESET_SERVER_SESSION, UPDATES_RESET_LOCAL_SESSION, UPDATES_RESET_UPDATES_LOST), (1, 2, 3));
 +    assert_eq!(UPDATES_RESET_UPDATES_TOO_LONG, 4);
-+    assert_eq!(mt_engine_abi_version(), 8);
++    assert_eq!(mt_engine_abi_version(), 9);
 +}
 +
 +#[test]
@@ -7762,7 +8727,7 @@ index 0000000..70f6a65
 +}
 diff --git a/crates/mtproto-ffi/tests/ffi_abi8.rs b/crates/mtproto-ffi/tests/ffi_abi8.rs
 new file mode 100644
-index 0000000..9adcfe5
+index 0000000..73a9f09
 --- /dev/null
 +++ b/crates/mtproto-ffi/tests/ffi_abi8.rs
 @@ -0,0 +1,326 @@
@@ -8009,7 +8974,7 @@ index 0000000..9adcfe5
 +    let _: unsafe extern "C" fn(*mut MTEngine, u64, u8) = mt_session_set_route_admission;
 +    let _: unsafe extern "C" fn(*mut MTEngine, u64, u64, u8) = mt_session_admit_route;
 +    assert_eq!((ROUTE_TCP, ROUTE_HTTP), (0, 1));
-+    assert_eq!(mt_engine_abi_version(), 8);
++    assert_eq!(mt_engine_abi_version(), 9);
 +    unsafe {
 +        mt_session_set_route_admission(std::ptr::null_mut(), 1, 1);
 +        mt_session_admit_route(std::ptr::null_mut(), 1, 1, 1);
@@ -8092,8 +9057,198 @@ index 0000000..9adcfe5
 +    assert!(done, "the call did not complete with admission off");
 +    assert_eq!((rig.connections(), rig.asks(session).len()), (1, 1));
 +}
+diff --git a/crates/mtproto-ffi/tests/ffi_abi9.rs b/crates/mtproto-ffi/tests/ffi_abi9.rs
+new file mode 100644
+index 0000000..27af84c
+--- /dev/null
++++ b/crates/mtproto-ffi/tests/ffi_abi9.rs
+@@ -0,0 +1,184 @@
++//! What ABI 9 added, through the C ABI with real callbacks that free every payload: the addresses a host gives
++//! for its proxy's host name (`mt_session_set_proxy_addresses`), which a session goes to instead of looking the
++//! name up, and the address of that name a connected session reached, in `text2` of
++//! `MTEventKindConnectionState`.
++
++use std::ffi::c_void;
++use std::sync::{Condvar, Mutex};
++use std::time::{Duration, Instant};
++
++use mtproto_engine_ffi::*;
++use mtproto_testserver::*;
++
++const COMPLETED: u32 = 1;
++const CONNECTION_STATE: u32 = 18;
++const CONNECTED: u32 = 1 << 1;
++const WAIT: Duration = Duration::from_secs(20);
++/// How long a session without the addresses of its proxy's name is watched for a connection.
++const QUIET: Duration = Duration::from_secs(1);
++/// A name no resolver answers (RFC 6761).
++const NAME: &str = "proxy.invalid";
++
++#[derive(Clone, Debug)]
++struct Seen {
++    session: u64,
++    kind: u32,
++    request: u64,
++    flags: u32,
++    text: String,
++    text2: String,
++}
++
++#[derive(Default)]
++struct Sink {
++    events: Mutex<Vec<Seen>>,
++    condvar: Condvar,
++}
++
++impl Sink {
++    fn wait(&self, timeout: Duration, predicate: impl Fn(&[Seen]) -> bool) -> bool {
++        let deadline = Instant::now() + timeout;
++        let mut events = self.events.lock().unwrap();
++        while !predicate(&events) {
++            let now = Instant::now();
++            if now >= deadline {
++                return false;
++            }
++            events = self.condvar.wait_timeout(events, deadline - now).unwrap().0;
++        }
++        true
++    }
++
++    fn of(&self, session: u64, kind: u32) -> Vec<Seen> {
++        seen(&self.events.lock().unwrap(), session, kind).cloned().collect()
++    }
++}
++
++fn seen(events: &[Seen], session: u64, kind: u32) -> impl Iterator<Item = &Seen> {
++    events.iter().filter(move |event| event.session == session && event.kind == kind)
++}
++
++fn text_of(value: MTString) -> String {
++    if value.data.is_null() {
++        return String::new();
++    }
++    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(value.data, value.length) }).into_owned()
++}
++
++/// Copies what the test needs and frees the payload, as a host must for every event.
++unsafe extern "C" fn on_event(context: *mut c_void, session: u64, event: *const MTEvent) {
++    let sink = unsafe { &*(context as *const Sink) };
++    let event = unsafe { &*event };
++    if !event.payload.is_null() {
++        unsafe { mt_buffer_free(event.payload) };
++    }
++    sink.events.lock().unwrap().push(Seen {
++        session,
++        kind: event.kind,
++        request: event.request_id,
++        flags: event.flags,
++        text: text_of(event.text),
++        text2: text_of(event.text2),
++    });
++    sink.condvar.notify_all();
++}
++
++fn bytes(data: &[u8]) -> MTBytes {
++    MTBytes { data: data.as_ptr(), length: data.len() }
++}
++
++fn string(text: &str) -> MTString {
++    MTString { data: text.as_ptr(), length: text.len() }
++}
++
++#[test]
++fn the_header_declares_abi_9() {
++    let header = include_str!("../include/mtproto_engine.h");
++    for declared in [
++        "MTEventKindConnectionState = 18,",
++        "void mt_session_set_proxy_addresses(MTEngine *engine, MTSessionHandle session, MTString host, const MTString *addresses, size_t count);",
++    ] {
++        assert!(header.contains(declared), "{declared}");
++    }
++    let _: unsafe extern "C" fn(*mut MTEngine, u64, MTString, *const MTString, usize) = mt_session_set_proxy_addresses;
++    assert_eq!(mt_engine_abi_version(), 9);
++    let addresses = [string("127.0.0.1")];
++    unsafe { mt_session_set_proxy_addresses(std::ptr::null_mut(), 1, string(NAME), addresses.as_ptr(), 1) };
++}
++
++/// A main session whose SOCKS5 proxy is a name no resolver answers reaches nothing until the host gives the
++/// name's address. Then its call completes through the proxy there, and each state that says it is connected
++/// names that address in `text2`, while `text` names the proxy as it was given.
++#[test]
++fn a_named_proxy_connects_only_through_the_addresses_the_host_gives() {
++    let key = random_key(901);
++    let server = TestServer::start(vec![key.clone()], ServerOptions { socks5: true, ..Default::default() });
++    let sink: &'static Sink = Box::leak(Box::default());
++    let engine = unsafe { mt_engine_create(1, sink as *const Sink as *mut c_void, Some(on_event), None) };
++    assert!(!engine.is_null());
++    let port = server.address.port();
++    // The SOCKS5 front takes any destination: the datacenter address only goes into its CONNECT.
++    let address = MTAddress { host: string("149.154.167.51"), port: 443, secret: bytes(&[]) };
++    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
++    let salt = MTSaltEntry { salt: SERVER_SALT, valid_since: now - 60.0, valid_until: now + 3600.0 };
++    let setup = MTSessionSetup {
++        datacenter_id: 2,
++        obfuscation_dc_id: 2,
++        role: 0,
++        framing: 0,
++        addresses: &address,
++        address_count: 1,
++        proxy: MTProxy {
++            kind: 1,
++            host: string(NAME),
++            port,
++            username: string(""),
++            password: string(""),
++            secret: bytes(&[]),
++        },
++        auth_key: bytes(key.bytes()),
++        salts: &salt,
++        salt_count: 1,
++        has_init_hash: 0,
++        init_hash: string(""),
++        generate_key: 0,
++        public_keys_pem: std::ptr::null(),
++        public_key_count: 0,
++        temp_key_expires_in: 0,
++        environment: std::ptr::null(),
++        time_difference: 0.0,
++        online: 1,
++        paused: 0,
++        keep_connected: 1,
++        idle_disconnect_after: 0.0,
++        request_timeout: 5.0,
++        pfs_lifetime: 0,
++        pfs_make_permanent_key: 0,
++        pfs_temporary_key: std::ptr::null(),
++    };
++    let session = unsafe { mt_session_create(engine, &setup) };
++    assert_ne!(session, 0);
++    let id = unsafe { mt_engine_next_request_id(engine) };
++    let body = call(7, &id.to_le_bytes());
++    let request = MTRequest { id, body: bytes(&body), flags: 0, expected_response_size: 0, invoke_after: 0 };
++    unsafe { mt_session_send(engine, session, &request) };
++    let completed = |events: &[Seen]| seen(events, session, COMPLETED).any(|event| event.request == id);
++    std::thread::sleep(QUIET);
++    let held = (server.with_stats(|stats| stats.connections), sink.wait(Duration::ZERO, completed));
++
++    let addresses = [string("127.0.0.1")];
++    unsafe { mt_session_set_proxy_addresses(engine, session, string(NAME), addresses.as_ptr(), addresses.len()) };
++    let done = sink.wait(WAIT, completed);
++    let states = sink.of(session, CONNECTION_STATE);
++    unsafe { mt_engine_destroy(engine) };
++    let shown: Vec<_> = states.iter().map(|state| (state.flags, state.text.as_str(), state.text2.as_str())).collect();
++    eprintln!("held {held:?}; states {shown:?}");
++    assert_eq!(held, (0, false), "the session got somewhere without the name's addresses");
++    assert!(done, "the call did not complete through the address the host gave");
++    let proxy = format!("{NAME}:{port}");
++    assert!(states.iter().all(|state| state.text == proxy), "{shown:?}");
++    let (connected, other): (Vec<_>, Vec<_>) = states.iter().partition(|state| state.flags & CONNECTED != 0);
++    assert!(!connected.is_empty(), "no state said the session was connected");
++    assert!(connected.iter().all(|state| state.text2 == "127.0.0.1"), "{shown:?}");
++    assert!(other.iter().all(|state| state.text2.is_empty()), "{shown:?}");
++}
 diff --git a/crates/mtproto-ffi/tests/ffi_drain.rs b/crates/mtproto-ffi/tests/ffi_drain.rs
-index 8a9c32b..73cdbd2 100644
+index 8a9c32b..3ee8d80 100644
 --- a/crates/mtproto-ffi/tests/ffi_drain.rs
 +++ b/crates/mtproto-ffi/tests/ffi_drain.rs
 @@ -155,5 +155,5 @@ fn the_header_declares_the_drain_abi() {
@@ -8101,10 +9256,10 @@ index 8a9c32b..73cdbd2 100644
      assert!(header.contains("void mt_session_drain(MTEngine *engine, MTSessionHandle session, double deadline);"));
      assert_eq!(RELEASED_MAY_HAVE_RUN, 1);
 -    assert_eq!(mt_engine_abi_version(), 5);
-+    assert_eq!(mt_engine_abi_version(), 8);
++    assert_eq!(mt_engine_abi_version(), 9);
  }
 diff --git a/crates/mtproto-ffi/tests/sec_rows_zeroize.rs b/crates/mtproto-ffi/tests/sec_rows_zeroize.rs
-index 84ec57f..6afcaba 100644
+index 84ec57f..e348e90 100644
 --- a/crates/mtproto-ffi/tests/sec_rows_zeroize.rs
 +++ b/crates/mtproto-ffi/tests/sec_rows_zeroize.rs
 @@ -1,6 +1,8 @@
@@ -8125,7 +9280,7 @@ index 84ec57f..6afcaba 100644
  use mtproto_engine_ffi::*;
  use mtproto_testserver::*;
  
-@@ -155,3 +159,244 @@ fn a_created_key_is_wiped_when_the_host_frees_it_and_after_engine_destroy() {
+@@ -155,3 +159,247 @@ fn a_created_key_is_wiped_when_the_host_frees_it_and_after_engine_destroy() {
      assert!(watch.found().is_empty(), "left in freed memory by the engine: {:?}", watch.found());
      drop(server);
  }
@@ -8323,6 +9478,7 @@ index 84ec57f..6afcaba 100644
 +    let start = TelegramStart::new();
 +    let pems = [string(&start.pem)];
 +    let proxy = MTProxy { kind: 2, host: string("127.0.0.1"), port: 443, secret: bytes(&PROXY_SECRET), ..no_proxy() };
++    let (proxy_name, addresses) = (string("proxy.example"), [string("192.0.2.1"), string("2001:db8::1")]);
 +    let environment = environment();
 +    let endpoint = MTWebEndpoint {
 +        host: string("venus.web.telegram.org"),
@@ -8345,6 +9501,8 @@ index 84ec57f..6afcaba 100644
 +    unsafe { mt_session_set_proxy(engine, session, &proxy) };
 +    paint_the_stack(&STACK_SECRET);
 +    unsafe { mt_session_set_proxy(engine, session, std::ptr::null()) };
++    paint_the_stack(&STACK_SECRET);
++    unsafe { mt_session_set_proxy_addresses(engine, session, proxy_name, addresses.as_ptr(), addresses.len()) };
 +    paint_the_stack(&STACK_SECRET);
 +    unsafe { mt_session_update_environment(engine, session, &environment, std::ptr::null()) };
 +    paint_the_stack(&STACK_SECRET);
@@ -8762,7 +9920,7 @@ index c5686c6..9de315c 100644
 +    }
 +}
 diff --git a/docs/swift-integration.md b/docs/swift-integration.md
-index 8977917..0c10424 100644
+index 8977917..cd2942e 100644
 --- a/docs/swift-integration.md
 +++ b/docs/swift-integration.md
 @@ -313,17 +313,17 @@ is created with `pfs_lifetime = tempKeyExpiration` (24 h) and `pfs_make_permanen
@@ -8790,16 +9948,18 @@ index 8977917..0c10424 100644
  - `AUTH_KEY_PERM_EMPTY` and `-404` are handled inside the engine (rebind or a new temporary key); the
    session never drops the permanent key for them.
  
-@@ -639,8 +639,13 @@ exactly as `MTTcpConnection` does; iOS only.
+@@ -639,8 +639,15 @@ exactly as `MTTcpConnection` does; iOS only.
  The C ABI in `crates/mtproto-ffi/include/mtproto_engine.h` follows these rules. Any other host must
  follow them too.
  
 -- **Version.** `mt_engine_abi_version()` must equal the version the host was built against (5: ABI 5
 -  added `mt_session_drain` and `MTEventKindReleased`).
-+- **Version.** `mt_engine_abi_version()` must equal the version the host was built against (8: ABI 8
-+  added route admission, `mt_session_set_route_admission`, `mt_session_admit_route` and
-+  `MTEventKindRouteRequired` with `MTRouteTcp` and `MTRouteHttp` in `flags`; ABI 7 added
-+  `mt_set_panic_callback` with `MTPanicCallback`; ABI 6 added `mt_session_set_http_addresses`,
++- **Version.** `mt_engine_abi_version()` must equal the version the host was built against (9: ABI 9
++  added `mt_session_set_proxy_addresses` and the address a named proxy reached in
++  `MTEventKindConnectionState`'s `text2`; ABI 8 added route admission,
++  `mt_session_set_route_admission`, `mt_session_admit_route` and `MTEventKindRouteRequired` with
++  `MTRouteTcp` and `MTRouteHttp` in `flags`; ABI 7 added `mt_set_panic_callback` with
++  `MTPanicCallback`; ABI 6 added `mt_session_set_http_addresses`,
 +  `MTRequestFlagSurfaceDependencyWaits`, and the reason of each `MTEventKindUpdatesReset` in `code`
 +  (`MTUpdatesReset*`) with the server's `new_session_created` message as the payload of
 +  `MTUpdatesResetServerSession`; ABI 5 added `mt_session_drain` and `MTEventKindReleased`).
