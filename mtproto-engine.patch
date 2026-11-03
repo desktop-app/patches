@@ -7,8 +7,9 @@ each connection a session opens (ABI 8), wipe the session setups a
 host hands it, and every command it posts to its workers, before it
 frees them, let the host resolve a proxy's host name, keeping a
 session's reconnect backoff across the name's addresses (ABI 9), wipe
-the address lists a host hands it too, and count a client's reset as
-its close in the paused sessions test.
+the address lists a host hands it too, count a client's reset as its
+close in the paused sessions test, and tell the host each transport
+error code a connection gets (ABI 10).
 
 Upstream: https://github.com/TelegramMessenger/mtproto-engine
 Branch: main
@@ -19,7 +20,7 @@ Apply with `git apply` right after checking out that revision.
 Builds for i686-win7-windows-msvc and x86_64-win7-windows-msvc (std built
 from source with -Z build-std and +crt-static) and aarch64-pc-windows-msvc.
 Every hunk is Windows-gated, or moves a test helper unchanged off Windows,
-except ten changes, made for every platform. First, the engine's threads
+except eleven changes, made for every platform. First, the engine's threads
 (mtproto-main, mtproto-worker-N, mtproto-resolver) run under an
 abort-on-panic guard, so a host built with panic = "unwind" ends the
 process on a panic there, as the engine's own panic = "abort" profile does,
@@ -306,8 +307,8 @@ mtproto-engine session_runtime::tests::http_through_a_named_proxy_uses_the_hosts
 mtproto-engine proxy_addresses::an_address_that_starts_accepting_carries_the_session_at_its_next_turn,
 mtproto-engine proxy_addresses::an_http_link_names_the_address_reached_and_an_ip_literal_proxy_names_none.
 
-ABI 9 (mt_engine_abi_version() returns 9; no struct layout changes)
-adds it to mtproto_engine.h:
+ABI 9 (no struct layout changes; ABI 10 of the eleventh change builds on
+it) adds it to mtproto_engine.h:
   void mt_session_set_proxy_addresses(MTEngine *engine, MTSessionHandle session, MTString host, const MTString *addresses, size_t count);
 and text2 of MTEventKindConnectionState (18), empty before: while
 connected through a proxy whose host is a name, the address of that
@@ -363,6 +364,45 @@ session that ignores the pause fails it. The engine's pause does not
 change: in each of 400 traced runs it closed the connection within
 0.32 ms of the pause. Tests:
 mtproto-engine engine::paused_sessions_do_not_connect_until_resumed.
+
+Eleventh, the engine tells the host each transport error code a
+connection gets. A session holding a key reported -444 and -403 alike,
+as a ConnectionDropped with AddressRejected, and a code reached the
+host only as text in AuthKeyCreationFailed during a handshake, so a
+host could not answer a -444 with its own prompt about a bad proxy, as
+Telegram Desktop does. Now EngineEvent::TransportError gives the code
+first thing in on_transport_error_with, as it came in a short frame on
+a connection or as its negative for the HTTP statuses that function
+takes, before anything the code leads to, and what the session does
+about the code does not change. A status of a plain HTTP request with
+no handshake running, -404 on an HTTP route not yet proven, route
+checks and racers do not go through that function and report nothing;
+none of them arises under an MTProxy. The event carries the session's
+proxy serial, how many set_proxy calls it had processed when it was
+generated: 0 as set up, and one more with each, a call with the proxy
+it already has included, wrapping; set_proxy_addresses leaves it alone.
+A host that counts its own calls the same way knows which proxy a late
+code came through, which a proxy's address cannot say for a change of
+secret alone or a move back. The test server records the proxy each
+initConnection it parsed names (Stats::client_proxies, with None for
+one without the field and nothing for one that did not parse), and its
+binary's summary prints them. Tests:
+mtproto-engine engine::transport_flood_backs_off_and_retransmits_without_reexecution,
+mtproto-engine engine::other_transport_errors_reconnect_quickly,
+mtproto-engine engine::handshake_transport_error_restarts_key_generation_without_key_invalid,
+mtproto-testserver tests::a_client_proxy_is_observed_only_from_an_init_connection_that_parsed,
+mtproto-testserver tests::the_summary_prints_each_client_proxy_and_null_for_none.
+
+ABI 10 (mt_engine_abi_version() returns 10; no struct layout changes)
+adds it to mtproto_engine.h as MTEventKindTransportError (38): code the
+code as it came, request_id the serial above. The event only observes.
+The ABI version checks and docs/swift-integration.md follow. Tests:
+mtproto-ffi ffi_abi10::the_header_declares_abi_10,
+mtproto-ffi ffi_abi10::a_code_through_an_mtproxy_of_each_kind_comes_first_and_changes_nothing_else,
+mtproto-ffi ffi_abi10::a_handshake_error_comes_before_the_failure_it_leads_to,
+mtproto-ffi ffi_abi10::the_serial_counts_every_proxy_setter_and_no_address_list,
+mtproto-ffi ffi_abi10::an_http_status_comes_as_its_negative_code,
+mtproto-ffi ffi_abi10::the_environment_proxy_reaches_the_server_until_it_is_removed.
 
 Test gated off on Windows, with its reason in the source:
 - mtproto-engine interface::tests::loopback_resolves_to_lo0 (Windows):
@@ -2628,7 +2668,7 @@ index 5eaf872..2aea1f5 100644
          fail_transmitted: bool,
          registry: &Registry,
 diff --git a/crates/mtproto-engine/src/session_runtime.rs b/crates/mtproto-engine/src/session_runtime.rs
-index 69a7dc6..ea2c7e0 100644
+index 69a7dc6..04b3613 100644
 --- a/crates/mtproto-engine/src/session_runtime.rs
 +++ b/crates/mtproto-engine/src/session_runtime.rs
 @@ -1,5 +1,5 @@
@@ -2729,17 +2769,19 @@ index 69a7dc6..ea2c7e0 100644
      progress: Option<ProgressTracking>,
      frame_watch: Option<FrameWatch>,
      acknowledged_out: u64,
-@@ -203,6 +244,9 @@ pub struct SessionRuntime {
+@@ -203,6 +244,11 @@ pub struct SessionRuntime {
      dns_failed: HashMap<(String, u16), Vec<SocketAddr>>,
      /// The lookup a TCP connection attempt waits for.
      awaiting_resolution: Option<(String, u16)>,
 +    /// A proxy host name and its addresses from the host's own resolver (`set_proxy_addresses`): lookups of
 +    /// the name, while it is the proxy's host, are answered from them.
 +    proxy_addresses: Option<(String, Vec<IpAddr>)>,
++    /// The `set_proxy` calls processed since setup, equal ones too, wrapping (`EngineEvent::TransportError`).
++    proxy_revision: u64,
      unavailable_probe_at: f64,
      closed: bool,
      auth_token_ready: bool,
-@@ -229,6 +273,7 @@ pub struct SessionRuntime {
+@@ -229,6 +275,7 @@ pub struct SessionRuntime {
      host_streams: Option<(Arc<crate::host_stream::HostStreams>, Arc<crate::host_stream::WorkerSignal>)>,
      /// Set while the requests go back to the host for another session (`drain`).
      drain: Option<drain::DrainState>,
@@ -2747,15 +2789,16 @@ index 69a7dc6..ea2c7e0 100644
  }
  
  impl SessionRuntime {
-@@ -278,6 +323,7 @@ impl SessionRuntime {
+@@ -278,6 +325,8 @@ impl SessionRuntime {
              dns: HashMap::new(),
              dns_failed: HashMap::new(),
              awaiting_resolution: None,
 +            proxy_addresses: None,
++            proxy_revision: 0,
              unavailable_probe_at: 0.0,
              closed: false,
              auth_token_ready: true,
-@@ -297,6 +343,7 @@ impl SessionRuntime {
+@@ -297,6 +346,7 @@ impl SessionRuntime {
              network_generation: 0,
              host_streams: None,
              drain: None,
@@ -2763,7 +2806,7 @@ index 69a7dc6..ea2c7e0 100644
              setup,
          };
          let cdn = runtime.setup.role == SessionRole::Cdn;
-@@ -315,7 +362,7 @@ impl SessionRuntime {
+@@ -315,7 +365,7 @@ impl SessionRuntime {
          if let Some(http) = &self.http {
              return http.first_more_readable();
          }
@@ -2772,7 +2815,7 @@ index 69a7dc6..ea2c7e0 100644
      }
  
      fn has_link(&self) -> bool {
-@@ -327,7 +374,7 @@ impl SessionRuntime {
+@@ -327,7 +377,7 @@ impl SessionRuntime {
      }
  
      fn free_token(&self) -> Token {
@@ -2781,7 +2824,7 @@ index 69a7dc6..ea2c7e0 100644
          if used == Some(self.token) { self.race_token() } else { self.token }
      }
  
-@@ -391,7 +438,7 @@ impl SessionRuntime {
+@@ -391,7 +441,7 @@ impl SessionRuntime {
                  if self.auto.on_websocket {
                      rpc.session_mut().set_keepalive_cap(Some(websocket::WEBSOCKET_KEEPALIVE));
                  }
@@ -2790,7 +2833,7 @@ index 69a7dc6..ea2c7e0 100644
                      rpc.connection_opened(now);
                  }
                  for pending in self.queued.drain(..) {
-@@ -476,10 +523,17 @@ impl SessionRuntime {
+@@ -476,10 +526,17 @@ impl SessionRuntime {
          }
          if request.invoke_after.is_some_and(|after| self.rotated.contains(&after)) {
              self.note_rotated(request.id);
@@ -2810,7 +2853,7 @@ index 69a7dc6..ea2c7e0 100644
                  response_time: now.unix + self.time_difference(),
                  duration: 0.0,
              });
-@@ -522,6 +576,7 @@ impl SessionRuntime {
+@@ -522,6 +579,7 @@ impl SessionRuntime {
          }
          self.setup.paused = paused;
          if paused {
@@ -2818,7 +2861,7 @@ index 69a7dc6..ea2c7e0 100644
              self.cancel_http_probe(registry);
              self.close_connection(registry, now, false);
          } else {
-@@ -590,10 +645,11 @@ impl SessionRuntime {
+@@ -590,10 +648,11 @@ impl SessionRuntime {
          }
      }
  
@@ -2833,7 +2876,7 @@ index 69a7dc6..ea2c7e0 100644
              self.address_cursor = 0;
              self.forget_routes();
              self.close_connection(registry, now, false);
-@@ -603,15 +659,45 @@ impl SessionRuntime {
+@@ -603,15 +662,45 @@ impl SessionRuntime {
          }
      }
  
@@ -2883,15 +2926,17 @@ index 69a7dc6..ea2c7e0 100644
              }
              self.close_connection(registry, now, false);
              self.next_attempt_at = now.mono;
-@@ -620,6 +706,7 @@ impl SessionRuntime {
+@@ -619,7 +708,9 @@ impl SessionRuntime {
+     }
  
      pub fn set_proxy(&mut self, proxy: Option<ProxyConfig>, now: Now, registry: &Registry) {
++        self.proxy_revision = self.proxy_revision.wrapping_add(1);
          if self.setup.proxy != proxy {
 +            self.void_admissions(now);
              self.reset_auto(registry, now, true);
              self.setup.proxy = proxy;
              self.forget_routes();
-@@ -631,6 +718,55 @@ impl SessionRuntime {
+@@ -631,6 +722,55 @@ impl SessionRuntime {
          }
      }
  
@@ -2947,7 +2992,7 @@ index 69a7dc6..ea2c7e0 100644
      pub fn set_transport(
          &mut self,
          transport: crate::types::TransportPreference,
-@@ -641,6 +777,7 @@ impl SessionRuntime {
+@@ -641,6 +781,7 @@ impl SessionRuntime {
          if self.setup.transport == transport && self.setup.http_port == http_port {
              return;
          }
@@ -2955,7 +3000,7 @@ index 69a7dc6..ea2c7e0 100644
          self.setup.transport = transport;
          self.setup.http_port = http_port;
          self.reset_auto(registry, now, false);
-@@ -658,6 +795,127 @@ impl SessionRuntime {
+@@ -658,6 +799,127 @@ impl SessionRuntime {
          self.flaps = 0;
      }
  
@@ -3083,7 +3128,7 @@ index 69a7dc6..ea2c7e0 100644
      /// Starts running PFS on a session created without it: its key becomes the permanent key, and
      /// the session reconnects to talk under a temporary one.
      pub fn enable_pfs(
-@@ -848,7 +1106,7 @@ impl SessionRuntime {
+@@ -848,7 +1110,7 @@ impl SessionRuntime {
      fn refresh_uploads(&mut self, now: Now) {
          let mut own = self.rpc.as_ref().map_or(0, |rpc| rpc.session().upload_backlog(now));
          if own > 0 {
@@ -3092,7 +3137,7 @@ index 69a7dc6..ea2c7e0 100644
              if let Some(rate) = self.rpc.as_ref().and_then(|rpc| rpc.session().uplink_rate()) {
                  self.uploads.note_rate(rate);
              }
-@@ -1174,14 +1432,17 @@ impl SessionRuntime {
+@@ -1174,14 +1436,17 @@ impl SessionRuntime {
                      Some(cached) => {
                          cached.addresses[failures.saturating_sub(cached.failures_at) as usize % cached.addresses.len()]
                      }
@@ -3112,7 +3157,7 @@ index 69a7dc6..ea2c7e0 100644
                                  failures_at: failures,
                              });
                              first
-@@ -1205,7 +1466,22 @@ impl SessionRuntime {
+@@ -1205,7 +1470,22 @@ impl SessionRuntime {
          }
      }
  
@@ -3136,7 +3181,7 @@ index 69a7dc6..ea2c7e0 100644
      pub(super) fn resolve_cached(&mut self, host: &str, port: u16, resolver: &mut dyn Resolve, now: Now) -> Resolution {
          let key = (host.to_string(), port);
          if let Some((addresses, expires_at)) = self.dns.get(&key)
-@@ -1213,7 +1489,7 @@ impl SessionRuntime {
+@@ -1213,7 +1493,7 @@ impl SessionRuntime {
          {
              return Resolution::Resolved(addresses.clone());
          }
@@ -3145,7 +3190,7 @@ index 69a7dc6..ea2c7e0 100644
          if let Resolution::Resolved(addresses) = &resolution {
              let lifetime = if addresses.is_empty() { RESOLVE_RETRY_MIN } else { DNS_TTL };
              self.dns.insert(key, (addresses.clone(), now.mono + lifetime));
-@@ -1222,6 +1498,10 @@ impl SessionRuntime {
+@@ -1222,6 +1502,10 @@ impl SessionRuntime {
      }
  
      pub fn on_resolved(&mut self, host: &str, port: u16, addresses: Vec<SocketAddr>, now: Now) {
@@ -3156,7 +3201,7 @@ index 69a7dc6..ea2c7e0 100644
          let lifetime = if addresses.is_empty() { RESOLVE_RETRY_MIN } else { DNS_TTL };
          self.dns.insert((host.to_string(), port), (addresses.clone(), now.mono + lifetime));
          if self.http_connects_to(host, port) {
-@@ -1290,6 +1570,10 @@ impl SessionRuntime {
+@@ -1290,6 +1574,10 @@ impl SessionRuntime {
              Pick::Ready(index, socket_address, address) => (index, socket_address, address),
              pick => return self.defer_connection(pick, now),
          };
@@ -3167,7 +3212,7 @@ index 69a7dc6..ea2c7e0 100644
          let socks = self.tunnel_for(&address);
          let transport = TransportConfig {
              framing: self.setup.framing,
-@@ -1405,6 +1689,10 @@ impl SessionRuntime {
+@@ -1405,6 +1693,10 @@ impl SessionRuntime {
          {
              socket_address = other;
          }
@@ -3178,7 +3223,7 @@ index 69a7dc6..ea2c7e0 100644
          let transport = TransportConfig {
              framing: self.setup.framing,
              dc_id: self.setup.obfuscation_dc_id,
-@@ -1606,6 +1894,15 @@ impl SessionRuntime {
+@@ -1606,6 +1898,15 @@ impl SessionRuntime {
              return;
          }
          if verified {
@@ -3194,7 +3239,7 @@ index 69a7dc6..ea2c7e0 100644
              if self.http.is_some() {
                  self.switch_back_to_tcp(registry, now, callbacks);
              } else if self.auto.on_websocket {
-@@ -1705,7 +2002,7 @@ impl SessionRuntime {
+@@ -1705,7 +2006,7 @@ impl SessionRuntime {
              let result = self.connection.as_mut().expect("connection").handle_writable(registry, now.mono);
              if self.racer.is_some()
                  && self.racer_check.is_none()
@@ -3203,7 +3248,7 @@ index 69a7dc6..ea2c7e0 100644
              {
                  self.drop_racer(registry);
              }
-@@ -1774,7 +2071,7 @@ impl SessionRuntime {
+@@ -1774,7 +2075,7 @@ impl SessionRuntime {
                  return false;
              }
              self.log(callbacks, LogLevel::Info, &format!("connection closed: {error}"));
@@ -3212,7 +3257,7 @@ index 69a7dc6..ea2c7e0 100644
              let reason = self.close_reason.take();
              let dropped = match reason {
                  Some(CloseReason::ServerRejected) => DropReason::KeyInvalid,
-@@ -1832,7 +2129,7 @@ impl SessionRuntime {
+@@ -1832,7 +2133,7 @@ impl SessionRuntime {
      /// would hold a dead connection for ever.
      fn frame_is_progressing(&mut self, now: Now) -> bool {
          let Some(received) =
@@ -3221,7 +3266,15 @@ index 69a7dc6..ea2c7e0 100644
          else {
              return false;
          };
-@@ -2295,6 +2592,19 @@ impl SessionRuntime {
+@@ -2073,6 +2374,7 @@ impl SessionRuntime {
+     }
+ 
+     fn on_transport_error_with(&mut self, code: i32, proven: bool, now: Now, callbacks: &Arc<dyn EngineCallbacks>) {
++        callbacks.on_event(self.handle, EngineEvent::TransportError { code, proxy_revision: self.proxy_revision });
+         let kind = TransportErrorKind::from_code(code);
+         if self.handshake.is_some() {
+             callbacks.on_event(
+@@ -2295,6 +2597,19 @@ impl SessionRuntime {
          config: &EngineConfig,
          callbacks: &Arc<dyn EngineCallbacks>,
          rng: &mut OsRandom,
@@ -3241,7 +3294,7 @@ index 69a7dc6..ea2c7e0 100644
      ) {
          if self.drive_drain(now, registry, callbacks) {
              return;
-@@ -2411,7 +2721,7 @@ impl SessionRuntime {
+@@ -2411,7 +2726,7 @@ impl SessionRuntime {
          let mut silence = false;
          if failure.is_none()
              && let Some(rpc) = &mut self.rpc
@@ -3250,7 +3303,7 @@ index 69a7dc6..ea2c7e0 100644
              && self.handshake.is_none()
              && let Err(error) = rpc.handle_timeout(now)
          {
-@@ -2524,8 +2834,8 @@ impl SessionRuntime {
+@@ -2524,8 +2839,8 @@ impl SessionRuntime {
          }
      }
  
@@ -3261,7 +3314,7 @@ index 69a7dc6..ea2c7e0 100644
              || self.http.as_ref().is_some_and(HttpState::is_connected);
          let received = self.connection_received_packet() || self.http.as_ref().is_some_and(HttpState::answered);
          let key_unbound = self.rpc.is_some() && self.pfs.as_ref().is_some_and(|pfs| pfs.perm.is_some() && !pfs.bound);
-@@ -2540,15 +2850,25 @@ impl SessionRuntime {
+@@ -2540,15 +2855,25 @@ impl SessionRuntime {
                      || (self.http.is_some() && !received && (self.rejections >= 3 || self.open_failures() >= 3))),
              awaiting_key_binding: connected && received && key_unbound,
          };
@@ -3290,7 +3343,7 @@ index 69a7dc6..ea2c7e0 100644
          }
      }
  
-@@ -2754,7 +3074,13 @@ impl Drop for SessionRuntime {
+@@ -2754,7 +3079,13 @@ impl Drop for SessionRuntime {
  #[cfg(test)]
  mod tests {
      use super::*;
@@ -3304,7 +3357,7 @@ index 69a7dc6..ea2c7e0 100644
  
      struct ScriptedResolver {
          answers: VecDeque<Vec<SocketAddr>>,
-@@ -2820,6 +3146,1342 @@ mod tests {
+@@ -2820,6 +3151,1342 @@ mod tests {
          );
          assert_eq!(resolver.calls, 3);
      }
@@ -4684,7 +4737,7 @@ index dac0431..f6d2578 100644
          self.note_route_http_needed(now);
          self.note_websocket_adopted(now);
 diff --git a/crates/mtproto-engine/src/types.rs b/crates/mtproto-engine/src/types.rs
-index d97db54..677c0c6 100644
+index d97db54..beb73b5 100644
 --- a/crates/mtproto-engine/src/types.rs
 +++ b/crates/mtproto-engine/src/types.rs
 @@ -32,6 +32,48 @@ impl core::fmt::Debug for DcAddress {
@@ -4808,7 +4861,23 @@ index d97db54..677c0c6 100644
      },
      AuthKeyRequired,
      AuthKeyInvalid {
-@@ -467,6 +539,16 @@ pub enum EngineEvent {
+@@ -450,6 +522,15 @@ pub enum EngineEvent {
+         key_id: i64,
+     },
+     TransportFlood,
++    /// The session's connection got this transport error code, as a frame or over HTTP as a status,
++    /// and the session acts on it right after this, as it would without it. `proxy_revision` is how
++    /// many `set_proxy` calls the session had processed by then, wrapping: 0 as set up, and a call with
++    /// the proxy it already has counts too, so a host counting its own calls knows which proxy the code
++    /// came through. `set_proxy_addresses` does not count.
++    TransportError {
++        code: i32,
++        proxy_revision: u64,
++    },
+     NetworkUsage {
+         incoming: u64,
+         outgoing: u64,
+@@ -467,6 +548,16 @@ pub enum EngineEvent {
          age: f64,
      },
      Closed,
@@ -5128,7 +5197,7 @@ index b0e3986..9168b49 100644
                  }
                  Command::SetAuthTokenReady(handle, ready) => {
 diff --git a/crates/mtproto-engine/tests/engine.rs b/crates/mtproto-engine/tests/engine.rs
-index 38a9daa..4d2f4a8 100644
+index 38a9daa..1439a87 100644
 --- a/crates/mtproto-engine/tests/engine.rs
 +++ b/crates/mtproto-engine/tests/engine.rs
 @@ -12,6 +12,14 @@ use mtproto_engine::{
@@ -5146,7 +5215,24 @@ index 38a9daa..4d2f4a8 100644
  #[derive(Default)]
  struct Collector {
      events: Mutex<Vec<(SessionHandle, EngineEvent)>>,
-@@ -273,8 +281,11 @@ fn paused_sessions_do_not_connect_until_resumed() {
+@@ -68,6 +76,16 @@ impl Collector {
+         self.events.lock().unwrap().iter().filter(|(_, event)| predicate(event)).count()
+     }
+ 
++    /// The first event that matches, by its place among all the events so far.
++    fn first(&self, predicate: impl Fn(&EngineEvent) -> bool) -> Option<usize> {
++        self.events.lock().unwrap().iter().position(|(_, event)| predicate(event))
++    }
++
++    /// The events that match, in order.
++    fn matching(&self, predicate: impl Fn(&EngineEvent) -> bool) -> Vec<EngineEvent> {
++        self.events.lock().unwrap().iter().filter(|(_, event)| predicate(event)).map(|(_, e)| e.clone()).collect()
++    }
++
+     /// Reasons of the connections dropped so far, and whether each had answered.
+     fn drops(&self) -> Vec<(DropReason, bool)> {
+         self.events
+@@ -273,8 +291,11 @@ fn paused_sessions_do_not_connect_until_resumed() {
      engine.set_paused(session, false);
      assert!(collector.wait(WAIT, |events| completions(events, session) == 1));
      engine.set_paused(session, true);
@@ -5160,7 +5246,7 @@ index 38a9daa..4d2f4a8 100644
      engine.shutdown();
  }
  
-@@ -447,7 +458,7 @@ fn updates_and_session_resets_are_delivered() {
+@@ -447,7 +468,7 @@ fn updates_and_session_resets_are_delivered() {
      engine.send(session, request(2, TAG_NEW_SESSION));
      assert!(collector.wait(WAIT, |events| completions(events, session) == 2));
      assert!(collector.count(|event| matches!(event, EngineEvent::Rpc(RpcEvent::Update { .. }))) >= 1);
@@ -5169,7 +5255,53 @@ index 38a9daa..4d2f4a8 100644
      engine.shutdown();
  }
  
-@@ -919,15 +930,6 @@ fn verified_race_leaves_an_address_that_accepts_but_never_answers() {
+@@ -554,6 +575,11 @@ fn transport_flood_backs_off_and_retransmits_without_reexecution() {
+     assert_eq!(collector.count(|event| matches!(event, EngineEvent::TransportFlood)), 1);
+     assert_eq!(collector.drops(), vec![(DropReason::TransportFlood, false)]);
+     assert_eq!(collector.count(|event| matches!(event, EngineEvent::AuthKeyInvalid { .. })), 0);
++    assert_eq!(
++        collector.matching(|event| matches!(event, EngineEvent::TransportError { .. } | EngineEvent::TransportFlood)),
++        vec![EngineEvent::TransportError { code: -429, proxy_revision: 0 }, EngineEvent::TransportFlood],
++        "the code comes first, as it came, in a session whose proxy was never set"
++    );
+     assert_eq!(server.executions(TAG_TRANSPORT_ERROR_ONCE), 2);
+     assert_eq!(
+         server.with_stats(|stats| stats.state_requests),
+@@ -583,6 +609,16 @@ fn other_transport_errors_reconnect_quickly() {
+             0,
+             "code {code}"
+         );
++        assert_eq!(
++            collector.matching(|event| matches!(event, EngineEvent::TransportError { .. })),
++            vec![EngineEvent::TransportError { code, proxy_revision: 0 }],
++            "code {code}"
++        );
++        assert_eq!(collector.drops(), vec![(DropReason::AddressRejected, false)], "code {code}");
++        let told = collector.first(|event| matches!(event, EngineEvent::TransportError { .. }));
++        let dropped = collector.first(|event| matches!(event, EngineEvent::ConnectionDropped { .. }));
++        let completed = collector.first(|event| matches!(event, EngineEvent::Rpc(RpcEvent::Completed { .. })));
++        assert!(told < dropped && dropped < completed, "code {code}: {told:?} {dropped:?} {completed:?}");
+         engine.shutdown();
+     }
+ }
+@@ -634,6 +670,16 @@ fn handshake_transport_error_restarts_key_generation_without_key_invalid() {
+         3
+     );
+     assert_eq!(collector.count(|event| matches!(event, EngineEvent::AuthKeyCreated { .. })), 1);
++    let told = |code| EngineEvent::TransportError { code, proxy_revision: 0 };
++    let failed = |code| EngineEvent::AuthKeyCreationFailed { reason: format!("transport error {code}") };
++    assert_eq!(
++        collector.matching(|event| matches!(
++            event,
++            EngineEvent::TransportError { .. } | EngineEvent::AuthKeyCreationFailed { .. } | EngineEvent::TransportFlood
++        )),
++        vec![told(-404), failed(-404), told(-444), failed(-444), told(-429), failed(-429), EngineEvent::TransportFlood],
++        "each code comes before what it leads to"
++    );
+     engine.shutdown();
+ }
+ 
+@@ -919,15 +965,6 @@ fn verified_race_leaves_an_address_that_accepts_but_never_answers() {
      drop(keeper);
  }
  
@@ -7685,7 +7817,7 @@ index 8b16bc3..95642b7 100644
 +find-msvc-tools = "=0.1.13"
 +windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
 diff --git a/crates/mtproto-ffi/include/mtproto_engine.h b/crates/mtproto-ffi/include/mtproto_engine.h
-index 4f4afe5..a889712 100644
+index 4f4afe5..a9725af 100644
 --- a/crates/mtproto-ffi/include/mtproto_engine.h
 +++ b/crates/mtproto-ffi/include/mtproto_engine.h
 @@ -138,6 +138,15 @@ enum {
@@ -7723,7 +7855,7 @@ index 4f4afe5..a889712 100644
      MTEventKindConnectionState = 18,
      MTEventKindAuthKeyRequired = 19,
      MTEventKindAuthKeyInvalid = 20,
-@@ -206,6 +222,11 @@ typedef enum {
+@@ -206,6 +222,21 @@ typedef enum {
         came), otherwise it never ran there. value1: seconds to wait before sending it again, what is left
         of a flood wait or a server error's delay (0 when it may have run). */
      MTEventKindReleased = 36,
@@ -7732,10 +7864,20 @@ index 4f4afe5..a889712 100644
 +       destination host as the session names it (a datacenter address, never the proxy it goes
 +       through), code its port, flags what it carries (MTRouteTcp or MTRouteHttp). */
 +    MTEventKindRouteRequired = 37,
++    /* The session's connection got a transport error from the server or the proxy before it, as a frame
++       or over HTTP as a status: code the code as it came (-444, -403, ...; a status as its negative),
++       request_id the session's proxy serial at that moment. The serial is 0 as set up and grows by one,
++       wrapping, with each mt_session_set_proxy the session processes, one with the proxy it already has
++       included; mt_session_set_proxy_addresses leaves it alone. A host that counts its own calls the
++       same way can tell which proxy a late event belongs to. The event only observes: it comes before
++       anything the code leads to (MTEventKindAuthKeyCreationFailed during a handshake,
++       MTEventKindConnectionDropped, ...), and what the session does about the code does not depend on
++       it. */
++    MTEventKindTransportError = 38,
  } MTEventKind;
  
  enum {
-@@ -213,10 +234,30 @@ enum {
+@@ -213,10 +244,30 @@ enum {
      MTAuthKeyCreatedPermanent = 1 << 1,
  };
  
@@ -7766,7 +7908,7 @@ index 4f4afe5..a889712 100644
  enum {
      MTConnectionStateNetworkAvailable = 1 << 0,
      MTConnectionStateConnected = 1 << 1,
-@@ -255,6 +296,19 @@ typedef struct {
+@@ -255,6 +306,19 @@ typedef struct {
  
  typedef void (*MTEventCallback)(void *context, MTSessionHandle session, const MTEvent *event);
  typedef void (*MTLogCallback)(void *context, int32_t level, MTString message);
@@ -7786,7 +7928,7 @@ index 4f4afe5..a889712 100644
  
  MTEngine *mt_engine_create(uint32_t worker_threads, void *context, MTEventCallback on_event, MTLogCallback on_log);
  void mt_engine_destroy(MTEngine *engine);
-@@ -316,6 +370,37 @@ void mt_session_set_auth_key(MTEngine *engine, MTSessionHandle session, MTBytes
+@@ -316,6 +380,37 @@ void mt_session_set_auth_key(MTEngine *engine, MTSessionHandle session, MTBytes
  void mt_session_set_addresses(MTEngine *engine, MTSessionHandle session, const MTAddress *addresses, size_t count);
  void mt_session_set_obfuscation_dc_id(MTEngine *engine, MTSessionHandle session, int16_t dc_id);
  void mt_session_set_proxy(MTEngine *engine, MTSessionHandle session, const MTProxy *proxy);
@@ -7824,7 +7966,7 @@ index 4f4afe5..a889712 100644
  
  enum {
      MTTransportTcp = 0,
-@@ -326,6 +411,11 @@ enum {
+@@ -326,6 +421,11 @@ enum {
  /* Which transports the session may use; HTTP goes to `http_port`, or to each address's own port
     when it is 0. Auto stays on TCP while TCP answers and moves to HTTP while it does not. */
  void mt_session_set_transport(MTEngine *engine, MTSessionHandle session, uint8_t transport, uint16_t http_port);
@@ -7837,7 +7979,7 @@ index 4f4afe5..a889712 100644
  /* Telegram Web's endpoints on one front, through host streams; used only while a stream host is set
     and no proxy is. When TCP gets no answer, Auto tries the WebSocket endpoint (ws_path, carrying the
 diff --git a/crates/mtproto-ffi/src/lib.rs b/crates/mtproto-ffi/src/lib.rs
-index 68468db..8925330 100644
+index 68468db..877fd31 100644
 --- a/crates/mtproto-ffi/src/lib.rs
 +++ b/crates/mtproto-ffi/src/lib.rs
 @@ -2,26 +2,26 @@
@@ -7869,7 +8011,7 @@ index 68468db..8925330 100644
  };
  
 -pub const ABI_VERSION: u32 = 5;
-+pub const ABI_VERSION: u32 = 9;
++pub const ABI_VERSION: u32 = 10;
  
  /// `MTEvent.flags` of `MTEventKindReleased`: the request may have reached the server.
  pub const RELEASED_MAY_HAVE_RUN: u32 = 1 << 0;
@@ -7917,7 +8059,20 @@ index 68468db..8925330 100644
                  self.emit(session, event, None);
              }
              EngineEvent::AuthKeyRequired => self.emit(session, blank(19), None),
-@@ -381,6 +395,17 @@ impl EngineCallbacks for Bridge {
+@@ -345,6 +359,12 @@ impl EngineCallbacks for Bridge {
+                 self.emit(session, event, None);
+             }
+             EngineEvent::TransportFlood => self.emit(session, blank(23), None),
++            EngineEvent::TransportError { code, proxy_revision } => {
++                let mut event = blank(38);
++                event.code = code;
++                event.request_id = proxy_revision;
++                self.emit(session, event, None);
++            }
+             EngineEvent::PermanentKeyInvalid => self.emit(session, blank(32), None),
+             EngineEvent::TemporaryKeyInUse { key_id, expires_at, adopted, dc_id, permanent_key_id } => {
+                 let mut event = blank(33);
+@@ -381,6 +401,17 @@ impl EngineCallbacks for Bridge {
                  self.emit(session, event, None);
              }
              EngineEvent::Closed => self.emit(session, blank(26), None),
@@ -7935,7 +8090,7 @@ index 68468db..8925330 100644
              EngineEvent::RouteMemory { memory } => self.emit(session, blank(35), Some(memory)),
          }
      }
-@@ -466,7 +491,17 @@ impl Bridge {
+@@ -466,7 +497,17 @@ impl Bridge {
                      }
                  }
              }
@@ -7954,7 +8109,7 @@ index 68468db..8925330 100644
              RpcEvent::Update { body } => self.emit(session, blank(14), Some(body)),
              RpcEvent::TimeDifferenceUpdated { difference } => {
                  let mut event = blank(15);
-@@ -646,6 +681,7 @@ unsafe fn request(value: &MTRequest) -> RpcRequest {
+@@ -646,6 +687,7 @@ unsafe fn request(value: &MTRequest) -> RpcRequest {
              timeout_timer: flags & 32 != 0,
              without_updates: flags & 64 != 0,
              delegate_retry_decisions: flags & 128 != 0,
@@ -7962,7 +8117,7 @@ index 68468db..8925330 100644
              expected_response_size: value.expected_response_size,
          },
          invoke_after: (value.invoke_after != 0).then_some(RequestId(value.invoke_after)),
-@@ -658,9 +694,41 @@ unsafe fn engine<'a>(pointer: *mut MTEngine) -> Option<&'a Engine> {
+@@ -658,9 +700,41 @@ unsafe fn engine<'a>(pointer: *mut MTEngine) -> Option<&'a Engine> {
  
  #[unsafe(no_mangle)]
  pub extern "C" fn mt_engine_abi_version() -> u32 {
@@ -8004,7 +8159,7 @@ index 68468db..8925330 100644
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_create(
      worker_threads: u32,
-@@ -668,6 +736,7 @@ pub unsafe extern "C" fn mt_engine_create(
+@@ -668,6 +742,7 @@ pub unsafe extern "C" fn mt_engine_create(
      on_event: MTEventCallback,
      on_log: MTLogCallback,
  ) -> *mut MTEngine {
@@ -8012,7 +8167,7 @@ index 68468db..8925330 100644
      let mut config = EngineConfig::default();
      if worker_threads > 0 {
          config.worker_threads = worker_threads as usize;
-@@ -682,6 +751,7 @@ pub unsafe extern "C" fn mt_engine_create(
+@@ -682,6 +757,7 @@ pub unsafe extern "C" fn mt_engine_create(
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_destroy(pointer: *mut MTEngine) {
@@ -8020,7 +8175,7 @@ index 68468db..8925330 100644
      if pointer.is_null() {
          return;
      }
-@@ -692,11 +762,13 @@ pub unsafe extern "C" fn mt_engine_destroy(pointer: *mut MTEngine) {
+@@ -692,11 +768,13 @@ pub unsafe extern "C" fn mt_engine_destroy(pointer: *mut MTEngine) {
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_next_request_id(pointer: *mut MTEngine) -> u64 {
@@ -8034,7 +8189,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_network_available(available != 0);
      }
-@@ -706,6 +778,7 @@ pub unsafe extern "C" fn mt_engine_set_network_available(pointer: *mut MTEngine,
+@@ -706,6 +784,7 @@ pub unsafe extern "C" fn mt_engine_set_network_available(pointer: *mut MTEngine,
  /// empty when unknown. What sessions learn about TCP and HTTP is remembered per key.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_set_network(pointer: *mut MTEngine, key: MTBytes) {
@@ -8042,7 +8197,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_network(&unsafe { bytes(key) });
      }
-@@ -714,6 +787,7 @@ pub unsafe extern "C" fn mt_engine_set_network(pointer: *mut MTEngine, key: MTBy
+@@ -714,6 +793,7 @@ pub unsafe extern "C" fn mt_engine_set_network(pointer: *mut MTEngine, key: MTBy
  /// The route memory an earlier run reported with `MTEventKindRouteMemoryChanged`.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_set_route_memory(pointer: *mut MTEngine, memory: MTBytes) {
@@ -8050,7 +8205,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_route_memory(&unsafe { bytes(memory) });
      }
-@@ -774,6 +848,7 @@ impl StreamHost for FfiStreamHost {
+@@ -774,6 +854,7 @@ impl StreamHost for FfiStreamHost {
  /// the engine.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_set_stream_host(pointer: *mut MTEngine, host: *const MTStreamHost) {
@@ -8058,7 +8213,7 @@ index 68468db..8925330 100644
      if pointer.is_null() {
          return;
      }
-@@ -788,6 +863,7 @@ pub unsafe extern "C" fn mt_engine_set_stream_host(pointer: *mut MTEngine, host:
+@@ -788,6 +869,7 @@ pub unsafe extern "C" fn mt_engine_set_stream_host(pointer: *mut MTEngine, host:
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_stream_opened(pointer: *mut MTEngine, stream: u64) {
@@ -8066,7 +8221,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.stream_opened(StreamId(stream));
      }
-@@ -796,6 +872,7 @@ pub unsafe extern "C" fn mt_stream_opened(pointer: *mut MTEngine, stream: u64) {
+@@ -796,6 +878,7 @@ pub unsafe extern "C" fn mt_stream_opened(pointer: *mut MTEngine, stream: u64) {
  /// 1 while the host may go on receiving; 0 when it should wait for the resume callback.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_stream_received(pointer: *mut MTEngine, stream: u64, bytes: MTBytes) -> u8 {
@@ -8074,7 +8229,7 @@ index 68468db..8925330 100644
      let Some(engine) = (unsafe { engine(pointer) }) else {
          return 0;
      };
-@@ -805,6 +882,7 @@ pub unsafe extern "C" fn mt_stream_received(pointer: *mut MTEngine, stream: u64,
+@@ -805,6 +888,7 @@ pub unsafe extern "C" fn mt_stream_received(pointer: *mut MTEngine, stream: u64,
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_stream_sent(pointer: *mut MTEngine, stream: u64, count: usize) {
@@ -8082,7 +8237,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.stream_sent(StreamId(stream), count);
      }
-@@ -813,6 +891,7 @@ pub unsafe extern "C" fn mt_stream_sent(pointer: *mut MTEngine, stream: u64, cou
+@@ -813,6 +897,7 @@ pub unsafe extern "C" fn mt_stream_sent(pointer: *mut MTEngine, stream: u64, cou
  /// The stream ended: `error` empty for a clean end.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_stream_closed(pointer: *mut MTEngine, stream: u64, error: MTString) {
@@ -8090,7 +8245,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          let error = unsafe { text(error) };
          engine.stream_closed(StreamId(stream), (!error.is_empty()).then_some(error));
-@@ -827,6 +906,7 @@ pub unsafe extern "C" fn mt_session_set_web_endpoint(
+@@ -827,6 +912,7 @@ pub unsafe extern "C" fn mt_session_set_web_endpoint(
      session: u64,
      endpoint: *const MTWebEndpoint,
  ) {
@@ -8098,7 +8253,7 @@ index 68468db..8925330 100644
      let Some(engine) = (unsafe { engine(pointer) }) else {
          return;
      };
-@@ -848,6 +928,7 @@ pub unsafe extern "C" fn mt_session_set_web_endpoint(
+@@ -848,6 +934,7 @@ pub unsafe extern "C" fn mt_session_set_web_endpoint(
  /// `/apiw1`, or `/apiws_test` and `/apiw_test1` for the test servers).
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_use_telegram_web(pointer: *mut MTEngine, session: u64, test: u8) {
@@ -8106,7 +8261,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.use_telegram_web(SessionHandle(session), test != 0);
      }
-@@ -855,6 +936,7 @@ pub unsafe extern "C" fn mt_session_use_telegram_web(pointer: *mut MTEngine, ses
+@@ -855,6 +942,7 @@ pub unsafe extern "C" fn mt_session_use_telegram_web(pointer: *mut MTEngine, ses
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_reset_connections(pointer: *mut MTEngine) {
@@ -8114,7 +8269,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.reset_connections();
      }
-@@ -862,6 +944,7 @@ pub unsafe extern "C" fn mt_engine_reset_connections(pointer: *mut MTEngine) {
+@@ -862,6 +950,7 @@ pub unsafe extern "C" fn mt_engine_reset_connections(pointer: *mut MTEngine) {
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_create(pointer: *mut MTEngine, setup: *const MTSessionSetup) -> u64 {
@@ -8122,7 +8277,7 @@ index 68468db..8925330 100644
      let (Some(engine), false) = (unsafe { engine(pointer) }, setup.is_null()) else {
          return 0;
      };
-@@ -931,6 +1014,7 @@ pub unsafe extern "C" fn mt_session_create(pointer: *mut MTEngine, setup: *const
+@@ -931,6 +1020,7 @@ pub unsafe extern "C" fn mt_session_create(pointer: *mut MTEngine, setup: *const
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_destroy(pointer: *mut MTEngine, session: u64) {
@@ -8130,7 +8285,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.destroy_session(SessionHandle(session));
      }
-@@ -938,6 +1022,7 @@ pub unsafe extern "C" fn mt_session_destroy(pointer: *mut MTEngine, session: u64
+@@ -938,6 +1028,7 @@ pub unsafe extern "C" fn mt_session_destroy(pointer: *mut MTEngine, session: u64
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_send(pointer: *mut MTEngine, session: u64, value: *const MTRequest) {
@@ -8138,7 +8293,7 @@ index 68468db..8925330 100644
      if let (Some(engine), false) = (unsafe { engine(pointer) }, value.is_null()) {
          engine.send(SessionHandle(session), unsafe { request(&*value) });
      }
-@@ -945,6 +1030,7 @@ pub unsafe extern "C" fn mt_session_send(pointer: *mut MTEngine, session: u64, v
+@@ -945,6 +1036,7 @@ pub unsafe extern "C" fn mt_session_send(pointer: *mut MTEngine, session: u64, v
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_cancel(pointer: *mut MTEngine, session: u64, id: u64) {
@@ -8146,7 +8301,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.cancel(SessionHandle(session), RequestId(id));
      }
-@@ -952,6 +1038,7 @@ pub unsafe extern "C" fn mt_session_cancel(pointer: *mut MTEngine, session: u64,
+@@ -952,6 +1044,7 @@ pub unsafe extern "C" fn mt_session_cancel(pointer: *mut MTEngine, session: u64,
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_paused(pointer: *mut MTEngine, session: u64, paused: u8) {
@@ -8154,7 +8309,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_paused(SessionHandle(session), paused != 0);
      }
-@@ -959,6 +1046,7 @@ pub unsafe extern "C" fn mt_session_set_paused(pointer: *mut MTEngine, session:
+@@ -959,6 +1052,7 @@ pub unsafe extern "C" fn mt_session_set_paused(pointer: *mut MTEngine, session:
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_online(pointer: *mut MTEngine, session: u64, online: u8) {
@@ -8162,7 +8317,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_online(SessionHandle(session), online != 0);
      }
-@@ -974,6 +1062,7 @@ pub unsafe extern "C" fn mt_session_set_auth_key(
+@@ -974,6 +1068,7 @@ pub unsafe extern "C" fn mt_session_set_auth_key(
      has_init_hash: u8,
      init_hash: MTString,
  ) {
@@ -8170,7 +8325,7 @@ index 68468db..8925330 100644
      let Some(engine) = (unsafe { engine(pointer) }) else {
          return;
      };
-@@ -995,6 +1084,7 @@ pub unsafe extern "C" fn mt_session_set_addresses(
+@@ -995,6 +1090,7 @@ pub unsafe extern "C" fn mt_session_set_addresses(
      values: *const MTAddress,
      count: usize,
  ) {
@@ -8178,7 +8333,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_addresses(SessionHandle(session), unsafe { addresses(values, count) });
      }
-@@ -1002,6 +1092,7 @@ pub unsafe extern "C" fn mt_session_set_addresses(
+@@ -1002,6 +1098,7 @@ pub unsafe extern "C" fn mt_session_set_addresses(
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_obfuscation_dc_id(pointer: *mut MTEngine, session: u64, dc_id: i16) {
@@ -8186,7 +8341,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_obfuscation_dc_id(SessionHandle(session), dc_id);
      }
-@@ -1009,12 +1100,50 @@ pub unsafe extern "C" fn mt_session_set_obfuscation_dc_id(pointer: *mut MTEngine
+@@ -1009,12 +1106,50 @@ pub unsafe extern "C" fn mt_session_set_obfuscation_dc_id(pointer: *mut MTEngine
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_proxy(pointer: *mut MTEngine, session: u64, value: *const MTProxy) {
@@ -8237,7 +8392,7 @@ index 68468db..8925330 100644
  /// The engine makes temporary keys that live `lifetime` seconds and binds them to the session's key,
  /// which becomes the permanent key, before anything else goes out. Without `make_permanent_key` a
  /// session with no key asks the host for the permanent key instead of making one. `temporary_key`, when
-@@ -1029,6 +1158,7 @@ pub unsafe extern "C" fn mt_session_enable_pfs(
+@@ -1029,6 +1164,7 @@ pub unsafe extern "C" fn mt_session_enable_pfs(
      make_permanent_key: u8,
      temporary_key: *const MTTemporaryKey,
  ) -> u8 {
@@ -8245,7 +8400,7 @@ index 68468db..8925330 100644
      let Some(engine) = (unsafe { engine(pointer) }) else {
          return 0;
      };
-@@ -1051,6 +1181,7 @@ pub unsafe extern "C" fn mt_session_offer_temporary_key(
+@@ -1051,6 +1187,7 @@ pub unsafe extern "C" fn mt_session_offer_temporary_key(
      session: u64,
      key: *const MTTemporaryKey,
  ) {
@@ -8253,7 +8408,7 @@ index 68468db..8925330 100644
      if let (Some(engine), false) = (unsafe { engine(pointer) }, key.is_null())
          && let Some(key) = unsafe { bound_temporary_key(&*key) }
      {
-@@ -1061,6 +1192,7 @@ pub unsafe extern "C" fn mt_session_offer_temporary_key(
+@@ -1061,6 +1198,7 @@ pub unsafe extern "C" fn mt_session_offer_temporary_key(
  /// Whether a PFS session without a permanent key may make one itself (1) or waits for the host's (0).
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_allow_permanent_key(pointer: *mut MTEngine, session: u64, allowed: u8) {
@@ -8261,7 +8416,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.allow_permanent_key(SessionHandle(session), allowed != 0);
      }
-@@ -1084,6 +1216,7 @@ unsafe fn bound_temporary_key(value: &MTTemporaryKey) -> Option<BoundTemporaryKe
+@@ -1084,6 +1222,7 @@ unsafe fn bound_temporary_key(value: &MTTemporaryKey) -> Option<BoundTemporaryKe
  /// `transport`: 0 TCP, 1 HTTP, 2 TCP falling back to HTTP. `http_port` 0 keeps each address's port.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_transport(pointer: *mut MTEngine, session: u64, transport: u8, http_port: u16) {
@@ -8269,7 +8424,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          let preference = match transport {
              1 => TransportPreference::Http,
-@@ -1094,6 +1227,22 @@ pub unsafe extern "C" fn mt_session_set_transport(pointer: *mut MTEngine, sessio
+@@ -1094,6 +1233,22 @@ pub unsafe extern "C" fn mt_session_set_transport(pointer: *mut MTEngine, sessio
      }
  }
  
@@ -8292,7 +8447,7 @@ index 68468db..8925330 100644
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_update_environment(
      pointer: *mut MTEngine,
-@@ -1101,6 +1250,7 @@ pub unsafe extern "C" fn mt_session_update_environment(
+@@ -1101,6 +1256,7 @@ pub unsafe extern "C" fn mt_session_update_environment(
      value: *const MTEnvironment,
      noop: *const MTRequest,
  ) {
@@ -8300,7 +8455,7 @@ index 68468db..8925330 100644
      if let (Some(engine), false) = (unsafe { engine(pointer) }, value.is_null()) {
          let noop = (!noop.is_null()).then(|| unsafe { request(&*noop) });
          engine.update_environment(SessionHandle(session), unsafe { environment(&*value) }, noop);
-@@ -1109,6 +1259,7 @@ pub unsafe extern "C" fn mt_session_update_environment(
+@@ -1109,6 +1265,7 @@ pub unsafe extern "C" fn mt_session_update_environment(
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_auth_token_ready(pointer: *mut MTEngine, session: u64, ready: u8) {
@@ -8308,7 +8463,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_auth_token_ready(SessionHandle(session), ready != 0);
      }
-@@ -1122,6 +1273,7 @@ pub unsafe extern "C" fn mt_session_resolve_apns(
+@@ -1122,6 +1279,7 @@ pub unsafe extern "C" fn mt_session_resolve_apns(
      nonce: MTString,
      secret: MTString,
  ) {
@@ -8316,7 +8471,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          let verification = Verification::Apns { nonce: unsafe { text(nonce) }, secret: unsafe { text(secret) } };
          engine.resolve_verification(SessionHandle(session), RequestId(id), verification);
-@@ -1130,6 +1282,7 @@ pub unsafe extern "C" fn mt_session_resolve_apns(
+@@ -1130,6 +1288,7 @@ pub unsafe extern "C" fn mt_session_resolve_apns(
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_resolve_recaptcha(pointer: *mut MTEngine, session: u64, id: u64, token: MTString) {
@@ -8324,7 +8479,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          let verification = Verification::Recaptcha { token: unsafe { text(token) } };
          engine.resolve_verification(SessionHandle(session), RequestId(id), verification);
-@@ -1144,6 +1297,7 @@ pub unsafe extern "C" fn mt_session_fail_request(
+@@ -1144,6 +1303,7 @@ pub unsafe extern "C" fn mt_session_fail_request(
      code: i32,
      message: MTString,
  ) {
@@ -8332,7 +8487,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.fail_request(SessionHandle(session), RequestId(id), code, unsafe { text(message) });
      }
-@@ -1151,6 +1305,7 @@ pub unsafe extern "C" fn mt_session_fail_request(
+@@ -1151,6 +1311,7 @@ pub unsafe extern "C" fn mt_session_fail_request(
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_decide_retry(pointer: *mut MTEngine, session: u64, id: u64, retry: u8) {
@@ -8340,7 +8495,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.decide_retry(SessionHandle(session), RequestId(id), retry != 0);
      }
-@@ -1158,6 +1313,7 @@ pub unsafe extern "C" fn mt_session_decide_retry(pointer: *mut MTEngine, session
+@@ -1158,6 +1319,7 @@ pub unsafe extern "C" fn mt_session_decide_retry(pointer: *mut MTEngine, session
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_invalidate_initialization(pointer: *mut MTEngine, session: u64) {
@@ -8348,7 +8503,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.invalidate_initialization(SessionHandle(session));
      }
-@@ -1165,6 +1321,7 @@ pub unsafe extern "C" fn mt_session_invalidate_initialization(pointer: *mut MTEn
+@@ -1165,6 +1327,7 @@ pub unsafe extern "C" fn mt_session_invalidate_initialization(pointer: *mut MTEn
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_time_difference(pointer: *mut MTEngine, session: u64, difference: f64) {
@@ -8356,7 +8511,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_time_difference(SessionHandle(session), difference);
      }
-@@ -1172,6 +1329,7 @@ pub unsafe extern "C" fn mt_session_set_time_difference(pointer: *mut MTEngine,
+@@ -1172,6 +1335,7 @@ pub unsafe extern "C" fn mt_session_set_time_difference(pointer: *mut MTEngine,
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_destroy_auth_key(pointer: *mut MTEngine, session: u64) {
@@ -8364,7 +8519,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.destroy_auth_key(SessionHandle(session));
      }
-@@ -1179,6 +1337,7 @@ pub unsafe extern "C" fn mt_session_destroy_auth_key(pointer: *mut MTEngine, ses
+@@ -1179,6 +1343,7 @@ pub unsafe extern "C" fn mt_session_destroy_auth_key(pointer: *mut MTEngine, ses
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_drain(pointer: *mut MTEngine, session: u64, deadline: f64) {
@@ -8372,7 +8527,7 @@ index 68468db..8925330 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.drain(SessionHandle(session), deadline);
      }
-@@ -1186,6 +1345,7 @@ pub unsafe extern "C" fn mt_session_drain(pointer: *mut MTEngine, session: u64,
+@@ -1186,6 +1351,7 @@ pub unsafe extern "C" fn mt_session_drain(pointer: *mut MTEngine, session: u64,
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_buffer_data(buffer: *const MTBuffer) -> *const u8 {
@@ -8380,7 +8535,7 @@ index 68468db..8925330 100644
      if buffer.is_null() {
          return std::ptr::null();
      }
-@@ -1194,6 +1354,7 @@ pub unsafe extern "C" fn mt_buffer_data(buffer: *const MTBuffer) -> *const u8 {
+@@ -1194,6 +1360,7 @@ pub unsafe extern "C" fn mt_buffer_data(buffer: *const MTBuffer) -> *const u8 {
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_buffer_length(buffer: *const MTBuffer) -> usize {
@@ -8388,7 +8543,7 @@ index 68468db..8925330 100644
      if buffer.is_null() {
          return 0;
      }
-@@ -1202,7 +1363,128 @@ pub unsafe extern "C" fn mt_buffer_length(buffer: *const MTBuffer) -> usize {
+@@ -1202,7 +1369,128 @@ pub unsafe extern "C" fn mt_buffer_length(buffer: *const MTBuffer) -> usize {
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_buffer_free(buffer: *mut MTBuffer) {
@@ -8518,7 +8673,7 @@ index 68468db..8925330 100644
 +    }
 +}
 diff --git a/crates/mtproto-ffi/tests/ffi.rs b/crates/mtproto-ffi/tests/ffi.rs
-index d0da713..887a2be 100644
+index d0da713..ac2ec39 100644
 --- a/crates/mtproto-ffi/tests/ffi.rs
 +++ b/crates/mtproto-ffi/tests/ffi.rs
 @@ -51,7 +51,7 @@ fn c_abi_end_to_end() {
@@ -8526,7 +8681,7 @@ index d0da713..887a2be 100644
      let engine = unsafe { mt_engine_create(2, sink as *const Sink as *mut c_void, Some(on_event), None) };
      assert!(!engine.is_null());
 -    assert_eq!(mt_engine_abi_version(), 5);
-+    assert_eq!(mt_engine_abi_version(), 9);
++    assert_eq!(mt_engine_abi_version(), 10);
      let host = server.address.ip().to_string();
      let address = MTAddress { host: string(&host), port: server.address.port(), secret: bytes(&[]) };
      let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
@@ -8545,7 +8700,7 @@ index d0da713..887a2be 100644
 +    }
 +    let _: MTPanicCallback = None::<unsafe extern "C" fn(*mut c_void, MTString, MTString)>;
 +    let _: unsafe extern "C" fn(*mut c_void, MTPanicCallback) = mt_set_panic_callback;
-+    assert_eq!(mt_engine_abi_version(), 9);
++    assert_eq!(mt_engine_abi_version(), 10);
 +}
 +
  #[test]
@@ -8587,9 +8742,465 @@ index d0da713..887a2be 100644
      let mut expected: Vec<(String, usize)> = vec![
          ("MTBytes".into(), size_of::<MTBytes>()),
          ("MTString".into(), size_of::<MTString>()),
+diff --git a/crates/mtproto-ffi/tests/ffi_abi10.rs b/crates/mtproto-ffi/tests/ffi_abi10.rs
+new file mode 100644
+index 0000000..74be079
+--- /dev/null
++++ b/crates/mtproto-ffi/tests/ffi_abi10.rs
+@@ -0,0 +1,450 @@
++//! What ABI 10 added, through the C ABI with real callbacks: `MTEventKindTransportError`, the transport error
++//! code a connection got with the session's proxy serial, beside every event and recovery there was before.
++//! `Stats::client_proxies` reads on the server what `MTEnvironment` names as the session's proxy.
++
++use std::ffi::c_void;
++use std::sync::{Condvar, Mutex};
++use std::time::{Duration, Instant};
++
++use mtproto_engine::mtproto_core::auth_key::AuthKey;
++use mtproto_engine::mtproto_core::test_support::{ServerHandshakeBehavior, test_rsa_public_key_pem};
++use mtproto_engine_ffi::*;
++use mtproto_testserver::*;
++
++const COMPLETED: u32 = 1;
++const AUTH_KEY_INVALID: u32 = 20;
++const AUTH_KEY_CREATED: u32 = 21;
++const AUTH_KEY_CREATION_FAILED: u32 = 22;
++const TRANSPORT_FLOOD: u32 = 23;
++const ADDRESS_RESULT: u32 = 25;
++const CONNECTION_DROPPED: u32 = 29;
++const TRANSPORT_ERROR: u32 = 38;
++const WAIT: Duration = Duration::from_secs(20);
++/// A name no resolver answers (RFC 6761).
++const NAME: &str = "proxy.invalid";
++
++#[derive(Clone, Debug)]
++struct Seen {
++    session: u64,
++    kind: u32,
++    request: u64,
++    code: i32,
++    flags: u32,
++    text: String,
++}
++
++#[derive(Default)]
++struct Sink {
++    events: Mutex<Vec<Seen>>,
++    condvar: Condvar,
++}
++
++impl Sink {
++    fn wait(&self, predicate: impl Fn(&[Seen]) -> bool) -> bool {
++        let deadline = Instant::now() + WAIT;
++        let mut events = self.events.lock().unwrap();
++        while !predicate(&events) {
++            let now = Instant::now();
++            if now >= deadline {
++                return false;
++            }
++            events = self.condvar.wait_timeout(events, deadline - now).unwrap().0;
++        }
++        true
++    }
++
++    fn of_session(&self, session: u64) -> Vec<Seen> {
++        self.events.lock().unwrap().iter().filter(|event| event.session == session).cloned().collect()
++    }
++
++    fn of(&self, session: u64, kind: u32) -> Vec<Seen> {
++        self.of_session(session).into_iter().filter(|event| event.kind == kind).collect()
++    }
++
++    /// The kinds among `kinds` the session got, in order.
++    fn order(&self, session: u64, kinds: &[u32]) -> Vec<u32> {
++        self.of_session(session).iter().map(|event| event.kind).filter(|kind| kinds.contains(kind)).collect()
++    }
++
++    /// The code and the serial of each transport error of the session, in order.
++    fn errors(&self, session: u64) -> Vec<(i32, u64)> {
++        self.of(session, TRANSPORT_ERROR).iter().map(|event| (event.code, event.request)).collect()
++    }
++}
++
++fn text_of(value: MTString) -> String {
++    if value.data.is_null() {
++        return String::new();
++    }
++    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(value.data, value.length) }).into_owned()
++}
++
++/// Copies what the test needs, and only then frees the payload, as a host must for every event.
++unsafe extern "C" fn on_event(context: *mut c_void, session: u64, event: *const MTEvent) {
++    let sink = unsafe { &*(context as *const Sink) };
++    let event = unsafe { &*event };
++    let seen = Seen {
++        session,
++        kind: event.kind,
++        request: event.request_id,
++        code: event.code,
++        flags: event.flags,
++        text: text_of(event.text),
++    };
++    if !event.payload.is_null() {
++        unsafe { mt_buffer_free(event.payload) };
++    }
++    sink.events.lock().unwrap().push(seen);
++    sink.condvar.notify_all();
++}
++
++fn bytes(data: &[u8]) -> MTBytes {
++    MTBytes { data: data.as_ptr(), length: data.len() }
++}
++
++fn string(text: &str) -> MTString {
++    MTString { data: text.as_ptr(), length: text.len() }
++}
++
++fn proxy(kind: u8, host: &str, port: u16, secret: &[u8]) -> MTProxy {
++    MTProxy { kind, host: string(host), port, username: string(""), password: string(""), secret: bytes(secret) }
++}
++
++fn mtproxy(host: &str, port: u16, secret: &[u8]) -> MTProxy {
++    proxy(2, host, port, secret)
++}
++
++fn no_proxy() -> MTProxy {
++    proxy(0, "", 0, &[])
++}
++
++/// The kinds a host hands over as they are, framing abridged: the engine pads under `dd` and `ee` by itself.
++fn secrets() -> [(&'static str, Vec<u8>); 3] {
++    let prefixed = |first: u8, fill: u8, rest: &[u8]| {
++        let mut secret = vec![first];
++        secret.extend_from_slice(&[fill; 16]);
++        secret.extend_from_slice(rest);
++        secret
++    };
++    [("plain", vec![0x11; 16]), ("dd", prefixed(0xdd, 0x22, &[])), ("ee", prefixed(0xee, 0x33, b"www.example.com"))]
++}
++
++fn mtproxy_server(key: &AuthKey, secret: &[u8]) -> TestServer {
++    TestServer::start(vec![key.clone()], ServerOptions { secret: Some(secret.to_vec()), ..Default::default() })
++}
++
++fn generating_options(secret: Option<&[u8]>, fault: i32) -> ServerOptions {
++    ServerOptions {
++        secret: secret.map(<[u8]>::to_vec),
++        handshake: ServerHandshakeBehavior { live_time: true, ..Default::default() },
++        handshake_faults: vec![HandshakeFault::TransportError(fault)],
++        ..Default::default()
++    }
++}
++
++struct Rig {
++    engine: *mut MTEngine,
++    sink: &'static Sink,
++}
++
++impl Rig {
++    fn new() -> Self {
++        let sink: &'static Sink = Box::leak(Box::default());
++        let engine = unsafe { mt_engine_create(1, sink as *const Sink as *mut c_void, Some(on_event), None) };
++        assert!(!engine.is_null());
++        Self { engine, sink }
++    }
++
++    /// A main session; `pems` makes it generate its key.
++    fn session(
++        &self,
++        address: (&str, u16),
++        proxy: MTProxy,
++        key: &[u8],
++        pems: &[MTString],
++        environment: Option<&MTEnvironment>,
++        paused: u8,
++    ) -> u64 {
++        let address = MTAddress { host: string(address.0), port: address.1, secret: bytes(&[]) };
++        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
++        let salt = MTSaltEntry { salt: SERVER_SALT, valid_since: now - 60.0, valid_until: now + 3600.0 };
++        let setup = MTSessionSetup {
++            datacenter_id: 2,
++            obfuscation_dc_id: 2,
++            role: 0,
++            framing: 0,
++            addresses: &address,
++            address_count: 1,
++            proxy,
++            auth_key: bytes(key),
++            salts: &salt,
++            salt_count: 1,
++            has_init_hash: 0,
++            init_hash: string(""),
++            generate_key: u8::from(!pems.is_empty()),
++            public_keys_pem: pems.as_ptr(),
++            public_key_count: pems.len(),
++            temp_key_expires_in: 0,
++            environment: environment.map_or(std::ptr::null(), std::ptr::from_ref),
++            time_difference: 0.0,
++            online: 1,
++            paused,
++            keep_connected: 1,
++            idle_disconnect_after: 0.0,
++            request_timeout: 5.0,
++            pfs_lifetime: 0,
++            pfs_make_permanent_key: 0,
++            pfs_temporary_key: std::ptr::null(),
++        };
++        let session = unsafe { mt_session_create(self.engine, &setup) };
++        assert_ne!(session, 0);
++        session
++    }
++
++    /// A session behind an MTProxy: an MTProxy session takes host and port from the proxy and never dials
++    /// its datacenter address, which leads nowhere here (RFC 5737).
++    fn proxied_session(&self, proxy: MTProxy, key: &[u8], environment: Option<&MTEnvironment>) -> u64 {
++        self.session(("192.0.2.1", 443), proxy, key, &[], environment, 0)
++    }
++
++    /// Sends the call and waits until the session completed it.
++    fn run(&self, session: u64, body: &[u8]) {
++        let id = self.send(session, body);
++        self.wait_completed(session, id);
++    }
++
++    fn send(&self, session: u64, body: &[u8]) -> u64 {
++        let id = unsafe { mt_engine_next_request_id(self.engine) };
++        let request = MTRequest { id, body: bytes(body), flags: 0, expected_response_size: 0, invoke_after: 0 };
++        unsafe { mt_session_send(self.engine, session, &request) };
++        id
++    }
++
++    fn wait_completed(&self, session: u64, id: u64) {
++        let done = self.sink.wait(|events| {
++            events.iter().any(|event| event.session == session && event.kind == COMPLETED && event.request == id)
++        });
++        assert!(done, "call {id} did not complete: {:?}", self.sink.of_session(session));
++    }
++
++    fn set_proxy(&self, session: u64, proxy: MTProxy) {
++        unsafe { mt_session_set_proxy(self.engine, session, &proxy) };
++    }
++
++    fn set_proxy_addresses(&self, session: u64, host: &str, addresses: &[&str]) {
++        let addresses: Vec<MTString> = addresses.iter().map(|address| string(address)).collect();
++        unsafe {
++            mt_session_set_proxy_addresses(self.engine, session, string(host), addresses.as_ptr(), addresses.len())
++        };
++    }
++}
++
++impl Drop for Rig {
++    fn drop(&mut self) {
++        unsafe { mt_engine_destroy(self.engine) };
++    }
++}
++
++fn wait_for_connection(server: &TestServer) {
++    let deadline = Instant::now() + WAIT;
++    while server.with_stats(|stats| stats.connections) == 0 {
++        assert!(Instant::now() < deadline, "no connection came");
++        std::thread::sleep(Duration::from_millis(10));
++    }
++}
++
++#[test]
++fn the_header_declares_abi_10() {
++    let header = include_str!("../include/mtproto_engine.h");
++    for declared in ["MTEventKindTransportError = 38,", "The event only observes"] {
++        assert!(header.contains(declared), "{declared}");
++    }
++    assert_eq!(mt_engine_abi_version(), 10);
++}
++
++/// A real answer of each code through each kind of MTProxy, whose frames differ on the wire: the host gets
++/// exactly the code, -444 and -403 apart, with serial 0 of a proxy only ever given at setup, ahead of the events
++/// it got before ABI 10; and the session recovers as it did, sending the call again on a new connection.
++#[test]
++fn a_code_through_an_mtproxy_of_each_kind_comes_first_and_changes_nothing_else() {
++    for (kind, secret) in secrets() {
++        for code in [-444, -403] {
++            let key = random_key(1001);
++            let server = mtproxy_server(&key, &secret);
++            let rig = Rig::new();
++            let session = rig.proxied_session(mtproxy("127.0.0.1", server.address.port(), &secret), key.bytes(), None);
++            let started = Instant::now();
++            rig.run(session, &transport_error_call(code));
++            let what = format!("{kind} {code}: {:?}", rig.sink.of_session(session));
++            assert!(started.elapsed() < Duration::from_secs(4), "{what}");
++            assert_eq!(rig.sink.errors(session), [(code, 0)], "{what}");
++            let told = &rig.sink.of(session, TRANSPORT_ERROR)[0];
++            assert_eq!((told.flags, told.text.as_str()), (0, ""), "the code and the serial is all it says: {what}");
++            assert_eq!(
++                rig.sink.order(session, &[TRANSPORT_ERROR, CONNECTION_DROPPED, COMPLETED]),
++                [TRANSPORT_ERROR, CONNECTION_DROPPED, COMPLETED],
++                "{what}"
++            );
++            assert_eq!(rig.sink.of(session, CONNECTION_DROPPED)[0].text, "address_rejected", "{what}");
++            let legacy = rig.sink.order(session, &[AUTH_KEY_INVALID, AUTH_KEY_CREATION_FAILED, TRANSPORT_FLOOD]);
++            assert!(legacy.is_empty(), "{what}");
++            assert!(rig.sink.of(session, ADDRESS_RESULT).iter().all(|event| event.code == 1), "{what}");
++            assert_eq!(server.executions(TAG_TRANSPORT_ERROR_ONCE), 2, "{what}");
++            assert_eq!(server.with_stats(|stats| stats.transport_errors_sent), 1, "{what}");
++            assert!(server.with_stats(|stats| stats.connections) >= 2, "{what}");
++        }
++    }
++}
++
++/// During a handshake the code comes before the `AuthKeyCreationFailed` it leads to, and the next attempt makes
++/// the key.
++#[test]
++fn a_handshake_error_comes_before_the_failure_it_leads_to() {
++    let secrets = secrets();
++    let (_, secret) = &secrets[1];
++    let server = TestServer::start(Vec::new(), generating_options(Some(secret), -444));
++    let rig = Rig::new();
++    let pem = test_rsa_public_key_pem();
++    let pems = [string(&pem)];
++    let proxy = mtproxy("127.0.0.1", server.address.port(), secret);
++    let session = rig.session(("192.0.2.1", 443), proxy, &[], &pems, None, 0);
++    rig.run(session, &call(7, &[1]));
++    let what = format!("{:?}", rig.sink.of_session(session));
++    assert_eq!(rig.sink.errors(session), [(-444, 0)], "{what}");
++    assert_eq!(
++        rig.sink.order(session, &[TRANSPORT_ERROR, AUTH_KEY_CREATION_FAILED, AUTH_KEY_CREATED, COMPLETED]),
++        [TRANSPORT_ERROR, AUTH_KEY_CREATION_FAILED, AUTH_KEY_CREATED, COMPLETED],
++        "{what}"
++    );
++    assert_eq!(rig.sink.of(session, AUTH_KEY_CREATION_FAILED)[0].text, "transport error -444", "{what}");
++    assert_eq!(rig.sink.of(session, AUTH_KEY_INVALID).len(), 0, "{what}");
++    assert_eq!(server.with_stats(|stats| stats.handshakes), 1, "{what}");
++}
++
++/// The serial a host counts with its calls: an equal setter counts and does nothing else, another proxy counts,
++/// a switch of the secret alone counts, and no address list does. Each server answers one code, so the session
++/// moves on through three of them.
++#[test]
++fn the_serial_counts_every_proxy_setter_and_no_address_list() {
++    let key = random_key(1002);
++    let secret = [0x44u8; 16];
++    let wrong = [0x55u8; 16];
++    let first = mtproxy_server(&key, &secret);
++    let second = mtproxy_server(&key, &secret);
++    let third = mtproxy_server(&key, &secret);
++    let (first_port, second_port, third_port) = (first.address.port(), second.address.port(), third.address.port());
++    let rig = Rig::new();
++    let session = rig.proxied_session(mtproxy("127.0.0.1", first_port, &secret), key.bytes(), None);
++    let plain = call(7, &[1]);
++
++    rig.run(session, &plain);
++    rig.set_proxy(session, mtproxy("127.0.0.1", first_port, &secret));
++    rig.run(session, &plain);
++    assert_eq!(first.with_stats(|stats| stats.connections), 1, "an equal setter keeps the connection");
++    rig.run(session, &transport_error_call(-444));
++    assert_eq!(rig.sink.errors(session), [(-444, 1)]);
++
++    rig.set_proxy_addresses(session, NAME, &["127.0.0.1"]);
++    rig.set_proxy(session, mtproxy(NAME, second_port, &secret));
++    rig.run(session, &plain);
++    rig.set_proxy_addresses(session, NAME, &["127.0.0.1", "127.0.0.2"]);
++    rig.run(session, &transport_error_call(-403));
++    assert_eq!(rig.sink.errors(session), [(-444, 1), (-403, 2)], "neither list counted");
++
++    rig.set_proxy(session, mtproxy("127.0.0.1", third_port, &wrong));
++    wait_for_connection(&third);
++    assert_eq!(third.with_stats(|stats| stats.obfuscation_dc_ids.len()), 0, "the wrong secret gets no further");
++    rig.set_proxy(session, mtproxy("127.0.0.1", third_port, &secret));
++    rig.run(session, &transport_error_call(-444));
++    assert_eq!(
++        rig.sink.errors(session),
++        [(-444, 1), (-403, 2), (-444, 4)],
++        "a refusal without a code tells nothing, and each secret counted"
++    );
++}
++
++/// Over HTTP the status of a call, and the status of a handshake's plain request, come as their negatives.
++#[test]
++fn an_http_status_comes_as_its_negative_code() {
++    let key = random_key(1003);
++    let server = TestServer::start(vec![key.clone()], ServerOptions::default());
++    let rig = Rig::new();
++    let session = rig.session(("127.0.0.1", server.address.port()), no_proxy(), key.bytes(), &[], None, 1);
++    unsafe { mt_session_set_transport(rig.engine, session, 1, 0) };
++    let id = rig.send(session, &transport_error_call(-444));
++    unsafe { mt_session_set_paused(rig.engine, session, 0) };
++    rig.wait_completed(session, id);
++    let what = format!("{:?}", rig.sink.of_session(session));
++    assert_eq!(rig.sink.errors(session), [(-444, 0)], "{what}");
++    assert_eq!(server.with_stats(|stats| stats.http.status_errors), 1, "{what}");
++    assert_eq!(
++        rig.sink.order(session, &[TRANSPORT_ERROR, CONNECTION_DROPPED, COMPLETED]),
++        [TRANSPORT_ERROR, CONNECTION_DROPPED, COMPLETED],
++        "{what}"
++    );
++    assert_eq!(rig.sink.of(session, CONNECTION_DROPPED)[0].text, "address_rejected", "{what}");
++
++    let server = TestServer::start(Vec::new(), generating_options(None, -403));
++    let pem = test_rsa_public_key_pem();
++    let pems = [string(&pem)];
++    let session = rig.session(("127.0.0.1", server.address.port()), no_proxy(), &[], &pems, None, 1);
++    unsafe { mt_session_set_transport(rig.engine, session, 1, 0) };
++    let id = rig.send(session, &call(7, &[1]));
++    unsafe { mt_session_set_paused(rig.engine, session, 0) };
++    rig.wait_completed(session, id);
++    let what = format!("{:?}", rig.sink.of_session(session));
++    assert_eq!(rig.sink.errors(session), [(-403, 0)], "{what}");
++    assert_eq!(
++        rig.sink.order(session, &[TRANSPORT_ERROR, AUTH_KEY_CREATION_FAILED, AUTH_KEY_CREATED, COMPLETED]),
++        [TRANSPORT_ERROR, AUTH_KEY_CREATION_FAILED, AUTH_KEY_CREATED, COMPLETED],
++        "{what}"
++    );
++}
++
++fn environment(client_proxy: Option<(&str, i32)>, init_hash: &str) -> MTEnvironment {
++    let (address, port) = client_proxy.unwrap_or(("", 0));
++    MTEnvironment {
++        layer: 230,
++        api_id: 9,
++        device_model: string("Mac"),
++        system_version: string("26"),
++        app_version: string("1"),
++        system_lang_code: string("en"),
++        lang_pack: string("macos"),
++        lang_code: string("en"),
++        has_proxy: u8::from(client_proxy.is_some()),
++        proxy_address: string(address),
++        proxy_port: port,
++        has_params: 0,
++        params: bytes(&[]),
++        init_hash: string(init_hash),
++        disable_updates: 0,
++    }
++}
++
++/// The server reads the proxy `MTEnvironment` names in the `initConnection` of the next call, a name as a name;
++/// a call with nothing new adds nothing, and without the field the next one says so.
++#[test]
++fn the_environment_proxy_reaches_the_server_until_it_is_removed() {
++    let key = random_key(1004);
++    let secrets = secrets();
++    let (_, secret) = &secrets[0];
++    let server = mtproxy_server(&key, secret);
++    let rig = Rig::new();
++    let named = environment(Some(("proxy.example", 8443)), "named");
++    let port = server.address.port();
++    let session = rig.proxied_session(mtproxy("127.0.0.1", port, secret), key.bytes(), Some(&named));
++    let plain = call(7, &[1]);
++    let observed = || server.with_stats(|stats| (stats.init_connections, stats.client_proxies.clone()));
++    let present = Some(("proxy.example".to_string(), 8443));
++
++    rig.run(session, &plain);
++    assert_eq!(observed(), (1, vec![present.clone()]));
++    rig.run(session, &plain);
++    assert_eq!(observed(), (1, vec![present.clone()]), "nothing new, no new initConnection");
++
++    let removed = environment(None, "removed");
++    unsafe { mt_session_update_environment(rig.engine, session, &removed, std::ptr::null()) };
++    rig.run(session, &plain);
++    assert_eq!(observed(), (2, vec![present, None]));
++}
 diff --git a/crates/mtproto-ffi/tests/ffi_abi6.rs b/crates/mtproto-ffi/tests/ffi_abi6.rs
 new file mode 100644
-index 0000000..77f4b26
+index 0000000..cd2ef4e
 --- /dev/null
 +++ b/crates/mtproto-ffi/tests/ffi_abi6.rs
 @@ -0,0 +1,298 @@
@@ -8805,7 +9416,7 @@ index 0000000..77f4b26
 +    }
 +    assert_eq!((UPDATES_RESET_SERVER_SESSION, UPDATES_RESET_LOCAL_SESSION, UPDATES_RESET_UPDATES_LOST), (1, 2, 3));
 +    assert_eq!(UPDATES_RESET_UPDATES_TOO_LONG, 4);
-+    assert_eq!(mt_engine_abi_version(), 9);
++    assert_eq!(mt_engine_abi_version(), 10);
 +}
 +
 +#[test]
@@ -8893,7 +9504,7 @@ index 0000000..77f4b26
 +}
 diff --git a/crates/mtproto-ffi/tests/ffi_abi8.rs b/crates/mtproto-ffi/tests/ffi_abi8.rs
 new file mode 100644
-index 0000000..73a9f09
+index 0000000..0289420
 --- /dev/null
 +++ b/crates/mtproto-ffi/tests/ffi_abi8.rs
 @@ -0,0 +1,326 @@
@@ -9140,7 +9751,7 @@ index 0000000..73a9f09
 +    let _: unsafe extern "C" fn(*mut MTEngine, u64, u8) = mt_session_set_route_admission;
 +    let _: unsafe extern "C" fn(*mut MTEngine, u64, u64, u8) = mt_session_admit_route;
 +    assert_eq!((ROUTE_TCP, ROUTE_HTTP), (0, 1));
-+    assert_eq!(mt_engine_abi_version(), 9);
++    assert_eq!(mt_engine_abi_version(), 10);
 +    unsafe {
 +        mt_session_set_route_admission(std::ptr::null_mut(), 1, 1);
 +        mt_session_admit_route(std::ptr::null_mut(), 1, 1, 1);
@@ -9225,7 +9836,7 @@ index 0000000..73a9f09
 +}
 diff --git a/crates/mtproto-ffi/tests/ffi_abi9.rs b/crates/mtproto-ffi/tests/ffi_abi9.rs
 new file mode 100644
-index 0000000..27af84c
+index 0000000..e40bfc2
 --- /dev/null
 +++ b/crates/mtproto-ffi/tests/ffi_abi9.rs
 @@ -0,0 +1,184 @@
@@ -9332,7 +9943,7 @@ index 0000000..27af84c
 +        assert!(header.contains(declared), "{declared}");
 +    }
 +    let _: unsafe extern "C" fn(*mut MTEngine, u64, MTString, *const MTString, usize) = mt_session_set_proxy_addresses;
-+    assert_eq!(mt_engine_abi_version(), 9);
++    assert_eq!(mt_engine_abi_version(), 10);
 +    let addresses = [string("127.0.0.1")];
 +    unsafe { mt_session_set_proxy_addresses(std::ptr::null_mut(), 1, string(NAME), addresses.as_ptr(), 1) };
 +}
@@ -9414,7 +10025,7 @@ index 0000000..27af84c
 +    assert!(other.iter().all(|state| state.text2.is_empty()), "{shown:?}");
 +}
 diff --git a/crates/mtproto-ffi/tests/ffi_drain.rs b/crates/mtproto-ffi/tests/ffi_drain.rs
-index 8a9c32b..3ee8d80 100644
+index 8a9c32b..8d74a2d 100644
 --- a/crates/mtproto-ffi/tests/ffi_drain.rs
 +++ b/crates/mtproto-ffi/tests/ffi_drain.rs
 @@ -155,5 +155,5 @@ fn the_header_declares_the_drain_abi() {
@@ -9422,7 +10033,7 @@ index 8a9c32b..3ee8d80 100644
      assert!(header.contains("void mt_session_drain(MTEngine *engine, MTSessionHandle session, double deadline);"));
      assert_eq!(RELEASED_MAY_HAVE_RUN, 1);
 -    assert_eq!(mt_engine_abi_version(), 5);
-+    assert_eq!(mt_engine_abi_version(), 9);
++    assert_eq!(mt_engine_abi_version(), 10);
  }
 diff --git a/crates/mtproto-ffi/tests/sec_rows_zeroize.rs b/crates/mtproto-ffi/tests/sec_rows_zeroize.rs
 index 84ec57f..1b791f7 100644
@@ -9892,7 +10503,7 @@ index 27a3d9b..af8a618 100644
      }
      let target = match upstream {
 diff --git a/crates/mtproto-testserver/src/bin/mtproto-testserver.rs b/crates/mtproto-testserver/src/bin/mtproto-testserver.rs
-index 6abc6f2..4d7192b 100644
+index 6abc6f2..eb8c95b 100644
 --- a/crates/mtproto-testserver/src/bin/mtproto-testserver.rs
 +++ b/crates/mtproto-testserver/src/bin/mtproto-testserver.rs
 @@ -5,7 +5,8 @@ use std::sync::Arc;
@@ -9905,7 +10516,33 @@ index 6abc6f2..4d7192b 100644
  };
  
  /// The datacenter a second server plays with `--api`: the foreign datacenter authorizations are
-@@ -71,6 +72,14 @@ fn main() {
+@@ -31,8 +32,16 @@ fn summary(stats: &Stats) -> String {
+         .iter()
+         .map(|(dc, temporary)| format!("{{\"dc\":{dc},\"temporary\":{temporary}}}"))
+         .collect();
++    let client_proxies: Vec<String> = stats
++        .client_proxies
++        .iter()
++        .map(|proxy| match proxy {
++            Some((address, port)) => format!("{{\"address\":{address:?},\"port\":{port}}}"),
++            None => "null".to_string(),
++        })
++        .collect();
+     format!(
+-        "{{\"connections\":{},\"invoke_after\":{},\"handshakes\":{},\"binds\":{},\"handshake_dcs\":[{}],\"executions\":{},\"init_connections\":{},\"state_requests\":{},\"pings\":{},\"closed_by_client\":{},\"duplicate_msg_ids\":{},\"redelivered_answers\":{},\"obfuscation_dc_ids\":[{}],\"tags\":{{{}}},\"bind_failures\":[{}],\"http_requests\":{},\"help_tests\":{},\"hidden_key_rejections\":{}}}",
++        "{{\"connections\":{},\"invoke_after\":{},\"handshakes\":{},\"binds\":{},\"handshake_dcs\":[{}],\"executions\":{},\"init_connections\":{},\"client_proxies\":[{}],\"state_requests\":{},\"pings\":{},\"closed_by_client\":{},\"duplicate_msg_ids\":{},\"redelivered_answers\":{},\"obfuscation_dc_ids\":[{}],\"tags\":{{{}}},\"bind_failures\":[{}],\"http_requests\":{},\"help_tests\":{},\"hidden_key_rejections\":{}}}",
+         stats.connections,
+         stats.invoke_after,
+         stats.handshakes,
+@@ -40,6 +49,7 @@ fn summary(stats: &Stats) -> String {
+         handshake_dcs.join(","),
+         executions,
+         stats.init_connections,
++        client_proxies.join(","),
+         stats.state_requests,
+         stats.pings,
+         stats.closed_by_client,
+@@ -71,6 +81,14 @@ fn main() {
              "--key-hex" => key = AuthKey::from_slice(&unhex(&args.next().expect("value"))),
              "--secret" => options.secret = Some(unhex(&args.next().expect("value"))),
              "--socks5" => options.socks5 = true,
@@ -9920,8 +10557,25 @@ index 6abc6f2..4d7192b 100644
              other => panic!("unknown argument {other}"),
          }
      }
+@@ -207,3 +225,16 @@ fn main() {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn the_summary_prints_each_client_proxy_and_null_for_none() {
++        let stats = Stats { client_proxies: vec![Some(("proxy.example".into(), 443)), None], ..Default::default() };
++        let printed = summary(&stats);
++        let expected = r#""client_proxies":[{"address":"proxy.example","port":443},null],"#;
++        assert!(printed.contains(expected), "{printed}");
++    }
++}
 diff --git a/crates/mtproto-testserver/src/lib.rs b/crates/mtproto-testserver/src/lib.rs
-index c5686c6..1ad523f 100644
+index c5686c6..1516edf 100644
 --- a/crates/mtproto-testserver/src/lib.rs
 +++ b/crates/mtproto-testserver/src/lib.rs
 @@ -57,6 +57,9 @@ pub const SERVER_PING_ID: i64 = 0x5e57_9149;
@@ -9934,7 +10588,7 @@ index c5686c6..1ad523f 100644
  
  pub fn call(tag: u32, payload: &[u8]) -> Vec<u8> {
      let mut writer = Writer::new();
-@@ -142,15 +145,24 @@ pub enum HttpProxyMode {
+@@ -142,15 +145,27 @@ pub enum HttpProxyMode {
  pub struct Stats {
      pub connections: usize,
      pub obfuscation_dc_ids: Vec<i16>,
@@ -9943,6 +10597,9 @@ index c5686c6..1ad523f 100644
 +    pub obfuscation_headers: Vec<[u8; 64]>,
      pub executions: HashMap<u32, usize>,
      pub init_connections: usize,
++    /// The proxy each parsed `initConnection` names (`InputClientProxy`), address and port, None for one
++    /// without the field. One that does not parse adds nothing here, though `init_connections` counts it.
++    pub client_proxies: Vec<Option<(String, i32)>>,
      pub without_updates: usize,
      pub invoke_after: usize,
 +    /// Queries chained after a failed one, answered `MSG_WAIT_FAILED` without running.
@@ -9959,7 +10616,7 @@ index c5686c6..1ad523f 100644
      pub client_pongs: usize,
      pub retransmissions: usize,
      pub retransmissions_in_container: usize,
-@@ -229,6 +241,36 @@ struct SessionState {
+@@ -229,6 +244,36 @@ struct SessionState {
      clock_offset: f64,
      awaiting_retransmission: HashSet<i64>,
      sent_packets: VecDeque<Vec<u8>>,
@@ -9996,7 +10653,7 @@ index c5686c6..1ad523f 100644
  }
  
  #[derive(Clone, Copy)]
-@@ -784,7 +826,10 @@ fn serve_connection(
+@@ -784,7 +829,10 @@ fn serve_connection(
      let Some(obfuscation) = accept_obfuscated_header(&header, proxy_key.as_ref()) else {
          return Ok(());
      };
@@ -10008,7 +10665,7 @@ index c5686c6..1ad523f 100644
      let framing = obfuscation.framing;
      let mut wire = Wire {
          stream,
-@@ -826,6 +871,11 @@ fn serve_frames(
+@@ -826,6 +874,11 @@ fn serve_frames(
      let mut delayed: Vec<Delayed> = Vec::new();
      let result = serve_frames_inner(wire, shared.clone(), stop, options, &mut delayed);
      let mut guard = shared.lock().unwrap();
@@ -10020,7 +10677,7 @@ index c5686c6..1ad523f 100644
      for item in delayed {
          if let Some(session) = guard.sessions.get_mut(&item.session_id) {
              seal_tracked(session, &item.body, true);
-@@ -1126,6 +1176,7 @@ fn process_packet(
+@@ -1126,6 +1179,7 @@ fn process_packet(
                  clock_offset: options.clock_offset,
                  awaiting_retransmission: HashSet::new(),
                  sent_packets: VecDeque::new(),
@@ -10028,7 +10685,7 @@ index c5686c6..1ad523f 100644
              }
          });
          session.peer.server_time = server_now(session.clock_offset);
-@@ -1199,6 +1250,8 @@ fn process_packet(
+@@ -1199,6 +1253,8 @@ fn process_packet(
                      kill_now = true;
                  }
              }
@@ -10037,7 +10694,12 @@ index c5686c6..1ad523f 100644
              for message in decoded.messages.iter().filter(|_| !kill_now) {
                  if !session.received.insert(message.msg_id) {
                      stats.duplicate_msg_ids += 1;
-@@ -1317,7 +1370,15 @@ fn process_packet(
+@@ -1313,11 +1369,20 @@ fn process_packet(
+                     _ => {
+                         let (call, flags) = unwrap_wrappers(&message.body);
+                         stats.init_connections += usize::from(flags.init_connection);
++                        stats.client_proxies.extend(flags.client_proxy.clone());
+                         if let Some(temp) = shared_ref.temp_keys.get_mut(&auth_key_id) {
                              temp.inited = true;
                          }
                          stats.without_updates += usize::from(flags.without_updates);
@@ -10054,7 +10716,7 @@ index c5686c6..1ad523f 100644
                          let (tag, payload) = match call {
                              Some(Inner::Call(tag, payload)) => (tag, payload),
                              Some(Inner::Api(constructor, body)) => {
-@@ -1823,6 +1884,7 @@ fn process_packet(
+@@ -1823,6 +1888,7 @@ fn process_packet(
                      }
                  }
              }
@@ -10062,9 +10724,12 @@ index c5686c6..1ad523f 100644
          }
      }
      Reaction {
-@@ -2068,7 +2130,8 @@ fn future_salts_reply(req_msg_id: i64, salt: i64, clock_offset: f64) -> Vec<u8>
+@@ -2067,8 +2133,11 @@ fn future_salts_reply(req_msg_id: i64, salt: i64, clock_offset: f64) -> Vec<u8>
+ #[derive(Default)]
  struct WrapperFlags {
      init_connection: bool,
++    /// What an `initConnection` that parsed names as its proxy: `Some(None)` when it has no such field.
++    client_proxy: Option<Option<(String, i32)>>,
      without_updates: bool,
 -    invoke_after: bool,
 +    /// The msg_id an `invokeAfterMsg` wrapper names.
@@ -10072,7 +10737,7 @@ index c5686c6..1ad523f 100644
  }
  
  enum Inner {
-@@ -2085,10 +2148,10 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+@@ -2085,10 +2154,10 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
          };
          match constructor {
              ids::INVOKE_AFTER_MSG => {
@@ -10086,7 +10751,34 @@ index c5686c6..1ad523f 100644
              }
              ids::INVOKE_WITHOUT_UPDATES => flags.without_updates = true,
              ids::INVOKE_WITH_LAYER => {
-@@ -2133,7 +2196,7 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+@@ -2097,19 +2166,18 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+                     return (None, flags);
+                 }
+                 flags.init_connection = true;
+-                let flag_bits = reader.read_i32().unwrap_or(0);
+-                let _ = reader.read_i32();
++                let flag_bits = reader.read_i32();
++                let api_id = reader.read_i32();
++                let mut parsed = flag_bits.is_ok() && api_id.is_ok();
+                 for _ in 0..6 {
+-                    let _ = reader.read_bytes();
+-                }
+-                if flag_bits & 1 != 0 {
+-                    let _ = reader.read_u32().ok().filter(|c| *c == INPUT_CLIENT_PROXY);
+-                    let _ = reader.read_bytes();
+-                    let _ = reader.read_i32();
++                    parsed &= reader.read_bytes().is_ok();
+                 }
++                let flag_bits = flag_bits.unwrap_or(0);
++                let proxy = if flag_bits & 1 != 0 { read_client_proxy(&mut reader).map(Some) } else { Some(None) };
+                 if flag_bits & 2 != 0 && skip_json_value(&mut reader, 0).is_none() {
+                     return (None, flags);
+                 }
++                flags.client_proxy = proxy.filter(|_| parsed);
+             }
+             INVOKE_WITH_APNS_SECRET => {
+                 let _ = reader.read_bytes();
+@@ -2133,9 +2201,10 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
                      return (None, flags);
                  };
                  let (inner, inner_flags) = unwrap_wrappers(&unpacked);
@@ -10094,14 +10786,34 @@ index c5686c6..1ad523f 100644
 +                flags.invoke_after = flags.invoke_after.or(inner_flags.invoke_after);
                  flags.without_updates |= inner_flags.without_updates;
                  flags.init_connection |= inner_flags.init_connection;
++                flags.client_proxy = flags.client_proxy.take().or(inner_flags.client_proxy);
                  return (inner, flags);
-@@ -2190,3 +2253,70 @@ pub fn random_key(seed: u64) -> AuthKey {
+             }
+             _ => return (None, flags),
+@@ -2143,6 +2212,14 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+     }
+ }
+ 
++/// The `InputClientProxy` of an `initConnection`, None when any of it does not parse.
++fn read_client_proxy(reader: &mut Reader<'_>) -> Option<(String, i32)> {
++    let constructor = reader.read_u32().ok();
++    let address = reader.read_bytes().ok().and_then(|address| std::str::from_utf8(address).ok()).map(str::to_owned);
++    let port = reader.read_i32().ok();
++    address.zip(port).filter(|_| constructor == Some(INPUT_CLIENT_PROXY))
++}
++
+ /// Skips the JSONValue `initConnection` carries as `params`, which tdlib sends.
+ fn skip_json_value(reader: &mut Reader<'_>, depth: usize) -> Option<()> {
+     const JSON_NULL: u32 = 0x3f6d_7b68;
+@@ -2190,3 +2267,121 @@ pub fn random_key(seed: u64) -> AuthKey {
      let mut rng = XorShiftRandom::new(seed);
      AuthKey::new(rng.array())
  }
 +
 +#[cfg(test)]
 +mod tests {
++    use mtproto_core::rpc::{ApiEnvironment, ClientProxy, wrap_request};
++
 +    use super::*;
 +
 +    fn after(msg_id: i64, body: &[u8]) -> Vec<u8> {
@@ -10136,6 +10848,55 @@ index c5686c6..1ad523f 100644
 +        }
 +    }
 +
++    fn init_connection(proxy: Option<(&str, i32)>, params: Option<Vec<u8>>) -> Vec<u8> {
++        let environment = ApiEnvironment {
++            layer: 230,
++            api_id: 9,
++            device_model: "Mac".into(),
++            system_version: "26".into(),
++            app_version: "1".into(),
++            system_lang_code: "en".into(),
++            lang_pack: "macos".into(),
++            lang_code: "en".into(),
++            proxy: proxy.map(|(address, port)| ClientProxy { address: address.into(), port }),
++            params,
++            init_hash: "hash".into(),
++            disable_updates: false,
++        };
++        wrap_request(&call(7, &[1, 2, 3]), Some(&environment), false, None)
++    }
++
++    #[test]
++    fn a_client_proxy_is_observed_only_from_an_init_connection_that_parsed() {
++        let observed = |body: &[u8]| {
++            let (_, flags) = unwrap_wrappers(body);
++            (flags.init_connection, flags.client_proxy)
++        };
++        let named = Some(("proxy.example".to_string(), 443));
++        let with_proxy = init_connection(Some(("proxy.example", 443)), None);
++        assert_eq!(observed(&with_proxy), (true, Some(named.clone())));
++        assert_eq!(observed(&init_connection(None, None)), (true, Some(None)));
++        assert_eq!(observed(&call(7, &[1, 2, 3])), (false, None), "no initConnection, no observation");
++        assert_eq!(observed(&sp::gzip_packed(&with_proxy)), (true, Some(named.clone())), "seen through gzip");
++        let json_null = 0x3f6d_7b68u32.to_le_bytes().to_vec();
++        assert_eq!(observed(&init_connection(Some(("proxy.example", 443)), Some(json_null))), (true, Some(named)));
++
++        // invokeWithLayer, its layer and initConnection take 12 bytes; then the flags, api_id and the strings.
++        let proxy_at = with_proxy.windows(4).position(|word| word == INPUT_CLIENT_PROXY.to_le_bytes()).unwrap();
++        let port_at = proxy_at + 4 + 16;
++        for (what, length) in [("the flags", 14), ("api_id", 18), ("a string", 22), ("the port", port_at + 2)] {
++            assert_eq!(observed(&with_proxy[..length]), (true, None), "cut inside {what}");
++        }
++        assert_eq!(observed(&with_proxy[..8]), (false, None), "cut before initConnection");
++        let mut changed = with_proxy.clone();
++        changed[proxy_at] ^= 1;
++        assert_eq!(observed(&changed), (true, None), "another constructor");
++        let mut changed = with_proxy.clone();
++        changed[proxy_at + 5] = 0xff;
++        assert_eq!(observed(&changed), (true, None), "an address that is no text");
++        assert_eq!(observed(&init_connection(None, Some(vec![1, 2, 3, 4]))), (true, None), "params that do not parse");
++    }
++
 +    #[test]
 +    fn a_session_remembers_the_latest_failed_queries() {
 +        let mut session = SessionState {
@@ -10167,7 +10928,7 @@ index c5686c6..1ad523f 100644
 +    }
 +}
 diff --git a/docs/swift-integration.md b/docs/swift-integration.md
-index 8977917..cd2942e 100644
+index 8977917..7cc547c 100644
 --- a/docs/swift-integration.md
 +++ b/docs/swift-integration.md
 @@ -313,17 +313,17 @@ is created with `pfs_lifetime = tempKeyExpiration` (24 h) and `pfs_make_permanen
@@ -10195,15 +10956,16 @@ index 8977917..cd2942e 100644
  - `AUTH_KEY_PERM_EMPTY` and `-404` are handled inside the engine (rebind or a new temporary key); the
    session never drops the permanent key for them.
  
-@@ -639,8 +639,15 @@ exactly as `MTTcpConnection` does; iOS only.
+@@ -639,8 +639,16 @@ exactly as `MTTcpConnection` does; iOS only.
  The C ABI in `crates/mtproto-ffi/include/mtproto_engine.h` follows these rules. Any other host must
  follow them too.
  
 -- **Version.** `mt_engine_abi_version()` must equal the version the host was built against (5: ABI 5
 -  added `mt_session_drain` and `MTEventKindReleased`).
-+- **Version.** `mt_engine_abi_version()` must equal the version the host was built against (9: ABI 9
-+  added `mt_session_set_proxy_addresses` and the address a named proxy reached in
-+  `MTEventKindConnectionState`'s `text2`; ABI 8 added route admission,
++- **Version.** `mt_engine_abi_version()` must equal the version the host was built against (10: ABI 10
++  added `MTEventKindTransportError`, a connection's transport error code with the session's proxy
++  serial in `request_id`; ABI 9 added `mt_session_set_proxy_addresses` and the address a named proxy
++  reached in `MTEventKindConnectionState`'s `text2`; ABI 8 added route admission,
 +  `mt_session_set_route_admission`, `mt_session_admit_route` and `MTEventKindRouteRequired` with
 +  `MTRouteTcp` and `MTRouteHttp` in `flags`; ABI 7 added `mt_set_panic_callback` with
 +  `MTPanicCallback`; ABI 6 added `mt_session_set_http_addresses`,
