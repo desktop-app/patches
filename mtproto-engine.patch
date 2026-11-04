@@ -8,8 +8,10 @@ host hands it, and every command it posts to its workers, before it
 frees them, let the host resolve a proxy's host name, keeping a
 session's reconnect backoff across the name's addresses (ABI 9), wipe
 the address lists a host hands it too, count a client's reset as its
-close in the paused sessions test, and tell the host each transport
-error code a connection gets (ABI 10).
+close in the paused sessions test, tell the host each transport error
+code a connection gets (ABI 10), and let the host set a fake-TLS
+hello's time apart from the session's, telling it when a dropped
+connection's hello never verified (ABI 11).
 
 Upstream: https://github.com/TelegramMessenger/mtproto-engine
 Branch: main
@@ -20,7 +22,7 @@ Apply with `git apply` right after checking out that revision.
 Builds for i686-win7-windows-msvc and x86_64-win7-windows-msvc (std built
 from source with -Z build-std and +crt-static) and aarch64-pc-windows-msvc.
 Every hunk is Windows-gated, or moves a test helper unchanged off Windows,
-except eleven changes, made for every platform. First, the engine's threads
+except twelve changes, made for every platform. First, the engine's threads
 (mtproto-main, mtproto-worker-N, mtproto-resolver) run under an
 abort-on-panic guard, so a host built with panic = "unwind" ends the
 process on a panic there, as the engine's own panic = "abort" profile does,
@@ -393,8 +395,8 @@ mtproto-engine engine::handshake_transport_error_restarts_key_generation_without
 mtproto-testserver tests::a_client_proxy_is_observed_only_from_an_init_connection_that_parsed,
 mtproto-testserver tests::the_summary_prints_each_client_proxy_and_null_for_none.
 
-ABI 10 (mt_engine_abi_version() returns 10; no struct layout changes)
-adds it to mtproto_engine.h as MTEventKindTransportError (38): code the
+ABI 10 (no struct layout changes; ABI 11 of the twelfth change builds on
+it) adds it to mtproto_engine.h as MTEventKindTransportError (38): code the
 code as it came, request_id the serial above. The event only observes.
 The ABI version checks and docs/swift-integration.md follow. Tests:
 mtproto-ffi ffi_abi10::the_header_declares_abi_10,
@@ -403,6 +405,68 @@ mtproto-ffi ffi_abi10::a_handshake_error_comes_before_the_failure_it_leads_to,
 mtproto-ffi ffi_abi10::the_serial_counts_every_proxy_setter_and_no_address_list,
 mtproto-ffi ffi_abi10::an_http_status_comes_as_its_negative_code,
 mtproto-ffi ffi_abi10::the_environment_proxy_reaches_the_server_until_it_is_removed.
+
+Twelfth, a host can set a fake-TLS hello's time apart from the
+session's, and learns when a dropped connection's hello never verified.
+The hello took its time from the session's time difference, and the one
+setter there is, set_time_difference, also moves the RPC session's
+offset and future msg ids, where a forward shift leaves a monotonic
+floor. An ee proxy refuses a hello outside its window, so a session
+behind a wrong clock never reached a server to learn the time from one.
+Now SessionRuntime holds an optional offset, None until the host gives
+one, read only by the one calculation all five construction sites take:
+the wall clock plus the offset, else the time difference. Setting or
+clearing it is a store: no msg id, time difference, report, connection
+or delay moves, a hello already constructed stays, and it follows no
+correction. ConnectionDropped also says the connection was to carry a
+fake-TLS hello and no ServerHello verified on it, from the transport's
+own state, so it is true on a connection that never completed and on a
+masked refusal as on a close, and false without an ee secret, on HTTP
+links and once a hello verified. The test server can refuse a hello
+outside a time window and records each hello's time
+(ServerOptions::tls_time_window, Stats::tls_hello_times,
+Stats::tls_time_refusals). Tests:
+mtproto-engine session_runtime::session_hello_time_tests::a_hello_offset_moves_nothing_but_the_hello,
+mtproto-engine session_runtime::session_hello_time_tests::a_hello_offset_neither_advances_a_retry_nor_opens_a_connection,
+mtproto-engine session_runtime::session_hello_time_tests::a_late_hello_offset_changes_only_later_constructions,
+mtproto-engine session_runtime::session_hello_time_tests::a_primary_hello_says_the_offset_or_else_the_time_difference,
+mtproto-engine session_runtime::session_hello_time_tests::a_racer_hello_says_the_offset_or_else_the_time_difference,
+mtproto-engine session_runtime::session_hello_time_tests::a_tcp_recheck_hello_says_the_offset_or_else_the_time_difference,
+mtproto-engine tls_hello_time::a_refused_session_recovers_on_its_handle_once_the_offset_comes,
+mtproto-engine tls_hello_time::a_stored_offset_follows_no_correction_until_a_new_one_comes,
+mtproto-engine tls_hello_time::a_default_or_cleared_hello_follows_a_correction_and_a_stored_one_does_not,
+mtproto-engine tls_hello_time::an_active_session_keeps_its_ids_through_a_forward_offset_reduced_to_zero,
+mtproto-engine tls_hello_time::an_active_session_keeps_its_ids_through_a_forward_offset_cleared,
+mtproto-engine tls_hello_time::a_paused_session_keeps_its_ids_through_a_forward_offset_reduced_to_zero,
+mtproto-engine tls_hello_time::a_paused_session_keeps_its_ids_through_a_forward_offset_cleared,
+mtproto-engine tls_hello_time::the_rpc_setter_on_the_same_shapes_shifts_the_ids_and_leaves_a_floor,
+mtproto-engine tls_hello_time::a_tcp_recheck_follows_the_time_http_learned_once_the_offset_is_cleared,
+mtproto-engine tls_hello_time::a_tcp_recheck_stays_at_a_stored_offset,
+mtproto-engine tls_hello_time::an_ee_connection_closed_before_a_verified_server_hello_is_flagged,
+mtproto-engine tls_hello_time::an_ee_connection_answered_by_another_server_is_flagged,
+mtproto-engine tls_hello_time::an_ee_connection_left_unanswered_is_flagged,
+mtproto-engine tls_hello_time::an_ee_connection_that_never_connected_is_flagged,
+mtproto-engine tls_hello_time::an_ee_connection_closed_after_a_verified_server_hello_is_not_flagged,
+mtproto-engine tls_hello_time::a_plain_or_padded_failure_is_not_flagged,
+mtproto-engine tls_hello_time::answered_stays_apart_from_the_bit,
+mtproto-engine tls_hello_time::a_direct_ee_address_reads_the_bit_and_takes_the_offset,
+mtproto-engine tls_hello_time::a_non_finite_offset_changes_nothing_and_none_clears,
+mtproto-testserver tests::a_fake_tls_hello_outside_the_window_is_closed_before_any_server_hello.
+
+ABI 11 (mt_engine_abi_version() returns 11; no struct layout changes)
+adds them to mtproto_engine.h as
+mt_session_set_tls_hello_time_offset(engine, session, const double
+*offset), which copies the value during the call, where NULL clears it
+and a value that is not finite is ignored, and as
+MTConnectionDroppedFakeTlsUnverified (1 << 1) on
+MTEventKindConnectionDropped's flags, beside
+MTConnectionDroppedAnswered (1 << 0), the bit that was there. The ABI
+version checks and docs/swift-integration.md follow. Tests:
+mtproto-ffi ffi_abi11::the_header_declares_abi_11,
+mtproto-ffi ffi_abi11::the_exported_offset_moves_the_hello_and_no_msg_id,
+mtproto-ffi ffi_abi11::a_refused_hello_is_flagged_and_recovers_through_the_exported_offset,
+mtproto-ffi ffi_abi11::a_connection_that_took_a_packet_reads_answered_alone,
+mtproto-ffi ffi_abi11::only_ee_sets_the_second_bit_before_anything_answered.
 
 Test gated off on Windows, with its reason in the source:
 - mtproto-engine interface::tests::loopback_resolves_to_lo0 (Windows):
@@ -1496,7 +1560,7 @@ index 2315c16..a31c4cd 100644
 +    }
  }
 diff --git a/crates/mtproto-engine/src/connection.rs b/crates/mtproto-engine/src/connection.rs
-index 1e7ed2e..4ac7070 100644
+index 1e7ed2e..b7d2894 100644
 --- a/crates/mtproto-engine/src/connection.rs
 +++ b/crates/mtproto-engine/src/connection.rs
 @@ -82,6 +82,8 @@ pub enum ChunkStatus {
@@ -1555,7 +1619,19 @@ index 1e7ed2e..4ac7070 100644
      }
  
      #[allow(clippy::too_many_arguments)]
-@@ -365,6 +377,13 @@ impl Connection {
+@@ -217,6 +229,11 @@ impl Connection {
+         matches!(self.phase, Phase::Ready) && self.transport.is_ready()
+     }
+ 
++    /// Set up for a fake-TLS hello and no ServerHello verified on it, in any phase; never without an `ee` secret.
++    pub fn fake_tls_unverified(&self) -> bool {
++        !self.transport.is_ready()
++    }
++
+     pub fn is_tcp_connected(&self) -> bool {
+         !matches!(self.phase, Phase::Connecting)
+     }
+@@ -365,6 +382,13 @@ impl Connection {
          Ok(())
      }
  
@@ -1569,7 +1645,7 @@ index 1e7ed2e..4ac7070 100644
      pub fn acknowledged_bytes(&self) -> Option<u64> {
          self.pipe.send_queue().map(|queued| self.written_total.saturating_sub(queued as u64))
      }
-@@ -524,11 +543,38 @@ pub(crate) fn kernel_send_queue(socket: &mio::net::TcpStream) -> Option<usize> {
+@@ -524,11 +548,38 @@ pub(crate) fn kernel_send_queue(socket: &mio::net::TcpStream) -> Option<usize> {
      (result == 0 && value >= 0).then_some(value as usize)
  }
  
@@ -1609,7 +1685,7 @@ index 1e7ed2e..4ac7070 100644
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -567,4 +613,103 @@ mod tests {
+@@ -567,4 +618,103 @@ mod tests {
          compact_written_prefix(&mut small, &mut small_offset);
          assert_eq!((small.len(), small_offset), (1000, 10), "small prefixes are left alone");
      }
@@ -2087,7 +2163,7 @@ index 09abb61..5945a6d 100644
 +    }
  }
 diff --git a/crates/mtproto-engine/src/lib.rs b/crates/mtproto-engine/src/lib.rs
-index 774f5a2..7cbdaa6 100644
+index 774f5a2..50ce6d5 100644
 --- a/crates/mtproto-engine/src/lib.rs
 +++ b/crates/mtproto-engine/src/lib.rs
 @@ -2,6 +2,7 @@
@@ -2253,7 +2329,23 @@ index 774f5a2..7cbdaa6 100644
      }
  
      pub fn set_auth_token_ready(&self, handle: SessionHandle, ready: bool) {
-@@ -323,7 +365,7 @@ impl Engine {
+@@ -253,6 +295,15 @@ impl Engine {
+         }
+     }
+ 
++    /// From the next connection on, a fake-TLS hello says the wall clock plus `offset`, in place of the
++    /// time difference; `None` clears it. It moves nothing else and follows no correction. An offset that
++    /// is not a finite number is ignored, as `set_time_difference` ignores one.
++    pub fn set_tls_hello_time_offset(&self, handle: SessionHandle, offset: Option<f64>) {
++        if offset.is_none_or(f64::is_finite) {
++            self.post(handle, Command::SetTlsHelloTimeOffset(handle, offset));
++        }
++    }
++
+     pub fn destroy_auth_key(&self, handle: SessionHandle) {
+         self.post(handle, Command::DestroyAuthKey(handle));
+     }
+@@ -323,7 +374,7 @@ impl Engine {
  
      /// Telegram Web's HTTPS endpoint the session may use as one more HTTP route (None: none).
      pub fn set_web_endpoint(&self, handle: SessionHandle, endpoint: Option<WebEndpoint>) {
@@ -2262,7 +2354,7 @@ index 774f5a2..7cbdaa6 100644
      }
  
      /// Telegram Web's own endpoint for the session's datacenter and role (`WebEndpoint::telegram`).
-@@ -348,7 +390,7 @@ impl Drop for EngineInner {
+@@ -348,7 +399,7 @@ impl Drop for EngineInner {
      fn drop(&mut self) {
          for worker in &self.workers {
              if let Ok(sender) = worker.sender.lock() {
@@ -2271,6 +2363,19 @@ index 774f5a2..7cbdaa6 100644
                  let _ = worker.waker.wake();
              }
          }
+diff --git a/crates/mtproto-engine/src/session_carrier.rs b/crates/mtproto-engine/src/session_carrier.rs
+index 904f21f..121365a 100644
+--- a/crates/mtproto-engine/src/session_carrier.rs
++++ b/crates/mtproto-engine/src/session_carrier.rs
+@@ -36,7 +36,7 @@ impl SessionRuntime {
+             framing: self.setup.framing,
+             dc_id: self.setup.obfuscation_dc_id,
+             secret: self.setup.proxy_secret(&address),
+-            unix_time: (now.unix + self.time_difference()) as i32,
++            unix_time: self.tls_hello_time(now),
+         };
+         self.connection = Some(Connection::over_carrier(pipe, token, &transport, index, now.mono, rng));
+     }
 diff --git a/crates/mtproto-engine/src/session_explorer_tests.rs b/crates/mtproto-engine/src/session_explorer_tests.rs
 index a61264a..2a94913 100644
 --- a/crates/mtproto-engine/src/session_explorer_tests.rs
@@ -2393,8 +2498,316 @@ index a61264a..2a94913 100644
 +    assert!(answered, "no answer {waited:?} after the promotion; {racer_events} poll events for the racer's socket");
 +    assert_eq!(server.executions(1), 1);
 +}
+diff --git a/crates/mtproto-engine/src/session_hello_time_tests.rs b/crates/mtproto-engine/src/session_hello_time_tests.rs
+new file mode 100644
+index 0000000..b540e78
+--- /dev/null
++++ b/crates/mtproto-engine/src/session_hello_time_tests.rs
+@@ -0,0 +1,302 @@
++use super::tests::{Gate, Sink, gate_setup};
++use super::*;
++use crate::types::TransportPreference;
++use mtproto_core::transport::{ProxySecret, verify_client_hello_for_tests};
++use std::time::{Duration, Instant};
++
++/// The secret of the fake-TLS addresses below.
++fn fake_tls_secret() -> Vec<u8> {
++    let mut secret = vec![0xee];
++    secret.extend_from_slice(&[0x33; 16]);
++    secret.extend_from_slice(b"www.example.com");
++    secret
++}
++
++impl Sink {
++    fn fake_tls_address(&self) -> DcAddress {
++        let mut address = self.address();
++        address.secret = Some(fake_tls_secret());
++        address
++    }
++
++    /// The time the fake-TLS hello of the connection taken `index`th says, once it came whole. It reads what
++    /// has arrived and does not wait.
++    fn hello_time(&mut self, index: usize) -> Option<i32> {
++        use std::io::Read;
++        while let Ok((stream, _)) = self.listener.accept() {
++            self.taken.push(stream);
++        }
++        self.sent.resize(self.taken.len(), Vec::new());
++        let (stream, sent) = (self.taken.get_mut(index)?, &mut self.sent[index]);
++        stream.set_nonblocking(true).unwrap();
++        let mut chunk = [0u8; 4096];
++        while let Ok(read @ 1..) = stream.read(&mut chunk) {
++            sent.extend_from_slice(&chunk[..read]);
++        }
++        let record = usize::from(u16::from_be_bytes([*sent.get(3)?, *sent.get(4)?]));
++        let key = ProxySecret::from_binary(&fake_tls_secret(), true).unwrap().proxy_key();
++        let time = verify_client_hello_for_tests(sent.get(..5 + record)?, &key);
++        Some(time.expect("a hello signed with the secret"))
++    }
++}
++
++/// What a hello offset leaves as it was, a connection's identity included.
++#[derive(Debug, PartialEq)]
++struct Untouched {
++    time_difference: f64,
++    rpc_time_difference: Option<f64>,
++    setup_time_difference: f64,
++    reported_time_difference: Option<f64>,
++    reports: usize,
++    connection: Option<(Token, f64)>,
++    paused: bool,
++    failures: u32,
++    flaps: u32,
++    next_attempt_at: f64,
++}
++
++impl Gate {
++    fn untouched(&self) -> Untouched {
++        let is_report =
++            |event: &&EngineEvent| matches!(event, EngineEvent::Rpc(RpcEvent::TimeDifferenceUpdated { .. }));
++        let runtime = &self.runtime;
++        Untouched {
++            time_difference: runtime.time_difference(),
++            rpc_time_difference: runtime.rpc.as_ref().map(|rpc| rpc.session().time_difference()),
++            setup_time_difference: runtime.setup.time_difference,
++            reported_time_difference: runtime.reported_time_difference,
++            reports: self.recorded.0.lock().unwrap().iter().filter(is_report).count(),
++            connection: runtime.connection.as_ref().map(|connection| (connection.token(), connection.started_at)),
++            paused: runtime.setup.paused,
++            failures: runtime.failures,
++            flaps: runtime.flaps,
++            next_attempt_at: runtime.next_attempt_at,
++        }
++    }
++
++    /// Turns, with I/O only for the connection at `token`, until the one `sink` took `index`th sent its whole
++    /// hello, for 3 s at most. Polled, a slow primary would drop the racer beside it.
++    fn hello_on(&mut self, sink: &mut Sink, index: usize, token: Token) -> i32 {
++        let started = Instant::now();
++        loop {
++            if let Some(time) = sink.hello_time(index) {
++                return time;
++            }
++            assert!(started.elapsed() < Duration::from_secs(3), "no whole hello on connection {index}");
++            self.turn_with(|polled| polled == token);
++        }
++    }
++
++    fn primary_token(&self) -> Token {
++        self.runtime.connection.as_ref().expect("a primary connection").token()
++    }
++
++    fn close_primary(&mut self, failed: bool) {
++        let now = self.now();
++        self.runtime.close_connection(self.poll.registry(), now, failed);
++    }
++}
++
++/// Around every set and clear, on a live connection and on a paused session, the RPC session's clock, the
++/// setup's, what was reported, the connection and the backoff read exactly the same, also after a drive.
++#[test]
++fn a_hello_offset_moves_nothing_but_the_hello() {
++    let mut tcp = Sink::new();
++    let mut setup = gate_setup(vec![tcp.fake_tls_address()], Vec::new(), TransportPreference::Tcp);
++    setup.time_difference = -600.0;
++    let mut gate = Gate::new(setup, false);
++    gate.drive();
++    let live = gate.untouched();
++    assert_eq!((live.time_difference, live.rpc_time_difference), (-600.0, Some(-600.0)));
++    assert!(live.connection.is_some());
++    for offset in [Some(3600.0), Some(0.0), None, Some(-1200.0), None] {
++        gate.runtime.set_tls_hello_time_offset(offset);
++        assert_eq!(gate.untouched(), live, "at the setter, {offset:?}");
++        gate.drive();
++        assert_eq!(gate.untouched(), live, "after a drive, {offset:?}");
++    }
++    let opened = tcp.taken();
++    assert_eq!(opened, 1);
++
++    let now = gate.now();
++    gate.runtime.set_paused(true, now, gate.poll.registry());
++    let paused = gate.untouched();
++    assert!(paused.paused && paused.connection.is_none());
++    for offset in [Some(3600.0), Some(0.0), None, Some(-1200.0), None] {
++        gate.runtime.set_tls_hello_time_offset(offset);
++        assert_eq!(gate.untouched(), paused, "paused, at the setter, {offset:?}");
++        gate.drive();
++        assert_eq!(gate.untouched(), paused, "paused, after a drive, {offset:?}");
++    }
++    assert_eq!(tcp.taken(), opened, "a paused session opened a connection");
++    gate.shutdown();
++}
++
++/// While a session backs off, an offset brings its retry no closer and opens nothing, up to the last moment.
++/// The retry comes when it was due and says the offset.
++#[test]
++fn a_hello_offset_neither_advances_a_retry_nor_opens_a_connection() {
++    let mut tcp = Sink::new();
++    let setup = gate_setup(vec![tcp.fake_tls_address()], Vec::new(), TransportPreference::Tcp);
++    let mut gate = Gate::new(setup, false);
++    // The ladder's first step is no delay, so it takes two failed connections to wait.
++    for _ in 0..2 {
++        gate.drive();
++        assert!(gate.runtime.connection.is_some());
++        gate.close_primary(true);
++    }
++    let waiting = gate.untouched();
++    let due = waiting.next_attempt_at;
++    assert_eq!(waiting.failures, 2);
++    assert!(due > gate.now().mono, "the session does not wait: {waiting:?}");
++    let opened = tcp.taken();
++
++    gate.runtime.set_tls_hello_time_offset(Some(3600.0));
++    assert_eq!(gate.untouched(), waiting);
++    gate.drive();
++    assert_eq!(gate.untouched(), waiting, "the setter advanced the retry");
++
++    gate.elapsed = due - gate.start.mono - 0.001;
++    gate.runtime.set_tls_hello_time_offset(Some(7200.0));
++    gate.drive();
++    assert_eq!(gate.untouched(), waiting, "a moment before it was due");
++    assert_eq!(tcp.taken(), opened, "a connection opened before the retry was due");
++
++    gate.elapsed = due - gate.start.mono + 0.001;
++    let at = gate.now().unix;
++    gate.drive();
++    let token = gate.primary_token();
++    assert_eq!(gate.hello_on(&mut tcp, opened, token), (at + 7200.0) as i32);
++    gate.shutdown();
++}
++
++/// An offset that arrives once a connection was constructed, even with its hello not sent yet, changes only the
++/// next connection: delivery needs no particular timing against the attempts.
++#[test]
++fn a_late_hello_offset_changes_only_later_constructions() {
++    let mut tcp = Sink::new();
++    let mut setup = gate_setup(vec![tcp.fake_tls_address()], Vec::new(), TransportPreference::Tcp);
++    setup.time_difference = -600.0;
++    let mut gate = Gate::new(setup, false);
++    gate.elapsed = 0.75;
++    let first = gate.now().unix;
++    gate.drive();
++    gate.runtime.set_tls_hello_time_offset(Some(0.0));
++    let token = gate.primary_token();
++    assert_eq!(gate.hello_on(&mut tcp, 0, token), (first - 600.0) as i32, "the hello already constructed");
++
++    gate.close_primary(false);
++    gate.elapsed += 1.0;
++    let second = gate.now().unix;
++    gate.drive();
++    let token = gate.primary_token();
++    assert_eq!(gate.hello_on(&mut tcp, 1, token), second as i32, "the connection after it");
++    gate.shutdown();
++}
++
++#[derive(Clone, Copy, Debug)]
++enum HelloSite {
++    Primary,
++    Racer,
++    TcpRecheck,
++}
++
++#[derive(Clone, Copy)]
++enum ClockStep {
++    /// The host's `set_tls_hello_time_offset`.
++    Offset(Option<f64>),
++    /// What a server's correction leaves in the RPC session.
++    Correction(f64),
++}
++
++const HELLO_DIFFERENCE: f64 = -600.0;
++const HELLO_OFFSET: f64 = 3600.0;
++const HELLO_CORRECTED: f64 = -30.0;
++
++/// The real hello of the connection `site` constructs right after `steps`, and the virtual time it was
++/// constructed at. It goes by the admission shapes of `tests`: the answer starts that one connection in that drive.
++fn hello_at(site: HelloSite, steps: &[ClockStep]) -> (f64, i32) {
++    let (mut target, other) = (Sink::new(), Sink::new());
++    let (tcp, http, transport) = match site {
++        HelloSite::Primary => (vec![target.fake_tls_address()], Vec::new(), TransportPreference::Tcp),
++        HelloSite::Racer => {
++            (vec![other.fake_tls_address(), target.fake_tls_address()], Vec::new(), TransportPreference::Tcp)
++        }
++        HelloSite::TcpRecheck => (vec![target.fake_tls_address()], vec![other.address()], TransportPreference::Auto),
++    };
++    let mut setup = gate_setup(tcp, http, transport);
++    setup.time_difference = HELLO_DIFFERENCE;
++    let mut gate = Gate::new(setup, true);
++    match site {
++        HelloSite::Primary => {}
++        HelloSite::Racer => {
++            gate.drive();
++            gate.admit(1, true);
++            gate.drive();
++            gate.drive_for(1.0, 0.25);
++        }
++        HelloSite::TcpRecheck => {
++            let now = gate.now();
++            gate.runtime.auto.on_http = true;
++            gate.runtime.enter_http(gate.poll.registry(), now);
++        }
++    }
++    gate.drive();
++    let asked = gate.asked_for(RouteTransport::Tcp, target.port());
++    assert_eq!(asked.len(), 1, "{site:?}: {:?}", gate.asked());
++    for step in steps {
++        match step {
++            ClockStep::Offset(offset) => gate.runtime.set_tls_hello_time_offset(*offset),
++            ClockStep::Correction(difference) => {
++                gate.runtime.rpc.as_mut().unwrap().session_mut().set_time_difference(*difference)
++            }
++        }
++    }
++    gate.elapsed += 0.75;
++    let at = gate.now().unix;
++    gate.admit(asked[0], true);
++    gate.drive();
++    let token = match site {
++        HelloSite::Primary => gate.primary_token(),
++        HelloSite::Racer | HelloSite::TcpRecheck => gate.runtime.racer.as_ref().expect("a racer").token(),
++    };
++    let hello = gate.hello_on(&mut target, 0, token);
++    gate.shutdown();
++    (at, hello)
++}
++
++/// Without an offset, or once it is cleared, a hello says the wall clock plus the RPC session's time difference,
++/// a later correction of it included. With one stored it says the wall clock plus that, whatever corrects the
++/// RPC session meanwhile. Read exactly, against the virtual clock, in what went over the socket.
++fn every_clock_at(site: HelloSite) {
++    use ClockStep::{Correction, Offset};
++    let stored = Offset(Some(HELLO_OFFSET));
++    let corrected = Correction(HELLO_CORRECTED);
++    let cases: [(&str, &[ClockStep], f64); 6] = [
++        ("fallback", &[], HELLO_DIFFERENCE),
++        ("override", &[stored], HELLO_OFFSET),
++        ("clear", &[stored, Offset(None)], HELLO_DIFFERENCE),
++        ("fallback after a correction", &[corrected], HELLO_CORRECTED),
++        ("override after a correction", &[stored, corrected], HELLO_OFFSET),
++        ("clear after a correction", &[stored, corrected, Offset(None)], HELLO_CORRECTED),
++    ];
++    for (what, steps, difference) in cases {
++        let (at, hello) = hello_at(site, steps);
++        assert_eq!(hello, (at + difference) as i32, "{site:?}, {what}");
++    }
++}
++
++#[test]
++fn a_primary_hello_says_the_offset_or_else_the_time_difference() {
++    every_clock_at(HelloSite::Primary);
++}
++
++#[test]
++fn a_racer_hello_says_the_offset_or_else_the_time_difference() {
++    every_clock_at(HelloSite::Racer);
++}
++
++#[test]
++fn a_tcp_recheck_hello_says_the_offset_or_else_the_time_difference() {
++    every_clock_at(HelloSite::TcpRecheck);
++}
 diff --git a/crates/mtproto-engine/src/session_http.rs b/crates/mtproto-engine/src/session_http.rs
-index c1ab28f..d54c4db 100644
+index c1ab28f..820e606 100644
 --- a/crates/mtproto-engine/src/session_http.rs
 +++ b/crates/mtproto-engine/src/session_http.rs
 @@ -11,10 +11,13 @@ use mtproto_core::transport::{
@@ -2494,7 +2907,39 @@ index c1ab28f..d54c4db 100644
      pub(super) fn http_route_possible(&self) -> bool {
          !self.setup.proxy_blocks_http() && !self.http_candidates().is_empty()
      }
-@@ -2020,6 +2047,9 @@ impl SessionRuntime {
+@@ -1178,8 +1205,15 @@ impl SessionRuntime {
+             self.note_http_open_failure(now);
+         }
+         if report {
+-            callbacks
+-                .on_event(self.handle, crate::types::EngineEvent::ConnectionDropped { reason, answered: proven, age });
++            callbacks.on_event(
++                self.handle,
++                crate::types::EngineEvent::ConnectionDropped {
++                    reason,
++                    answered: proven,
++                    fake_tls_unverified: false,
++                    age,
++                },
++            );
+         }
+         self.pump_rpc_events(now, registry, callbacks);
+     }
+@@ -1588,7 +1622,12 @@ impl SessionRuntime {
+             if matches!(reason, Some(CloseReason::ServerRejected) | Some(CloseReason::KeyRejectionUnconfirmed)) {
+                 callbacks.on_event(
+                     self.handle,
+-                    crate::types::EngineEvent::ConnectionDropped { reason: dropped, answered: false, age: 0.0 },
++                    crate::types::EngineEvent::ConnectionDropped {
++                        reason: dropped,
++                        answered: false,
++                        fake_tls_unverified: false,
++                        age: 0.0,
++                    },
+                 );
+                 self.close_http(registry, now);
+                 return Err(None);
+@@ -2020,6 +2059,9 @@ impl SessionRuntime {
                  Resolution::Pending => return Ok(None),
              },
          };
@@ -2504,7 +2949,7 @@ index c1ab28f..d54c4db 100644
          let route = self.http_route(&host, port);
          match HttpConn::connect(registry, token, socket_address, route, socks, choice, now.mono) {
              Ok(conn) => Ok(Some((conn, named))),
-@@ -2112,8 +2142,18 @@ impl SessionRuntime {
+@@ -2112,8 +2154,18 @@ impl SessionRuntime {
          self.auto.round_timed_out = false;
          let mut pending = false;
          if !plain.is_empty() {
@@ -2525,7 +2970,7 @@ index c1ab28f..d54c4db 100644
              pending |= self.start_http_probe(ProbeKind::Plain, choice, registry, now, resolver, rng);
          }
          let websocket_demoted = now.mono < self.auto.websocket_retry_at;
-@@ -2203,7 +2243,9 @@ impl SessionRuntime {
+@@ -2203,7 +2255,9 @@ impl SessionRuntime {
          }
          if self.auto.probes.is_empty() {
              self.auto.round_open = false;
@@ -2536,7 +2981,7 @@ index c1ab28f..d54c4db 100644
          }
      }
  
-@@ -2479,6 +2521,10 @@ impl SessionRuntime {
+@@ -2479,12 +2533,16 @@ impl SessionRuntime {
              self.auto.tcp_recheck_at = now.mono + super::RESOLVE_RETRY_MAX;
              return;
          };
@@ -2547,7 +2992,14 @@ index c1ab28f..d54c4db 100644
          let socks = self.tunnel_for(&address);
          let transport = mtproto_core::transport::TransportConfig {
              framing: self.setup.framing,
-@@ -2513,6 +2559,30 @@ impl SessionRuntime {
+             dc_id: self.setup.obfuscation_dc_id,
+             secret: self.setup.proxy_secret(&address),
+-            unix_time: (now.unix + self.time_difference()) as i32,
++            unix_time: self.tls_hello_time(now),
+         };
+         let token = self.free_token();
+         match crate::connection::Connection::connect(
+@@ -2513,6 +2571,30 @@ impl SessionRuntime {
              now.mono + recheck_interval(self.setup.tcp_recheck_after, self.auto.tcp_recheck_failures);
      }
  
@@ -2578,7 +3030,7 @@ index c1ab28f..d54c4db 100644
      /// The TCP recheck answered: the session leaves HTTP, and the verified connection takes over.
      pub(super) fn switch_back_to_tcp(&mut self, registry: &Registry, now: Now, callbacks: &Arc<dyn EngineCallbacks>) {
          self.log(callbacks, LogLevel::Info, "a TCP route answers again; leaving HTTP");
-@@ -2565,6 +2635,42 @@ impl SessionRuntime {
+@@ -2565,6 +2647,42 @@ impl SessionRuntime {
  #[cfg(test)]
  mod tests {
      use super::staggered_wait;
@@ -2668,7 +3120,7 @@ index 5eaf872..2aea1f5 100644
          fail_transmitted: bool,
          registry: &Registry,
 diff --git a/crates/mtproto-engine/src/session_runtime.rs b/crates/mtproto-engine/src/session_runtime.rs
-index 69a7dc6..04b3613 100644
+index 69a7dc6..4a5f871 100644
 --- a/crates/mtproto-engine/src/session_runtime.rs
 +++ b/crates/mtproto-engine/src/session_runtime.rs
 @@ -1,5 +1,5 @@
@@ -2769,7 +3221,17 @@ index 69a7dc6..04b3613 100644
      progress: Option<ProgressTracking>,
      frame_watch: Option<FrameWatch>,
      acknowledged_out: u64,
-@@ -203,6 +244,11 @@ pub struct SessionRuntime {
+@@ -189,6 +230,9 @@ pub struct SessionRuntime {
+     /// where the send queue cannot be read, as nothing then shows it stuck.
+     kernel_moving_at: f64,
+     reported_time_difference: Option<f64>,
++    /// What a fake-TLS hello adds to the wall clock, in place of the time difference
++    /// (`Engine::set_tls_hello_time_offset`).
++    tls_hello_time_offset: Option<f64>,
+     reported_salts: Vec<ServerSalt>,
+     reported_in: u64,
+     reported_out: u64,
+@@ -203,6 +247,11 @@ pub struct SessionRuntime {
      dns_failed: HashMap<(String, u16), Vec<SocketAddr>>,
      /// The lookup a TCP connection attempt waits for.
      awaiting_resolution: Option<(String, u16)>,
@@ -2781,7 +3243,7 @@ index 69a7dc6..04b3613 100644
      unavailable_probe_at: f64,
      closed: bool,
      auth_token_ready: bool,
-@@ -229,6 +275,7 @@ pub struct SessionRuntime {
+@@ -229,6 +278,7 @@ pub struct SessionRuntime {
      host_streams: Option<(Arc<crate::host_stream::HostStreams>, Arc<crate::host_stream::WorkerSignal>)>,
      /// Set while the requests go back to the host for another session (`drain`).
      drain: Option<drain::DrainState>,
@@ -2789,7 +3251,15 @@ index 69a7dc6..04b3613 100644
  }
  
  impl SessionRuntime {
-@@ -278,6 +325,8 @@ impl SessionRuntime {
+@@ -269,6 +319,7 @@ impl SessionRuntime {
+             others_upload_queue: 0.0,
+             kernel_moving_at: 0.0,
+             reported_time_difference: Some(setup.time_difference),
++            tls_hello_time_offset: None,
+             reported_salts: Vec::new(),
+             reported_in: 0,
+             reported_out: 0,
+@@ -278,6 +329,8 @@ impl SessionRuntime {
              dns: HashMap::new(),
              dns_failed: HashMap::new(),
              awaiting_resolution: None,
@@ -2798,7 +3268,7 @@ index 69a7dc6..04b3613 100644
              unavailable_probe_at: 0.0,
              closed: false,
              auth_token_ready: true,
-@@ -297,6 +346,7 @@ impl SessionRuntime {
+@@ -297,6 +350,7 @@ impl SessionRuntime {
              network_generation: 0,
              host_streams: None,
              drain: None,
@@ -2806,7 +3276,7 @@ index 69a7dc6..04b3613 100644
              setup,
          };
          let cdn = runtime.setup.role == SessionRole::Cdn;
-@@ -315,7 +365,7 @@ impl SessionRuntime {
+@@ -315,7 +369,7 @@ impl SessionRuntime {
          if let Some(http) = &self.http {
              return http.first_more_readable();
          }
@@ -2815,7 +3285,7 @@ index 69a7dc6..04b3613 100644
      }
  
      fn has_link(&self) -> bool {
-@@ -327,7 +377,7 @@ impl SessionRuntime {
+@@ -327,7 +381,7 @@ impl SessionRuntime {
      }
  
      fn free_token(&self) -> Token {
@@ -2824,7 +3294,7 @@ index 69a7dc6..04b3613 100644
          if used == Some(self.token) { self.race_token() } else { self.token }
      }
  
-@@ -391,7 +441,7 @@ impl SessionRuntime {
+@@ -391,7 +445,7 @@ impl SessionRuntime {
                  if self.auto.on_websocket {
                      rpc.session_mut().set_keepalive_cap(Some(websocket::WEBSOCKET_KEEPALIVE));
                  }
@@ -2833,7 +3303,7 @@ index 69a7dc6..04b3613 100644
                      rpc.connection_opened(now);
                  }
                  for pending in self.queued.drain(..) {
-@@ -476,10 +526,17 @@ impl SessionRuntime {
+@@ -476,10 +530,17 @@ impl SessionRuntime {
          }
          if request.invoke_after.is_some_and(|after| self.rotated.contains(&after)) {
              self.note_rotated(request.id);
@@ -2853,7 +3323,7 @@ index 69a7dc6..04b3613 100644
                  response_time: now.unix + self.time_difference(),
                  duration: 0.0,
              });
-@@ -522,6 +579,7 @@ impl SessionRuntime {
+@@ -522,6 +583,7 @@ impl SessionRuntime {
          }
          self.setup.paused = paused;
          if paused {
@@ -2861,7 +3331,7 @@ index 69a7dc6..04b3613 100644
              self.cancel_http_probe(registry);
              self.close_connection(registry, now, false);
          } else {
-@@ -590,10 +648,11 @@ impl SessionRuntime {
+@@ -590,10 +652,11 @@ impl SessionRuntime {
          }
      }
  
@@ -2876,7 +3346,7 @@ index 69a7dc6..04b3613 100644
              self.address_cursor = 0;
              self.forget_routes();
              self.close_connection(registry, now, false);
-@@ -603,15 +662,45 @@ impl SessionRuntime {
+@@ -603,15 +666,45 @@ impl SessionRuntime {
          }
      }
  
@@ -2926,7 +3396,7 @@ index 69a7dc6..04b3613 100644
              }
              self.close_connection(registry, now, false);
              self.next_attempt_at = now.mono;
-@@ -619,7 +708,9 @@ impl SessionRuntime {
+@@ -619,7 +712,9 @@ impl SessionRuntime {
      }
  
      pub fn set_proxy(&mut self, proxy: Option<ProxyConfig>, now: Now, registry: &Registry) {
@@ -2936,7 +3406,7 @@ index 69a7dc6..04b3613 100644
              self.reset_auto(registry, now, true);
              self.setup.proxy = proxy;
              self.forget_routes();
-@@ -631,6 +722,55 @@ impl SessionRuntime {
+@@ -631,6 +726,55 @@ impl SessionRuntime {
          }
      }
  
@@ -2992,7 +3462,7 @@ index 69a7dc6..04b3613 100644
      pub fn set_transport(
          &mut self,
          transport: crate::types::TransportPreference,
-@@ -641,6 +781,7 @@ impl SessionRuntime {
+@@ -641,6 +785,7 @@ impl SessionRuntime {
          if self.setup.transport == transport && self.setup.http_port == http_port {
              return;
          }
@@ -3000,7 +3470,7 @@ index 69a7dc6..04b3613 100644
          self.setup.transport = transport;
          self.setup.http_port = http_port;
          self.reset_auto(registry, now, false);
-@@ -658,6 +799,127 @@ impl SessionRuntime {
+@@ -658,6 +803,127 @@ impl SessionRuntime {
          self.flaps = 0;
      }
  
@@ -3128,7 +3598,19 @@ index 69a7dc6..04b3613 100644
      /// Starts running PFS on a session created without it: its key becomes the permanent key, and
      /// the session reconnects to talk under a temporary one.
      pub fn enable_pfs(
-@@ -848,7 +1110,7 @@ impl SessionRuntime {
+@@ -811,6 +1077,11 @@ impl SessionRuntime {
+         }
+     }
+ 
++    /// A plain store: only a fake-TLS hello constructed later reads it (`tls_hello_time`).
++    pub fn set_tls_hello_time_offset(&mut self, offset: Option<f64>) {
++        self.tls_hello_time_offset = offset;
++    }
++
+     pub fn share_route_hints(&mut self, hints: Arc<crate::route_hints::RouteHints>) {
+         self.network_generation = hints.generation();
+         self.hints = hints;
+@@ -848,7 +1119,7 @@ impl SessionRuntime {
      fn refresh_uploads(&mut self, now: Now) {
          let mut own = self.rpc.as_ref().map_or(0, |rpc| rpc.session().upload_backlog(now));
          if own > 0 {
@@ -3137,7 +3619,7 @@ index 69a7dc6..04b3613 100644
              if let Some(rate) = self.rpc.as_ref().and_then(|rpc| rpc.session().uplink_rate()) {
                  self.uploads.note_rate(rate);
              }
-@@ -1174,14 +1436,17 @@ impl SessionRuntime {
+@@ -1174,14 +1445,17 @@ impl SessionRuntime {
                      Some(cached) => {
                          cached.addresses[failures.saturating_sub(cached.failures_at) as usize % cached.addresses.len()]
                      }
@@ -3157,7 +3639,7 @@ index 69a7dc6..04b3613 100644
                                  failures_at: failures,
                              });
                              first
-@@ -1205,7 +1470,22 @@ impl SessionRuntime {
+@@ -1205,7 +1479,22 @@ impl SessionRuntime {
          }
      }
  
@@ -3181,7 +3663,7 @@ index 69a7dc6..04b3613 100644
      pub(super) fn resolve_cached(&mut self, host: &str, port: u16, resolver: &mut dyn Resolve, now: Now) -> Resolution {
          let key = (host.to_string(), port);
          if let Some((addresses, expires_at)) = self.dns.get(&key)
-@@ -1213,7 +1493,7 @@ impl SessionRuntime {
+@@ -1213,7 +1502,7 @@ impl SessionRuntime {
          {
              return Resolution::Resolved(addresses.clone());
          }
@@ -3190,7 +3672,7 @@ index 69a7dc6..04b3613 100644
          if let Resolution::Resolved(addresses) = &resolution {
              let lifetime = if addresses.is_empty() { RESOLVE_RETRY_MIN } else { DNS_TTL };
              self.dns.insert(key, (addresses.clone(), now.mono + lifetime));
-@@ -1222,6 +1502,10 @@ impl SessionRuntime {
+@@ -1222,6 +1511,10 @@ impl SessionRuntime {
      }
  
      pub fn on_resolved(&mut self, host: &str, port: u16, addresses: Vec<SocketAddr>, now: Now) {
@@ -3201,7 +3683,7 @@ index 69a7dc6..04b3613 100644
          let lifetime = if addresses.is_empty() { RESOLVE_RETRY_MIN } else { DNS_TTL };
          self.dns.insert((host.to_string(), port), (addresses.clone(), now.mono + lifetime));
          if self.http_connects_to(host, port) {
-@@ -1290,6 +1574,10 @@ impl SessionRuntime {
+@@ -1290,12 +1583,16 @@ impl SessionRuntime {
              Pick::Ready(index, socket_address, address) => (index, socket_address, address),
              pick => return self.defer_connection(pick, now),
          };
@@ -3212,7 +3694,14 @@ index 69a7dc6..04b3613 100644
          let socks = self.tunnel_for(&address);
          let transport = TransportConfig {
              framing: self.setup.framing,
-@@ -1405,6 +1693,10 @@ impl SessionRuntime {
+             dc_id: self.setup.obfuscation_dc_id,
+             secret: self.setup.proxy_secret(&address),
+-            unix_time: (now.unix + self.time_difference()) as i32,
++            unix_time: self.tls_hello_time(now),
+         };
+         let token = self.free_token();
+         match Connection::connect(registry, token, socket_address, &transport, socks, index, now.mono, rng) {
+@@ -1405,11 +1702,15 @@ impl SessionRuntime {
          {
              socket_address = other;
          }
@@ -3223,7 +3712,13 @@ index 69a7dc6..04b3613 100644
          let transport = TransportConfig {
              framing: self.setup.framing,
              dc_id: self.setup.obfuscation_dc_id,
-@@ -1606,6 +1898,15 @@ impl SessionRuntime {
+             secret: self.setup.proxy_secret(&address),
+-            unix_time: (now.unix + self.time_difference()) as i32,
++            unix_time: self.tls_hello_time(now),
+         };
+         let token = self.free_token();
+         match Connection::connect(registry, token, socket_address, &transport, None, index, now.mono, rng) {
+@@ -1606,6 +1907,15 @@ impl SessionRuntime {
              return;
          }
          if verified {
@@ -3239,7 +3734,19 @@ index 69a7dc6..04b3613 100644
              if self.http.is_some() {
                  self.switch_back_to_tcp(registry, now, callbacks);
              } else if self.auto.on_websocket {
-@@ -1705,7 +2006,7 @@ impl SessionRuntime {
+@@ -1646,6 +1956,11 @@ impl SessionRuntime {
+         self.rpc.as_ref().map(|rpc| rpc.session().time_difference()).unwrap_or(self.setup.time_difference)
+     }
+ 
++    /// The time a fake-TLS hello constructed now says.
++    fn tls_hello_time(&self, now: Now) -> i32 {
++        (now.unix + self.tls_hello_time_offset.unwrap_or_else(|| self.time_difference())) as i32
++    }
++
+     fn on_established(&mut self, now: Now, callbacks: &Arc<dyn EngineCallbacks>, rng: &mut OsRandom) {
+         match &mut self.connection {
+             Some(connection) => {
+@@ -1705,7 +2020,7 @@ impl SessionRuntime {
              let result = self.connection.as_mut().expect("connection").handle_writable(registry, now.mono);
              if self.racer.is_some()
                  && self.racer_check.is_none()
@@ -3248,7 +3755,7 @@ index 69a7dc6..04b3613 100644
              {
                  self.drop_racer(registry);
              }
-@@ -1774,7 +2075,7 @@ impl SessionRuntime {
+@@ -1774,7 +2089,7 @@ impl SessionRuntime {
                  return false;
              }
              self.log(callbacks, LogLevel::Info, &format!("connection closed: {error}"));
@@ -3257,7 +3764,7 @@ index 69a7dc6..04b3613 100644
              let reason = self.close_reason.take();
              let dropped = match reason {
                  Some(CloseReason::ServerRejected) => DropReason::KeyInvalid,
-@@ -1832,7 +2133,7 @@ impl SessionRuntime {
+@@ -1832,7 +2147,7 @@ impl SessionRuntime {
      /// would hold a dead connection for ever.
      fn frame_is_progressing(&mut self, now: Now) -> bool {
          let Some(received) =
@@ -3266,7 +3773,7 @@ index 69a7dc6..04b3613 100644
          else {
              return false;
          };
-@@ -2073,6 +2374,7 @@ impl SessionRuntime {
+@@ -2073,6 +2388,7 @@ impl SessionRuntime {
      }
  
      fn on_transport_error_with(&mut self, code: i32, proven: bool, now: Now, callbacks: &Arc<dyn EngineCallbacks>) {
@@ -3274,7 +3781,15 @@ index 69a7dc6..04b3613 100644
          let kind = TransportErrorKind::from_code(code);
          if self.handshake.is_some() {
              callbacks.on_event(
-@@ -2295,6 +2597,19 @@ impl SessionRuntime {
+@@ -2277,6 +2593,7 @@ impl SessionRuntime {
+                 EngineEvent::ConnectionDropped {
+                     reason,
+                     answered: connection.received_packet,
++                    fake_tls_unverified: connection.fake_tls_unverified(),
+                     age: now.mono - connection.started_at,
+                 },
+             );
+@@ -2295,6 +2612,19 @@ impl SessionRuntime {
          config: &EngineConfig,
          callbacks: &Arc<dyn EngineCallbacks>,
          rng: &mut OsRandom,
@@ -3294,7 +3809,7 @@ index 69a7dc6..04b3613 100644
      ) {
          if self.drive_drain(now, registry, callbacks) {
              return;
-@@ -2411,7 +2726,7 @@ impl SessionRuntime {
+@@ -2411,7 +2741,7 @@ impl SessionRuntime {
          let mut silence = false;
          if failure.is_none()
              && let Some(rpc) = &mut self.rpc
@@ -3303,7 +3818,7 @@ index 69a7dc6..04b3613 100644
              && self.handshake.is_none()
              && let Err(error) = rpc.handle_timeout(now)
          {
-@@ -2524,8 +2839,8 @@ impl SessionRuntime {
+@@ -2524,8 +2854,8 @@ impl SessionRuntime {
          }
      }
  
@@ -3314,7 +3829,7 @@ index 69a7dc6..04b3613 100644
              || self.http.as_ref().is_some_and(HttpState::is_connected);
          let received = self.connection_received_packet() || self.http.as_ref().is_some_and(HttpState::answered);
          let key_unbound = self.rpc.is_some() && self.pfs.as_ref().is_some_and(|pfs| pfs.perm.is_some() && !pfs.bound);
-@@ -2540,15 +2855,25 @@ impl SessionRuntime {
+@@ -2540,15 +2870,25 @@ impl SessionRuntime {
                      || (self.http.is_some() && !received && (self.rejections >= 3 || self.open_failures() >= 3))),
              awaiting_key_binding: connected && received && key_unbound,
          };
@@ -3343,7 +3858,7 @@ index 69a7dc6..04b3613 100644
          }
      }
  
-@@ -2754,7 +3079,13 @@ impl Drop for SessionRuntime {
+@@ -2754,7 +3094,13 @@ impl Drop for SessionRuntime {
  #[cfg(test)]
  mod tests {
      use super::*;
@@ -3357,7 +3872,7 @@ index 69a7dc6..04b3613 100644
  
      struct ScriptedResolver {
          answers: VecDeque<Vec<SocketAddr>>,
-@@ -2820,6 +3151,1342 @@ mod tests {
+@@ -2820,6 +3166,1353 @@ mod tests {
          );
          assert_eq!(resolver.calls, 3);
      }
@@ -3366,7 +3881,7 @@ index 69a7dc6..04b3613 100644
 +    const MEDIA: i16 = -10_002;
 +
 +    #[derive(Default)]
-+    struct Recorded(std::sync::Mutex<Vec<EngineEvent>>);
++    pub(super) struct Recorded(pub(super) std::sync::Mutex<Vec<EngineEvent>>);
 +
 +    impl EngineCallbacks for Recorded {
 +        fn on_event(&self, _session: SessionHandle, event: EngineEvent) {
@@ -3841,28 +4356,30 @@ index 69a7dc6..04b3613 100644
 +
 +    /// A local listener that takes connections and never answers, keeping each open: what a session opens
 +    /// to it is counted.
-+    struct Sink {
-+        listener: std::net::TcpListener,
-+        taken: Vec<std::net::TcpStream>,
++    pub(super) struct Sink {
++        pub(super) listener: std::net::TcpListener,
++        pub(super) taken: Vec<std::net::TcpStream>,
++        /// What each connection taken has sent, as far as `hello_time` read it.
++        pub(super) sent: Vec<Vec<u8>>,
 +    }
 +
 +    impl Sink {
-+        fn new() -> Self {
++        pub(super) fn new() -> Self {
 +            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
 +            listener.set_nonblocking(true).unwrap();
-+            Self { listener, taken: Vec::new() }
++            Self { listener, taken: Vec::new(), sent: Vec::new() }
 +        }
 +
-+        fn port(&self) -> u16 {
++        pub(super) fn port(&self) -> u16 {
 +            self.listener.local_addr().unwrap().port()
 +        }
 +
-+        fn address(&self) -> DcAddress {
++        pub(super) fn address(&self) -> DcAddress {
 +            DcAddress { host: "127.0.0.1".into(), port: self.port(), secret: None }
 +        }
 +
 +        /// The connections taken so far, after `SETTLE` for those on their way.
-+        fn taken(&mut self) -> usize {
++        pub(super) fn taken(&mut self) -> usize {
 +            let deadline = Instant::now() + SETTLE;
 +            loop {
 +                while let Ok((stream, _)) = self.listener.accept() {
@@ -3878,20 +4395,24 @@ index 69a7dc6..04b3613 100644
 +
 +    /// A main session with a key on a virtual clock, driven as the worker drives it: I/O, the host's
 +    /// commands, then `drive`. Commands between two drives are one batch.
-+    struct Gate {
-+        poll: mio::Poll,
++    pub(super) struct Gate {
++        pub(super) poll: mio::Poll,
 +        events: mio::Events,
 +        scratch: Vec<u8>,
 +        rng: OsRandom,
-+        recorded: Arc<Recorded>,
++        pub(super) recorded: Arc<Recorded>,
 +        callbacks: Arc<dyn EngineCallbacks>,
 +        config: EngineConfig,
-+        start: Now,
-+        elapsed: f64,
-+        runtime: SessionRuntime,
++        pub(super) start: Now,
++        pub(super) elapsed: f64,
++        pub(super) runtime: SessionRuntime,
 +    }
 +
-+    fn gate_setup(tcp: Vec<DcAddress>, http: Vec<DcAddress>, transport: TransportPreference) -> SessionSetup {
++    pub(super) fn gate_setup(
++        tcp: Vec<DcAddress>,
++        http: Vec<DcAddress>,
++        transport: TransportPreference,
++    ) -> SessionSetup {
 +        let mut setup = SessionSetup::new(2, SessionRole::Main, tcp);
 +        setup.transport = transport;
 +        setup.http_port = None;
@@ -3900,7 +4421,7 @@ index 69a7dc6..04b3613 100644
 +    }
 +
 +    impl Gate {
-+        fn new(mut setup: SessionSetup, required: bool) -> Self {
++        pub(super) fn new(mut setup: SessionSetup, required: bool) -> Self {
 +            let start = Now { mono: 1000.0, unix: 1_727_000_000.0 };
 +            setup.auth_key = Some(AuthKeyMaterial {
 +                key: AuthKey::new([7u8; 256]),
@@ -3925,17 +4446,17 @@ index 69a7dc6..04b3613 100644
 +            }
 +        }
 +
-+        fn now(&self) -> Now {
++        pub(super) fn now(&self) -> Now {
 +            Now { mono: self.start.mono + self.elapsed, unix: self.start.unix + self.elapsed }
 +        }
 +
-+        fn drive(&mut self) {
++        pub(super) fn drive(&mut self) {
 +            let now = self.now();
 +            self.runtime.drive(self.poll.registry(), now, &mut NoLookups, &self.config, &self.callbacks, &mut self.rng);
 +        }
 +
 +        /// A drive every `step` seconds for `seconds`.
-+        fn drive_for(&mut self, seconds: f64, step: f64) {
++        pub(super) fn drive_for(&mut self, seconds: f64, step: f64) {
 +            let end = self.elapsed + seconds;
 +            while self.elapsed < end {
 +                self.elapsed += step;
@@ -3945,10 +4466,15 @@ index 69a7dc6..04b3613 100644
 +
 +        /// I/O, then a drive, a millisecond later on the virtual clock.
 +        fn turn(&mut self) {
++            self.turn_with(|_| true);
++        }
++
++        /// `turn`, with I/O only for the connections `polled` names: the others stay as they are.
++        pub(super) fn turn_with(&mut self, polled: impl Fn(Token) -> bool) {
 +            self.poll.poll(&mut self.events, Some(Duration::from_millis(2))).unwrap();
 +            self.elapsed += 0.001;
 +            let now = self.now();
-+            for event in self.events.iter() {
++            for event in self.events.iter().filter(|event| polled(event.token())) {
 +                let readable = event.is_readable() || event.is_read_closed() || event.is_error();
 +                let writable = event.is_writable() || event.is_write_closed();
 +                self.runtime.handle_io(
@@ -3977,7 +4503,7 @@ index 69a7dc6..04b3613 100644
 +            true
 +        }
 +
-+        fn admit(&mut self, id: u64, admitted: bool) {
++        pub(super) fn admit(&mut self, id: u64, admitted: bool) {
 +            let now = self.now();
 +            self.runtime.admit_route(id, admitted, now);
 +        }
@@ -3994,7 +4520,7 @@ index 69a7dc6..04b3613 100644
 +        }
 +
 +        /// Every `RouteRequired` so far: its id, transport, host and port.
-+        fn asked(&self) -> Vec<(u64, RouteTransport, String, u16)> {
++        pub(super) fn asked(&self) -> Vec<(u64, RouteTransport, String, u16)> {
 +            self.recorded
 +                .0
 +                .lock()
@@ -4010,7 +4536,7 @@ index 69a7dc6..04b3613 100644
 +        }
 +
 +        /// The ids asked for `transport` to the local listener at `port`.
-+        fn asked_for(&self, transport: RouteTransport, port: u16) -> Vec<u64> {
++        pub(super) fn asked_for(&self, transport: RouteTransport, port: u16) -> Vec<u64> {
 +            self.asked()
 +                .into_iter()
 +                .filter(|(_, asked, host, at)| *asked == transport && host == "127.0.0.1" && *at == port)
@@ -4026,7 +4552,7 @@ index 69a7dc6..04b3613 100644
 +            self.runtime.auto.describe(self.now().mono)
 +        }
 +
-+        fn shutdown(mut self) {
++        pub(super) fn shutdown(mut self) {
 +            let now = self.now();
 +            self.runtime.shutdown(self.poll.registry(), now);
 +        }
@@ -4700,8 +5226,16 @@ index 69a7dc6..04b3613 100644
  }
  
  #[cfg(test)]
+@@ -2833,3 +4526,7 @@ mod session_http_route_tests;
+ #[cfg(test)]
+ #[path = "session_explorer_tests.rs"]
+ mod session_explorer_tests;
++
++#[cfg(test)]
++#[path = "session_hello_time_tests.rs"]
++mod session_hello_time_tests;
 diff --git a/crates/mtproto-engine/src/session_websocket.rs b/crates/mtproto-engine/src/session_websocket.rs
-index dac0431..f6d2578 100644
+index dac0431..c2adf8b 100644
 --- a/crates/mtproto-engine/src/session_websocket.rs
 +++ b/crates/mtproto-engine/src/session_websocket.rs
 @@ -27,7 +27,7 @@ impl SessionRuntime {
@@ -4713,6 +5247,15 @@ index dac0431..f6d2578 100644
          let web = self.web_endpoint().filter(|web| !web.ws_path.is_empty())?;
          let (streams, signal) = self.host_streams.as_ref()?;
          let target = StreamTarget {
+@@ -42,7 +42,7 @@ impl SessionRuntime {
+             framing: self.setup.framing,
+             dc_id: self.setup.obfuscation_dc_id,
+             secret: None,
+-            unix_time: (now.unix + self.time_difference()) as i32,
++            unix_time: self.tls_hello_time(now),
+         };
+         let websocket = WebSocketTarget { host: web.authority(), path: web.ws_path.clone() };
+         Some(Connection::over_websocket(pipe, token, &transport, websocket, now.mono, rng))
 @@ -61,12 +61,7 @@ impl SessionRuntime {
              connection.deregister(registry);
              return false;
@@ -4737,7 +5280,7 @@ index dac0431..f6d2578 100644
          self.note_route_http_needed(now);
          self.note_websocket_adopted(now);
 diff --git a/crates/mtproto-engine/src/types.rs b/crates/mtproto-engine/src/types.rs
-index d97db54..beb73b5 100644
+index d97db54..742de4b 100644
 --- a/crates/mtproto-engine/src/types.rs
 +++ b/crates/mtproto-engine/src/types.rs
 @@ -32,6 +32,48 @@ impl core::fmt::Debug for DcAddress {
@@ -4877,7 +5420,18 @@ index d97db54..beb73b5 100644
      NetworkUsage {
          incoming: u64,
          outgoing: u64,
-@@ -467,6 +548,16 @@ pub enum EngineEvent {
+@@ -460,13 +541,26 @@ pub enum EngineEvent {
+         success: bool,
+     },
+     /// The engine dropped a connection; `answered` when the session had taken a packet from it (the
+-    /// auth key handshake does not count), `age` in seconds since it started connecting.
++    /// auth key handshake does not count), `fake_tls_unverified` when it was to carry a fake-TLS hello,
++    /// from an `ee` secret, and no ServerHello verified on it, whether the hello went out or not (never
++    /// on an HTTP link), `age` in seconds since it started connecting.
+     ConnectionDropped {
+         reason: DropReason,
+         answered: bool,
++        fake_tls_unverified: bool,
          age: f64,
      },
      Closed,
@@ -4994,7 +5548,7 @@ index 0000000..ea5f557
 +    crate::types::WebEndpoint,
 +);
 diff --git a/crates/mtproto-engine/src/worker.rs b/crates/mtproto-engine/src/worker.rs
-index b0e3986..9168b49 100644
+index b0e3986..5ae919b 100644
 --- a/crates/mtproto-engine/src/worker.rs
 +++ b/crates/mtproto-engine/src/worker.rs
 @@ -9,13 +9,15 @@ use mtproto_core::crypto::OsRandom;
@@ -5014,7 +5568,7 @@ index b0e3986..9168b49 100644
  
  pub const WAKER_TOKEN: Token = Token(usize::MAX);
  
-@@ -26,24 +28,31 @@ fn session_token(token: Token) -> Token {
+@@ -26,30 +28,38 @@ fn session_token(token: Token) -> Token {
  const MAX_POLL_WAIT: f64 = 60.0;
  const SHRINK_INTERVAL: f64 = 30.0;
  
@@ -5052,7 +5606,14 @@ index b0e3986..9168b49 100644
      SetAuthTokenReady(SessionHandle, bool),
      ResolveVerification(SessionHandle, RequestId, Verification),
      FailRequest(SessionHandle, RequestId, i32, String),
-@@ -59,7 +68,7 @@ pub enum Command {
+     DecideRetry(SessionHandle, RequestId, bool),
+     InvalidateInitialization(SessionHandle),
+     SetTimeDifference(SessionHandle, f64),
++    SetTlsHelloTimeOffset(SessionHandle, Option<f64>),
+     DestroyAuthKey(SessionHandle),
+     Drain(SessionHandle, f64),
+     SetNetworkAvailable(bool),
+@@ -59,7 +69,7 @@ pub enum Command {
  }
  
  struct ThreadResolver {
@@ -5061,7 +5622,7 @@ index b0e3986..9168b49 100644
      waker: Arc<Waker>,
      in_flight: HashMap<(String, u16), (Vec<SessionHandle>, f64)>,
  }
-@@ -81,9 +90,9 @@ impl Resolve for ThreadResolver {
+@@ -81,9 +91,9 @@ impl Resolve for ThreadResolver {
          let waker = self.waker.clone();
          let host = host.to_string();
          let lookup_host = host.clone();
@@ -5073,7 +5634,7 @@ index b0e3986..9168b49 100644
              let _ = waker.wake();
          });
          if spawned.is_err() {
-@@ -96,10 +105,11 @@ impl Resolve for ThreadResolver {
+@@ -96,10 +106,11 @@ impl Resolve for ThreadResolver {
  
  pub struct Worker {
      poll: Poll,
@@ -5087,7 +5648,7 @@ index b0e3986..9168b49 100644
      tokens: HashMap<Token, SessionHandle>,
      next_token: usize,
      callbacks: Arc<dyn EngineCallbacks>,
-@@ -118,8 +128,8 @@ pub struct Worker {
+@@ -118,8 +129,8 @@ pub struct Worker {
  impl Worker {
      pub fn new(
          poll: Poll,
@@ -5098,7 +5659,7 @@ index b0e3986..9168b49 100644
          waker: Arc<Waker>,
          wake_pending: Arc<AtomicBool>,
          callbacks: Arc<dyn EngineCallbacks>,
-@@ -292,13 +302,13 @@ impl Worker {
+@@ -292,13 +303,13 @@ impl Worker {
      }
  
      fn drain_commands(&mut self, now: mtproto_core::session::Now) -> bool {
@@ -5115,7 +5676,7 @@ index b0e3986..9168b49 100644
                      runtime.share_uploads(self.uploads.clone());
                      runtime.share_route_hints(self.hints.clone());
                      if let Some(signal) = &self.signal {
-@@ -306,7 +316,7 @@ impl Worker {
+@@ -306,7 +317,7 @@ impl Worker {
                      }
                      runtime.set_network_available(self.network_available, now, self.poll.registry());
                      self.tokens.insert(token, handle);
@@ -5124,7 +5685,7 @@ index b0e3986..9168b49 100644
                  }
                  Command::Destroy(handle) => {
                      if let Some(mut session) = self.sessions.remove(&handle) {
-@@ -356,9 +366,14 @@ impl Worker {
+@@ -356,9 +367,14 @@ impl Worker {
                          session.set_addresses(addresses, now, self.poll.registry());
                      }
                  }
@@ -5140,7 +5701,7 @@ index b0e3986..9168b49 100644
                      }
                  }
                  Command::SetProxy(handle, proxy) => {
-@@ -366,14 +381,35 @@ impl Worker {
+@@ -366,14 +382,35 @@ impl Worker {
                          session.set_proxy(proxy, now, self.poll.registry());
                      }
                  }
@@ -5178,7 +5739,7 @@ index b0e3986..9168b49 100644
                      }
                  }
                  Command::AllowPermanentKey(handle, allowed) => {
-@@ -388,7 +424,7 @@ impl Worker {
+@@ -388,7 +425,7 @@ impl Worker {
                  }
                  Command::SetWebEndpoint(handle, endpoint) => {
                      if let Some(session) = self.sessions.get_mut(&handle) {
@@ -5187,7 +5748,7 @@ index b0e3986..9168b49 100644
                      }
                  }
                  Command::UseTelegramWeb(handle, test) => {
-@@ -400,7 +436,7 @@ impl Worker {
+@@ -400,7 +437,7 @@ impl Worker {
                  }
                  Command::UpdateEnvironment(handle, environment, noop) => {
                      if let Some(session) = self.sessions.get_mut(&handle) {
@@ -5196,6 +5757,18 @@ index b0e3986..9168b49 100644
                      }
                  }
                  Command::SetAuthTokenReady(handle, ready) => {
+@@ -443,6 +480,11 @@ impl Worker {
+                         session.set_time_difference(difference);
+                     }
+                 }
++                Command::SetTlsHelloTimeOffset(handle, offset) => {
++                    if let Some(session) = self.sessions.get_mut(&handle) {
++                        session.set_tls_hello_time_offset(offset);
++                    }
++                }
+                 Command::SetNetworkAvailable(available) => {
+                     self.network_available = available;
+                     for session in self.sessions.values_mut() {
 diff --git a/crates/mtproto-engine/tests/engine.rs b/crates/mtproto-engine/tests/engine.rs
 index 38a9daa..1439a87 100644
 --- a/crates/mtproto-engine/tests/engine.rs
@@ -7803,6 +8376,885 @@ index e02d047..7f660f9 100644
  }
  
  /// The route memory the engine stores, for one network known to block TCP since `at`.
+diff --git a/crates/mtproto-engine/tests/tls_hello_time.rs b/crates/mtproto-engine/tests/tls_hello_time.rs
+new file mode 100644
+index 0000000..2798eda
+--- /dev/null
++++ b/crates/mtproto-engine/tests/tls_hello_time.rs
+@@ -0,0 +1,873 @@
++//! The time a fake-TLS hello says (`Engine::set_tls_hello_time_offset`), the RPC session's clock beside it and the
++//! drops that tell a host to correct it, over real sockets: `Stats::tls_hello_times` reads each hello as it came,
++//! `Stats::first_executions` the msg id of each call. A proxy that checks a hello's time refuses a session whose clock
++//! is off, so such a session never reaches a server to learn better. No test here counts the attempts: a retry may
++//! race the host's correction any number of times. The virtual clock's exact readings are in `session_runtime.rs`.
++
++use std::io::{Read, Write};
++use std::net::{Ipv4Addr, TcpListener, TcpStream};
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::{Arc, Condvar, Mutex};
++use std::thread::JoinHandle;
++use std::time::{Duration, Instant};
++
++use mtproto_engine::mtproto_core::auth_key::AuthKey;
++use mtproto_engine::mtproto_core::crypto::XorShiftRandom;
++use mtproto_engine::mtproto_core::rpc::{RequestFlags, RequestId, RpcEvent, RpcRequest, SessionRole};
++use mtproto_engine::mtproto_core::session::ServerSalt;
++use mtproto_engine::mtproto_core::transport::{ProxySecret, server_hello_for_tests, verify_client_hello_for_tests};
++use mtproto_engine::{
++    AuthKeyMaterial, DcAddress, DropReason, Engine, EngineCallbacks, EngineConfig, EngineEvent, ProxyConfig,
++    SessionHandle, SessionSetup, TransportPreference, unix_seconds,
++};
++use mtproto_testserver::*;
++
++#[path = "support/eventually.rs"]
++mod eventually;
++use eventually::eventually;
++
++const WAIT: Duration = Duration::from_secs(20);
++/// What the proxy of these tests allows either way, as Telegram's proxies do; every skew here is far outside it.
++const WINDOW: f64 = 120.0;
++const SKEW: f64 = -600.0;
++const FORWARD: f64 = 3600.0;
++/// What a hello's time or a msg id's seconds, truncated, may read beyond the wall clock around it.
++const SLACK: f64 = 2.0;
++/// A difference a report may carry with no correction at all: the clocks here are one clock.
++const NO_SHIFT: f64 = 60.0;
++
++#[derive(Debug, Clone, Copy, PartialEq)]
++struct Dropped {
++    reason: DropReason,
++    answered: bool,
++    unverified: bool,
++}
++
++#[derive(Default)]
++struct Collector {
++    events: Mutex<Vec<EngineEvent>>,
++    logs: Mutex<Vec<String>>,
++    condvar: Condvar,
++}
++
++impl EngineCallbacks for Collector {
++    fn on_event(&self, _session: SessionHandle, event: EngineEvent) {
++        self.events.lock().unwrap().push(event);
++        self.condvar.notify_all();
++    }
++
++    fn on_log(&self, _level: mtproto_engine::LogLevel, message: &str) {
++        self.logs.lock().unwrap().push(message.to_string());
++    }
++}
++
++fn completed(events: &[EngineEvent], id: u64) -> usize {
++    let done = |event: &&EngineEvent| {
++        matches!(event, EngineEvent::Rpc(RpcEvent::Completed { id: done, .. }) if done.0 == id)
++    };
++    events.iter().filter(done).count()
++}
++
++fn drops_in(events: &[EngineEvent]) -> Vec<Dropped> {
++    events
++        .iter()
++        .filter_map(|event| match event {
++            EngineEvent::ConnectionDropped { reason, answered, fake_tls_unverified, .. } => {
++                Some(Dropped { reason: *reason, answered: *answered, unverified: *fake_tls_unverified })
++            }
++            _ => None,
++        })
++        .collect()
++}
++
++impl Collector {
++    fn wait(&self, predicate: impl Fn(&[EngineEvent]) -> bool) -> bool {
++        let deadline = Instant::now() + WAIT;
++        let mut events = self.events.lock().unwrap();
++        loop {
++            if predicate(&events) {
++                return true;
++            }
++            let now = Instant::now();
++            if now >= deadline {
++                return false;
++            }
++            events = self.condvar.wait_timeout(events, deadline - now).unwrap().0;
++        }
++    }
++
++    fn wait_completed(&self, id: u64) {
++        assert!(self.wait(|events| completed(events, id) >= 1), "call {id} did not complete: {:?}", self.drops());
++    }
++
++    fn drops(&self) -> Vec<Dropped> {
++        drops_in(&self.events.lock().unwrap())
++    }
++
++    /// Whether any state said connected.
++    fn connected(&self) -> bool {
++        let connected =
++            |event: &EngineEvent| matches!(event, EngineEvent::ConnectionState { state, .. } if state.connected);
++        self.events.lock().unwrap().iter().any(connected)
++    }
++
++    /// The differences the host was told, in order.
++    fn reports(&self) -> Vec<f64> {
++        self.events
++            .lock()
++            .unwrap()
++            .iter()
++            .filter_map(|event| match event {
++                EngineEvent::Rpc(RpcEvent::TimeDifferenceUpdated { difference }) => Some(*difference),
++                _ => None,
++            })
++            .collect()
++    }
++
++    fn logged(&self, text: &str) -> bool {
++        self.logs.lock().unwrap().iter().any(|line| line.contains(text))
++    }
++}
++
++/// The secrets a host hands over as they are, each with one that is wrong for it.
++fn plain() -> (Vec<u8>, Vec<u8>) {
++    (vec![0x11; 16], vec![0x12; 16])
++}
++
++fn padded() -> (Vec<u8>, Vec<u8>) {
++    let of = |fill: u8| [&[0xdd][..], &[fill; 16]].concat();
++    (of(0x22), of(0x23))
++}
++
++fn fake_tls() -> (Vec<u8>, Vec<u8>) {
++    let of = |fill: u8| [&[0xee][..], &[fill; 16], b"www.example.com"].concat();
++    (of(0x33), of(0x34))
++}
++
++/// Valid over every clock the tests use: a salt out of range is another way to hold a call.
++fn salts() -> Vec<ServerSalt> {
++    let now = unix_seconds();
++    vec![ServerSalt { salt: SERVER_SALT, valid_since: now - 2.0 * FORWARD, valid_until: now + 2.0 * FORWARD }]
++}
++
++fn keyed_setup(addresses: Vec<DcAddress>, key: &AuthKey) -> SessionSetup {
++    let mut setup = SessionSetup::new(2, SessionRole::Main, addresses);
++    setup.auth_key = Some(AuthKeyMaterial { key: key.clone(), salts: salts(), init_hash: None });
++    setup
++}
++
++/// A main session behind the MTProxy at `port`: it never dials its datacenter address, which leads nowhere (RFC 5737).
++fn proxied_setup(port: u16, secret: &[u8], key: &AuthKey) -> SessionSetup {
++    let address = DcAddress { host: "192.0.2.1".into(), port: 443, secret: None };
++    let mut setup = keyed_setup(vec![address], key);
++    setup.proxy = Some(ProxyConfig::MtProxy { host: "127.0.0.1".into(), port, secret: secret.to_vec() });
++    setup
++}
++
++fn request(id: u64, tag: u32) -> RpcRequest {
++    RpcRequest {
++        id: RequestId(id),
++        body: call(tag, &id.to_le_bytes()),
++        flags: RequestFlags::default(),
++        invoke_after: None,
++    }
++}
++
++fn engine_with(collector: &Arc<Collector>, connect_timeout: Option<f64>) -> Engine {
++    let mut config = EngineConfig { worker_threads: 1, ..EngineConfig::default() };
++    config.connect_timeout = connect_timeout.unwrap_or(config.connect_timeout);
++    Engine::new(config, collector.clone()).unwrap()
++}
++
++fn hello_times(server: &TestServer) -> Vec<i32> {
++    server.with_stats(|stats| stats.tls_hello_times.clone())
++}
++
++fn refusals(server: &TestServer) -> usize {
++    server.with_stats(|stats| stats.tls_time_refusals)
++}
++
++/// `reading` is the clock plus `offset`, the clock taken from `since` until now.
++fn assert_says(what: &str, reading: f64, offset: f64, since: f64) {
++    let (low, high) = (since + offset - SLACK, unix_seconds() + offset + SLACK);
++    assert!(low <= reading && reading <= high, "{what}: {reading}, expected {low} to {high}");
++}
++
++/// The hello at `index`, once it came.
++fn wait_hello(server: &TestServer, index: usize) -> f64 {
++    let came = eventually(WAIT, || hello_times(server).len() > index);
++    assert!(came, "no hello number {index}: {:?}", hello_times(server));
++    f64::from(hello_times(server)[index])
++}
++
++/// The seconds of the msg id the call `id` of `tag` first ran with.
++fn id_seconds(server: &TestServer, tag: u32, id: u64) -> f64 {
++    let (_, msg_id, _) = server.with_stats(|stats| stats.first_executions[&(tag, id)]);
++    (msg_id >> 32) as f64
++}
++
++/// A session established through an `ee` MTProxy that takes every hello: what moves at a hello offset, read on it.
++struct Established {
++    server: TestServer,
++    collector: Arc<Collector>,
++    engine: Engine,
++    session: SessionHandle,
++    calls: u64,
++}
++
++impl Established {
++    fn start(seed: u64) -> Self {
++        let key = random_key(seed);
++        let (secret, _) = fake_tls();
++        let options = ServerOptions { secret: Some(secret.clone()), ..Default::default() };
++        let server = TestServer::start(vec![key.clone()], options);
++        let collector = Arc::new(Collector::default());
++        let engine = engine_with(&collector, None);
++        let session = engine.create_session(proxied_setup(server.address.port(), &secret, &key));
++        let mut established = Self { server, collector, engine, session, calls: 0 };
++        let since = unix_seconds();
++        let seconds = established.call();
++        assert_says("the first call's msg id", seconds, 0.0, since);
++        assert_says("the first hello", f64::from(hello_times(&established.server)[0]), 0.0, since);
++        established
++    }
++
++    /// The next call's id, sent.
++    fn send(&mut self) -> u64 {
++        self.calls += 1;
++        self.engine.send(self.session, request(self.calls, 1));
++        self.calls
++    }
++
++    /// The seconds of the msg id of a call already sent, once it completed.
++    fn seconds_of(&self, id: u64) -> f64 {
++        self.collector.wait_completed(id);
++        id_seconds(&self.server, 1, id)
++    }
++
++    fn call(&mut self) -> f64 {
++        let id = self.send();
++        self.seconds_of(id)
++    }
++
++    fn hellos(&self) -> usize {
++        hello_times(&self.server).len()
++    }
++
++    /// A new connection, and what its hello says.
++    fn reconnect(&self) -> f64 {
++        let hellos = self.hellos();
++        self.engine.reset_connections();
++        wait_hello(&self.server, hellos)
++    }
++
++    /// Pauses the session and waits until its connection is gone.
++    fn pause(&self) {
++        let closed = || self.server.with_stats(|stats| stats.closed_by_client + stats.reset_by_client);
++        let before = closed();
++        self.engine.set_paused(self.session, true);
++        assert!(eventually(WAIT, || closed() > before), "the paused session kept its connection");
++    }
++
++    fn assert_no_correction(&self) {
++        let reports = self.collector.reports();
++        assert!(reports.iter().all(|difference| difference.abs() < NO_SHIFT), "the RPC clock moved: {reports:?}");
++    }
++
++    fn finish(self) {
++        self.engine.shutdown();
++    }
++}
++
++/// A local listener in place of a proxy: it reads each connection's fake-TLS hello, keeps its time, lets `answer`
++/// reply and holds the connection open until the test ends.
++struct Front {
++    port: u16,
++    hellos: Arc<Mutex<Vec<i32>>>,
++    stop: Arc<AtomicBool>,
++    thread: Option<JoinHandle<()>>,
++}
++
++impl Front {
++    fn start(secret: &[u8], answer: fn(&[u8], &mut TcpStream)) -> Self {
++        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
++        listener.set_nonblocking(true).unwrap();
++        let port = listener.local_addr().unwrap().port();
++        let key = ProxySecret::from_binary(secret, true).unwrap().proxy_key();
++        let hellos = Arc::new(Mutex::new(Vec::new()));
++        let stop = Arc::new(AtomicBool::new(false));
++        let (kept, stopping) = (hellos.clone(), stop.clone());
++        let thread = std::thread::spawn(move || {
++            let mut held = Vec::new();
++            while !stopping.load(Ordering::Relaxed) {
++                let Ok((mut stream, _)) = listener.accept() else {
++                    std::thread::sleep(Duration::from_millis(5));
++                    continue;
++                };
++                if let Some(hello) = read_hello(&mut stream) {
++                    kept.lock().unwrap().extend(verify_client_hello_for_tests(&hello, &key));
++                    answer(&hello, &mut stream);
++                }
++                held.push(stream);
++            }
++        });
++        Self { port, hellos, stop, thread: Some(thread) }
++    }
++}
++
++impl Drop for Front {
++    fn drop(&mut self) {
++        self.stop.store(true, Ordering::Relaxed);
++        let _ = self.thread.take().map(JoinHandle::join);
++    }
++}
++
++/// One TLS record, within a bound; None when it did not come.
++fn read_hello(stream: &mut TcpStream) -> Option<Vec<u8>> {
++    stream.set_nonblocking(false).ok()?;
++    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
++    let mut hello = vec![0u8; 5];
++    stream.read_exact(&mut hello).ok()?;
++    let body = usize::from(u16::from_be_bytes([hello[3], hello[4]]));
++    hello.resize(5 + body, 0);
++    stream.read_exact(&mut hello[5..]).ok()?;
++    Some(hello)
++}
++
++/// Answers with a well-formed ServerHello signed with another key, as a masking server would answer: the client's
++/// check of it fails.
++fn answer_as_another_server(hello: &[u8], stream: &mut TcpStream) {
++    let _ = stream.write_all(&server_hello_for_tests(hello, &[0x44; 16], &mut XorShiftRandom::new(1)));
++}
++
++fn answer_nothing(_hello: &[u8], _stream: &mut TcpStream) {}
++
++/// A port nothing listens at.
++fn closed_port() -> u16 {
++    TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap().local_addr().unwrap().port()
++}
++
++/// The drops of a session with a call waiting, once there are two. A session flagged at them never said connected.
++fn drops_of(setup: SessionSetup, connect_timeout: Option<f64>) -> Vec<Dropped> {
++    let collector = Arc::new(Collector::default());
++    let engine = engine_with(&collector, connect_timeout);
++    let session = engine.create_session(setup);
++    engine.send(session, request(1, 1));
++    let came = collector.wait(|events| drops_in(events).len() >= 2);
++    let (drops, connected) = (collector.drops(), collector.connected());
++    engine.shutdown();
++    assert!(came, "fewer than two drops: {drops:?}");
++    assert!(!connected || drops.iter().all(|dropped| !dropped.unverified), "connected: {drops:?}");
++    drops
++}
++
++fn assert_flagged(what: &str, drops: &[Dropped], reasons: &[DropReason]) {
++    for dropped in drops {
++        assert!(dropped.unverified && !dropped.answered, "{what}: {drops:?}");
++        assert!(reasons.contains(&dropped.reason), "{what}: {drops:?}");
++    }
++}
++
++fn assert_not_flagged(what: &str, drops: &[Dropped]) {
++    assert!(drops.iter().all(|dropped| !dropped.unverified), "{what}: {drops:?}");
++}
++
++/// A refused hello's close can read as a clean close or, on Windows, as a reset.
++const CLOSED: [DropReason; 2] = [DropReason::Closed, DropReason::IoError];
++
++/// Outside the proxy's window the session is refused and flagged, a call waiting, and never connected. An offset on
++/// the same handle, with no reset and no pause, and it connects: the call completes once and the server's correction
++/// of the RPC clock, which never got that far, reaches the host. A reset keeps the hello at the corrected time.
++#[test]
++fn a_refused_session_recovers_on_its_handle_once_the_offset_comes() {
++    let key = random_key(7301);
++    let (secret, _) = fake_tls();
++    let options = ServerOptions {
++        secret: Some(secret.clone()),
++        tls_time_window: Some(WINDOW),
++        validate_msg_id_time: true,
++        ..Default::default()
++    };
++    let server = TestServer::start(vec![key.clone()], options);
++    let collector = Arc::new(Collector::default());
++    let engine = engine_with(&collector, None);
++    let mut setup = proxied_setup(server.address.port(), &secret, &key);
++    setup.time_difference = SKEW;
++    let since = unix_seconds();
++    let session = engine.create_session(setup);
++    engine.send(session, request(1, 1));
++
++    let refused = collector.wait(|events| !drops_in(events).is_empty());
++    assert!(refused, "no drop came");
++    assert!(refusals(&server) > 0, "dropped without a refusal: {:?}", collector.drops());
++    assert_flagged("refused", &collector.drops(), &CLOSED);
++    assert!(!collector.connected(), "connected while refused");
++    assert_eq!(server.executions(1), 0);
++    for time in hello_times(&server) {
++        assert_says("a refused hello", f64::from(time), SKEW, since);
++    }
++
++    engine.set_tls_hello_time_offset(session, Some(0.0));
++    let recovered = unix_seconds();
++    collector.wait_completed(1);
++    assert!(collector.connected(), "completed without saying connected");
++    assert_eq!(server.with_stats(|stats| stats.unique_executions[&(1, 1)]), 1, "the call ran more than once");
++    assert_says("the hello that got through", f64::from(*hello_times(&server).last().unwrap()), 0.0, recovered);
++    assert_says("the call's msg id", id_seconds(&server, 1, 1), 0.0, recovered);
++    let corrected = |event: &EngineEvent| {
++        matches!(event, EngineEvent::Rpc(RpcEvent::TimeDifferenceUpdated { difference }) if difference.abs() < NO_SHIFT)
++    };
++    let reported = collector.wait(|events| events.iter().any(corrected));
++    assert!(reported, "the server's correction was not reported: {:?}", collector.reports());
++
++    let hellos = hello_times(&server).len();
++    let since = unix_seconds();
++    engine.reset_connections();
++    assert_says("the hello after a reset", wait_hello(&server, hellos), 0.0, since);
++    engine.send(session, request(2, 1));
++    collector.wait_completed(2);
++    engine.shutdown();
++}
++
++/// A session established at the right time that takes a stale offset keeps its live connection. The next connection
++/// says the stale time, whatever the RPC clock knows: it is refused and flagged. A new offset connects it again. Msg
++/// ids and reports stay at the RPC clock's all along.
++#[test]
++fn a_stored_offset_follows_no_correction_until_a_new_one_comes() {
++    let key = random_key(7302);
++    let (secret, _) = fake_tls();
++    let options = ServerOptions {
++        secret: Some(secret.clone()),
++        tls_time_window: Some(WINDOW),
++        validate_msg_id_time: true,
++        ..Default::default()
++    };
++    let server = TestServer::start(vec![key.clone()], options);
++    let collector = Arc::new(Collector::default());
++    let engine = engine_with(&collector, None);
++    let since = unix_seconds();
++    let session = engine.create_session(proxied_setup(server.address.port(), &secret, &key));
++    engine.send(session, request(1, 1));
++    collector.wait_completed(1);
++    assert_eq!(refusals(&server), 0);
++
++    engine.set_tls_hello_time_offset(session, Some(SKEW));
++    engine.send(session, request(2, 1));
++    collector.wait_completed(2);
++    assert_eq!(server.with_stats(|stats| stats.connections), 1, "the setter touched the live connection");
++    assert!(collector.drops().is_empty(), "{:?}", collector.drops());
++
++    let refused_from = hello_times(&server).len();
++    let stale = unix_seconds();
++    engine.reset_connections();
++    engine.send(session, request(3, 1));
++    assert!(eventually(WAIT, || refusals(&server) > 0), "the stale hello was not refused");
++    assert!(collector.wait(|events| !drops_in(events).is_empty()), "the refusal dropped nothing");
++    assert_flagged("stale", &collector.drops(), &CLOSED);
++    assert_says("a stale hello", f64::from(hello_times(&server)[refused_from]), SKEW, stale);
++
++    engine.set_tls_hello_time_offset(session, Some(0.0));
++    collector.wait_completed(3);
++    assert_says("the repaired hello", f64::from(*hello_times(&server).last().unwrap()), 0.0, stale);
++    for id in [1, 2, 3] {
++        assert_says("a call's msg id", id_seconds(&server, 1, id), 0.0, since);
++    }
++    let reports = collector.reports();
++    assert!(reports.iter().all(|difference| difference.abs() < NO_SHIFT), "the RPC clock moved: {reports:?}");
++    engine.shutdown();
++}
++
++/// A server corrects the RPC clock, at no hello's refusal. With no offset the next hello follows it; a stored offset
++/// stays where it was through the same correction, and once cleared the hello follows it as well.
++#[test]
++fn a_default_or_cleared_hello_follows_a_correction_and_a_stored_one_does_not() {
++    for stored in [None, Some(-1200.0)] {
++        let key = random_key(7303);
++        let (secret, _) = fake_tls();
++        let options = ServerOptions { secret: Some(secret.clone()), validate_msg_id_time: true, ..Default::default() };
++        let server = TestServer::start(vec![key.clone()], options);
++        let collector = Arc::new(Collector::default());
++        let engine = engine_with(&collector, None);
++        let mut setup = proxied_setup(server.address.port(), &secret, &key);
++        setup.time_difference = SKEW;
++        setup.paused = true;
++        let since = unix_seconds();
++        let session = engine.create_session(setup);
++        engine.set_tls_hello_time_offset(session, stored);
++        engine.send(session, request(1, 1));
++        engine.set_paused(session, false);
++        collector.wait_completed(1);
++        let says = stored.unwrap_or(SKEW);
++        assert_says("the first hello", f64::from(hello_times(&server)[0]), says, since);
++        let reports = collector.reports();
++        assert!(reports.last().is_some_and(|last| last.abs() < NO_SHIFT), "no correction: {reports:?}");
++
++        let hellos = hello_times(&server).len();
++        let since = unix_seconds();
++        engine.reset_connections();
++        let says = stored.unwrap_or(0.0);
++        assert_says("the hello after the correction", wait_hello(&server, hellos), says, since);
++        engine.send(session, request(2, 1));
++        collector.wait_completed(2);
++
++        if stored.is_some() {
++            engine.set_tls_hello_time_offset(session, None);
++            let hellos = hello_times(&server).len();
++            let since = unix_seconds();
++            engine.reset_connections();
++            assert_says("the hello once cleared", wait_hello(&server, hellos), 0.0, since);
++            engine.send(session, request(3, 1));
++            collector.wait_completed(3);
++        }
++        engine.shutdown();
++    }
++}
++
++/// On a live connection a forward offset moves nothing: the calls after it keep their msg ids at the wall clock, on
++/// that connection and on the next, whose hello says the offset. After `reduced`, which brings the hello back, they
++/// are still there: no floor was left.
++fn an_active_session_keeps_its_ids_through(seed: u64, reduced: Option<f64>) {
++    let mut rig = Established::start(seed);
++    let connections = rig.server.with_stats(|stats| stats.connections);
++    let since = unix_seconds();
++    rig.engine.set_tls_hello_time_offset(rig.session, Some(FORWARD));
++    assert_says("a msg id right after the setter", rig.call(), 0.0, since);
++    assert_eq!(rig.server.with_stats(|stats| stats.connections), connections, "the setter touched the connection");
++
++    assert_says("the forward hello", rig.reconnect(), FORWARD, since);
++    assert_says("a msg id under the forward hello", rig.call(), 0.0, since);
++
++    rig.engine.set_tls_hello_time_offset(rig.session, reduced);
++    assert_says("the hello brought back", rig.reconnect(), 0.0, since);
++    assert_says("a msg id after it", rig.call(), 0.0, since);
++    rig.assert_no_correction();
++    rig.finish();
++}
++
++#[test]
++fn an_active_session_keeps_its_ids_through_a_forward_offset_reduced_to_zero() {
++    an_active_session_keeps_its_ids_through(7304, Some(0.0));
++}
++
++#[test]
++fn an_active_session_keeps_its_ids_through_a_forward_offset_cleared() {
++    an_active_session_keeps_its_ids_through(7305, None);
++}
++
++/// The same on an established paused session: a call waiting across the pause goes out with a msg id at the wall
++/// clock, under a hello that says the offset, and again once it is brought back.
++fn a_paused_session_keeps_its_ids_through(seed: u64, reduced: Option<f64>) {
++    let mut rig = Established::start(seed);
++    let since = unix_seconds();
++    rig.pause();
++    rig.engine.set_tls_hello_time_offset(rig.session, Some(FORWARD));
++    let (id, hellos) = (rig.send(), rig.hellos());
++    rig.engine.set_paused(rig.session, false);
++    assert_says("the forward hello", wait_hello(&rig.server, hellos), FORWARD, since);
++    assert_says("a msg id under the forward hello", rig.seconds_of(id), 0.0, since);
++
++    rig.pause();
++    rig.engine.set_tls_hello_time_offset(rig.session, reduced);
++    let (id, hellos) = (rig.send(), rig.hellos());
++    rig.engine.set_paused(rig.session, false);
++    assert_says("the hello brought back", wait_hello(&rig.server, hellos), 0.0, since);
++    assert_says("a msg id after it", rig.seconds_of(id), 0.0, since);
++    rig.assert_no_correction();
++    rig.finish();
++}
++
++#[test]
++fn a_paused_session_keeps_its_ids_through_a_forward_offset_reduced_to_zero() {
++    a_paused_session_keeps_its_ids_through(7306, Some(0.0));
++}
++
++#[test]
++fn a_paused_session_keeps_its_ids_through_a_forward_offset_cleared() {
++    a_paused_session_keeps_its_ids_through(7307, None);
++}
++
++/// The control of the two above, so that their reading can see what they rule out. The RPC setter on the same shapes
++/// does shift the next msg id by what it was given, the hello with it, and after it is brought back the ids stay up
++/// at the floor the shift left.
++#[test]
++fn the_rpc_setter_on_the_same_shapes_shifts_the_ids_and_leaves_a_floor() {
++    for (seed, paused) in [(7308, false), (7309, true)] {
++        let mut rig = Established::start(seed);
++        let since = unix_seconds();
++        let hellos = rig.hellos();
++        if paused {
++            rig.pause();
++        }
++        rig.engine.set_time_difference(rig.session, FORWARD);
++        if paused {
++            rig.engine.set_paused(rig.session, false);
++        } else {
++            rig.engine.reset_connections();
++        }
++        assert_says("the hello at the RPC clock", wait_hello(&rig.server, hellos), FORWARD, since);
++        let shifted = rig.call();
++        assert_says("a msg id right after the RPC setter", shifted, FORWARD, since);
++
++        rig.engine.set_time_difference(rig.session, 0.0);
++        let floored = rig.call();
++        assert!(floored >= shifted, "paused {paused}: {floored} under the shifted {shifted}");
++        assert_says("a msg id at the floor", floored, FORWARD, since);
++        rig.finish();
++    }
++}
++
++/// The session whose `ee` TCP route refuses its stored -600 falls back to HTTP, and learns the right time there from
++/// a server that checks msg ids. It runs a call over HTTP, and rechecks TCP from then on.
++struct RouteTransition {
++    tcp: TestServer,
++    http: TestServer,
++    collector: Arc<Collector>,
++    engine: Engine,
++    session: SessionHandle,
++}
++
++impl RouteTransition {
++    fn start(seed: u64) -> Self {
++        let key = random_key(seed);
++        let (secret, _) = fake_tls();
++        let options =
++            ServerOptions { secret: Some(secret.clone()), tls_time_window: Some(WINDOW), ..Default::default() };
++        let tcp = TestServer::start(vec![key.clone()], options);
++        let options = ServerOptions { validate_msg_id_time: true, ..Default::default() };
++        let http = TestServer::start(vec![key.clone()], options);
++        let collector = Arc::new(Collector::default());
++        let engine = engine_with(&collector, None);
++        let address = DcAddress { host: "127.0.0.1".into(), port: tcp.address.port(), secret: Some(secret) };
++        let mut setup = keyed_setup(vec![address], &key);
++        setup.transport = TransportPreference::Auto;
++        setup.http_port = None;
++        let http_address = DcAddress { host: "127.0.0.1".into(), port: http.address.port(), secret: None };
++        setup.http_addresses = Some(vec![http_address]);
++        setup.tcp_recheck_after = 0.5;
++        setup.time_difference = SKEW;
++        setup.paused = true;
++        let since = unix_seconds();
++        let session = engine.create_session(setup);
++        engine.set_tls_hello_time_offset(session, Some(SKEW));
++        engine.send(session, request(1, 1));
++        engine.set_paused(session, false);
++
++        collector.wait_completed(1);
++        assert_eq!((tcp.executions(1), http.executions(1)), (0, 1), "the call did not go over HTTP");
++        let reports = collector.reports();
++        assert!(reports.last().is_some_and(|last| last.abs() < NO_SHIFT), "HTTP corrected nothing: {reports:?}");
++        assert!(refusals(&tcp) > 0, "TCP refused nothing");
++        for time in hello_times(&tcp) {
++            assert_says("a hello under the stored offset", f64::from(time), SKEW, since);
++        }
++        Self { tcp, http, collector, engine, session }
++    }
++}
++
++/// Telegram clears the offset when a session leaves MTProxy: then the TCP recheck says the time HTTP corrected, and
++/// the session goes back to TCP. A recheck that kept a stale time would keep such a session on HTTP for good.
++#[test]
++fn a_tcp_recheck_follows_the_time_http_learned_once_the_offset_is_cleared() {
++    let rig = RouteTransition::start(7310);
++    let hellos = hello_times(&rig.tcp).len();
++    let since = unix_seconds();
++    rig.engine.set_tls_hello_time_offset(rig.session, None);
++
++    let back = eventually(WAIT, || rig.collector.logged("a TCP route answers again"));
++    let times = hello_times(&rig.tcp);
++    assert!(back, "still on HTTP: {times:?}");
++    // The attempts up to the command may still carry the stored offset; the last one, the one that got through, not.
++    assert!(times.len() > hellos, "no hello since the clear");
++    assert_says("the recheck that got through", f64::from(*times.last().unwrap()), 0.0, since);
++
++    rig.engine.send(rig.session, request(2, 2));
++    rig.collector.wait_completed(2);
++    assert_eq!((rig.tcp.executions(2), rig.http.executions(2)), (1, 0), "the call stayed on HTTP");
++    rig.engine.shutdown();
++}
++
++/// The inverse: with the offset still stored the rechecks stay at it, whatever HTTP taught the RPC clock, and each is
++/// refused, so calls stay on HTTP.
++#[test]
++fn a_tcp_recheck_stays_at_a_stored_offset() {
++    let rig = RouteTransition::start(7311);
++    let hellos = hello_times(&rig.tcp).len();
++    let since = unix_seconds();
++    let came = eventually(WAIT, || hello_times(&rig.tcp).len() >= hellos + 2);
++    assert!(came, "no rechecks came: {:?}", hello_times(&rig.tcp));
++    for time in hello_times(&rig.tcp).split_off(hellos) {
++        assert_says("a recheck under the stored offset", f64::from(time), SKEW, since);
++    }
++    assert!(!rig.collector.logged("a TCP route answers again"), "a stale recheck got through");
++    rig.engine.send(rig.session, request(2, 2));
++    rig.collector.wait_completed(2);
++    assert_eq!((rig.tcp.executions(2), rig.http.executions(2)), (0, 1), "the call left HTTP");
++    rig.engine.shutdown();
++}
++
++/// The bit says the connection was to carry a fake-TLS hello and no ServerHello verified on it: so at a proxy's
++/// close for the hello's time, and at its close for the hello's signature, where it reads no time at all.
++#[test]
++fn an_ee_connection_closed_before_a_verified_server_hello_is_flagged() {
++    let key = random_key(7312);
++    let (secret, wrong) = fake_tls();
++    let options = ServerOptions { secret: Some(secret.clone()), tls_time_window: Some(WINDOW), ..Default::default() };
++    let server = TestServer::start(vec![key.clone()], options);
++    let mut setup = proxied_setup(server.address.port(), &secret, &key);
++    setup.time_difference = SKEW;
++    assert_flagged("refused for its time", &drops_of(setup, None), &CLOSED);
++    assert!(refusals(&server) >= 2, "{}", refusals(&server));
++
++    let other = TestServer::start(vec![key.clone()], ServerOptions { secret: Some(secret), ..Default::default() });
++    let setup = proxied_setup(other.address.port(), &wrong, &key);
++    assert_flagged("refused for its secret", &drops_of(setup, None), &CLOSED);
++    assert!(hello_times(&other).is_empty(), "the server took a hello signed with another key");
++}
++
++/// A ServerHello signed with another key, as from a masking server, reaches the session as bytes that cannot be right.
++#[test]
++fn an_ee_connection_answered_by_another_server_is_flagged() {
++    let (secret, _) = fake_tls();
++    let front = Front::start(&secret, answer_as_another_server);
++    let drops = drops_of(proxied_setup(front.port, &secret, &random_key(7313)), None);
++    assert_flagged("masked", &drops, &[DropReason::Protocol]);
++    assert!(front.hellos.lock().unwrap().len() >= 2, "the hellos did not reach the listener");
++}
++
++/// A hello no one answers ends at the connect timeout, flagged like a refusal.
++#[test]
++fn an_ee_connection_left_unanswered_is_flagged() {
++    let (secret, _) = fake_tls();
++    let front = Front::start(&secret, answer_nothing);
++    let drops = drops_of(proxied_setup(front.port, &secret, &random_key(7314)), Some(0.3));
++    assert_flagged("silent", &drops, &[DropReason::ConnectTimeout]);
++    assert!(!front.hellos.lock().unwrap().is_empty(), "the hello did not reach the listener");
++}
++
++/// Where TCP itself failed no hello was sent, and none verified: flagged as well, as native asks for the time at any
++/// error before it connected. So the bit says nothing about a skew.
++#[test]
++fn an_ee_connection_that_never_connected_is_flagged() {
++    let (secret, _) = fake_tls();
++    let drops = drops_of(proxied_setup(closed_port(), &secret, &random_key(7315)), None);
++    assert_flagged("closed port", &drops, &[DropReason::IoError]);
++}
++
++/// Once a ServerHello verified the proxy has taken the time, so a close after it is no reason to read the clock.
++#[test]
++fn an_ee_connection_closed_after_a_verified_server_hello_is_not_flagged() {
++    let key = random_key(7316);
++    let (secret, _) = fake_tls();
++    let options = ServerOptions { secret: Some(secret.clone()), reject_with: Some(-403), ..Default::default() };
++    let server = TestServer::start(vec![key.clone()], options);
++    let collector = Arc::new(Collector::default());
++    let engine = engine_with(&collector, None);
++    let session = engine.create_session(proxied_setup(server.address.port(), &secret, &key));
++    engine.send(session, request(1, 1));
++    let came = collector.wait(|events| drops_in(events).len() >= 2);
++    let drops = collector.drops();
++    engine.shutdown();
++    assert!(came, "fewer than two drops: {drops:?}");
++    assert_not_flagged("verified, then closed", &drops);
++    assert!(drops.iter().all(|dropped| dropped.reason == DropReason::AddressRejected), "{drops:?}");
++    assert!(hello_times(&server).len() >= 2);
++}
++
++/// Without an `ee` secret no attempt is flagged and no hello is sent, connected or not: at a wrong secret, and where
++/// TCP itself failed, before any connection is established.
++#[test]
++fn a_plain_or_padded_failure_is_not_flagged() {
++    for (kind, (secret, wrong)) in [("plain", plain()), ("dd", padded())] {
++        let key = random_key(7317);
++        let server = TestServer::start(vec![key.clone()], ServerOptions { secret: Some(secret), ..Default::default() });
++        let drops = drops_of(proxied_setup(server.address.port(), &wrong, &key), None);
++        assert_not_flagged(&format!("{kind}, a wrong secret"), &drops);
++        assert!(server.with_stats(|stats| stats.connections) > 0, "{kind}: no attempt reached the server");
++        assert!(hello_times(&server).is_empty(), "{kind}: {:?}", hello_times(&server));
++
++        let drops = drops_of(proxied_setup(closed_port(), &wrong, &key), None);
++        assert_not_flagged(&format!("{kind}, a closed port"), &drops);
++        assert!(drops.iter().all(|dropped| dropped.reason == DropReason::IoError), "{kind}: {drops:?}");
++    }
++}
++
++/// Whatever the secret, a connection a packet came on that then dropped reads answered, and not the bit: the two say
++/// different things. The session then recovers as it did.
++#[test]
++fn answered_stays_apart_from_the_bit() {
++    for (kind, (secret, _)) in [("plain", plain()), ("dd", padded()), ("ee", fake_tls())] {
++        let key = random_key(7318);
++        let options = ServerOptions { secret: Some(secret.clone()), ..Default::default() };
++        let server = TestServer::start(vec![key.clone()], options);
++        let collector = Arc::new(Collector::default());
++        let engine = engine_with(&collector, None);
++        let session = engine.create_session(proxied_setup(server.address.port(), &secret, &key));
++        engine.send(session, request(1, 1));
++        collector.wait_completed(1);
++        engine.send(session, request(2, TAG_DROP_CONNECTION_ONCE));
++        collector.wait_completed(2);
++        let drops = collector.drops();
++        engine.shutdown();
++        assert!(!drops.is_empty(), "{kind}: the server's close dropped nothing");
++        for dropped in &drops {
++            assert!(dropped.answered && !dropped.unverified, "{kind}: {drops:?}");
++        }
++        assert_eq!(hello_times(&server).is_empty(), kind != "ee", "{kind}: {:?}", hello_times(&server));
++    }
++}
++
++/// The engine does not know a host's route policy: a direct route with an `ee` address reads the bit at a refusal and
++/// takes the offset as an MTProxy route does.
++#[test]
++fn a_direct_ee_address_reads_the_bit_and_takes_the_offset() {
++    let key = random_key(7319);
++    let (secret, _) = fake_tls();
++    let options = ServerOptions {
++        secret: Some(secret.clone()),
++        tls_time_window: Some(WINDOW),
++        validate_msg_id_time: true,
++        ..Default::default()
++    };
++    let server = TestServer::start(vec![key.clone()], options);
++    let collector = Arc::new(Collector::default());
++    let engine = engine_with(&collector, None);
++    let address = DcAddress { host: "127.0.0.1".into(), port: server.address.port(), secret: Some(secret) };
++    let mut setup = keyed_setup(vec![address], &key);
++    setup.time_difference = SKEW;
++    let session = engine.create_session(setup);
++    engine.send(session, request(1, 1));
++    assert!(collector.wait(|events| !drops_in(events).is_empty()), "no drop came");
++    assert!(refusals(&server) > 0);
++    assert_flagged("direct, refused", &collector.drops(), &CLOSED);
++    assert!(!collector.connected());
++
++    engine.set_tls_hello_time_offset(session, Some(0.0));
++    let since = unix_seconds();
++    collector.wait_completed(1);
++    assert_says("the direct hello that got through", f64::from(*hello_times(&server).last().unwrap()), 0.0, since);
++    engine.shutdown();
++}
++
++/// A value that is no number is ignored, with nothing stored and with one stored alike; None clears.
++#[test]
++fn a_non_finite_offset_changes_nothing_and_none_clears() {
++    let mut rig = Established::start(7320);
++    let non_finite = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
++    let since = unix_seconds();
++    for value in non_finite {
++        rig.engine.set_tls_hello_time_offset(rig.session, Some(value));
++    }
++    assert_says("non-finite with nothing stored", rig.reconnect(), 0.0, since);
++
++    rig.engine.set_tls_hello_time_offset(rig.session, Some(FORWARD));
++    for value in non_finite {
++        rig.engine.set_tls_hello_time_offset(rig.session, Some(value));
++    }
++    assert_says("non-finite with an offset stored", rig.reconnect(), FORWARD, since);
++
++    rig.engine.set_tls_hello_time_offset(rig.session, None);
++    assert_says("cleared", rig.reconnect(), 0.0, since);
++    assert_says("a msg id at the end", rig.call(), 0.0, since);
++    rig.assert_no_correction();
++    rig.finish();
++}
 diff --git a/crates/mtproto-ffi/Cargo.toml b/crates/mtproto-ffi/Cargo.toml
 index 8b16bc3..95642b7 100644
 --- a/crates/mtproto-ffi/Cargo.toml
@@ -7817,7 +9269,7 @@ index 8b16bc3..95642b7 100644
 +find-msvc-tools = "=0.1.13"
 +windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
 diff --git a/crates/mtproto-ffi/include/mtproto_engine.h b/crates/mtproto-ffi/include/mtproto_engine.h
-index 4f4afe5..a9725af 100644
+index 4f4afe5..9108a67 100644
 --- a/crates/mtproto-ffi/include/mtproto_engine.h
 +++ b/crates/mtproto-ffi/include/mtproto_engine.h
 @@ -138,6 +138,15 @@ enum {
@@ -7855,7 +9307,16 @@ index 4f4afe5..a9725af 100644
      MTEventKindConnectionState = 18,
      MTEventKindAuthKeyRequired = 19,
      MTEventKindAuthKeyInvalid = 20,
-@@ -206,6 +222,21 @@ typedef enum {
+@@ -182,6 +198,8 @@ typedef enum {
+     MTEventKindClosed = 26,
+     MTEventKindRetryDecisionRequired = 27,
+     MTEventKindAuthKeyDestroyed = 28,
++    /* The engine dropped a connection: text the reason, flags the MTConnectionDropped bits, value1 the
++       seconds since it started connecting. */
+     MTEventKindConnectionDropped = 29,
+     /* The engine bound the session's temporary key to the permanent one. */
+     MTEventKindTemporaryKeyBound = 30,
+@@ -206,6 +224,21 @@ typedef enum {
         came), otherwise it never ran there. value1: seconds to wait before sending it again, what is left
         of a flood wait or a server error's delay (0 when it may have run). */
      MTEventKindReleased = 36,
@@ -7877,10 +9338,21 @@ index 4f4afe5..a9725af 100644
  } MTEventKind;
  
  enum {
-@@ -213,10 +244,30 @@ enum {
+@@ -213,10 +246,41 @@ enum {
      MTAuthKeyCreatedPermanent = 1 << 1,
  };
  
++/* MTEvent.flags of MTEventKindConnectionDropped. */
++enum {
++    /* The session had taken a packet from the connection. */
++    MTConnectionDroppedAnswered = 1 << 0,
++    /* The connection was to carry a fake-TLS hello, from an ee secret, and no ServerHello verified on
++       it, whether the hello went out or not: the proxy may have refused the hello's time. Never set
++       without an ee secret, on HTTP links, or once a ServerHello verified. It does not prove the hello
++       was sent or diagnose a skew. */
++    MTConnectionDroppedFakeTlsUnverified = 1 << 1,
++};
++
 +/* MTEvent.code of MTEventKindUpdatesReset. */
 +enum {
 +    /* The server started a new session (new_session_created, the payload). */
@@ -7908,7 +9380,7 @@ index 4f4afe5..a9725af 100644
  enum {
      MTConnectionStateNetworkAvailable = 1 << 0,
      MTConnectionStateConnected = 1 << 1,
-@@ -255,6 +306,19 @@ typedef struct {
+@@ -255,6 +319,19 @@ typedef struct {
  
  typedef void (*MTEventCallback)(void *context, MTSessionHandle session, const MTEvent *event);
  typedef void (*MTLogCallback)(void *context, int32_t level, MTString message);
@@ -7928,7 +9400,7 @@ index 4f4afe5..a9725af 100644
  
  MTEngine *mt_engine_create(uint32_t worker_threads, void *context, MTEventCallback on_event, MTLogCallback on_log);
  void mt_engine_destroy(MTEngine *engine);
-@@ -316,6 +380,37 @@ void mt_session_set_auth_key(MTEngine *engine, MTSessionHandle session, MTBytes
+@@ -316,6 +393,37 @@ void mt_session_set_auth_key(MTEngine *engine, MTSessionHandle session, MTBytes
  void mt_session_set_addresses(MTEngine *engine, MTSessionHandle session, const MTAddress *addresses, size_t count);
  void mt_session_set_obfuscation_dc_id(MTEngine *engine, MTSessionHandle session, int16_t dc_id);
  void mt_session_set_proxy(MTEngine *engine, MTSessionHandle session, const MTProxy *proxy);
@@ -7966,7 +9438,7 @@ index 4f4afe5..a9725af 100644
  
  enum {
      MTTransportTcp = 0,
-@@ -326,6 +421,11 @@ enum {
+@@ -326,6 +434,11 @@ enum {
  /* Which transports the session may use; HTTP goes to `http_port`, or to each address's own port
     when it is 0. Auto stays on TCP while TCP answers and moves to HTTP while it does not. */
  void mt_session_set_transport(MTEngine *engine, MTSessionHandle session, uint8_t transport, uint16_t http_port);
@@ -7978,8 +9450,23 @@ index 4f4afe5..a9725af 100644
  
  /* Telegram Web's endpoints on one front, through host streams; used only while a stream host is set
     and no proxy is. When TCP gets no answer, Auto tries the WebSocket endpoint (ws_path, carrying the
+@@ -367,6 +480,14 @@ void mt_session_fail_request(MTEngine *engine, MTSessionHandle session, MTReques
+ void mt_session_decide_retry(MTEngine *engine, MTSessionHandle session, MTRequestId request, uint8_t retry);
+ void mt_session_invalidate_initialization(MTEngine *engine, MTSessionHandle session);
+ void mt_session_set_time_difference(MTEngine *engine, MTSessionHandle session, double difference);
++/* From the next connection on, a fake-TLS hello says the wall clock plus *offset, in place of the
++   session's time difference. It moves nothing else: no msg id, no time difference, no report, no
++   connection, no delay, and a hello already constructed is not changed. The value is copied during
++   the call. It holds until replaced or cleared, across pauses and proxy changes, and follows no
++   correction, so a host re-reads its clock when a hello fails (MTConnectionDroppedFakeTlsUnverified).
++   NULL clears it, and the hello follows the time difference again, as before the first call. A value
++   that is not finite is ignored. Without an ee secret nothing reads it. */
++void mt_session_set_tls_hello_time_offset(MTEngine *engine, MTSessionHandle session, const double *offset);
+ void mt_session_destroy_auth_key(MTEngine *engine, MTSessionHandle session);
+ /* Hands the session's requests back for another session without running any twice (a live engine
+    switch). A request that never reached the server is released at once (MTEventKindReleased, not run).
 diff --git a/crates/mtproto-ffi/src/lib.rs b/crates/mtproto-ffi/src/lib.rs
-index 68468db..877fd31 100644
+index 68468db..b6761af 100644
 --- a/crates/mtproto-ffi/src/lib.rs
 +++ b/crates/mtproto-ffi/src/lib.rs
 @@ -2,26 +2,26 @@
@@ -8011,14 +9498,18 @@ index 68468db..877fd31 100644
  };
  
 -pub const ABI_VERSION: u32 = 5;
-+pub const ABI_VERSION: u32 = 10;
++pub const ABI_VERSION: u32 = 11;
  
  /// `MTEvent.flags` of `MTEventKindReleased`: the request may have reached the server.
  pub const RELEASED_MAY_HAVE_RUN: u32 = 1 << 0;
-@@ -30,6 +30,17 @@ pub const RELEASED_MAY_HAVE_RUN: u32 = 1 << 0;
+@@ -30,6 +30,21 @@ pub const RELEASED_MAY_HAVE_RUN: u32 = 1 << 0;
  pub const AUTH_KEY_CREATED_TEMPORARY: u32 = 1 << 0;
  pub const AUTH_KEY_CREATED_PERMANENT: u32 = 1 << 1;
  
++/// `MTEvent.flags` of `MTEventKindConnectionDropped`, beside `answered` in bit 0: the connection was to carry a
++/// fake-TLS hello and no ServerHello verified on it.
++pub const CONNECTION_DROPPED_FAKE_TLS_UNVERIFIED: u32 = 1 << 1;
++
 +/// `MTEvent.code` of `MTEventKindUpdatesReset`: why the host should fetch the updates it may have missed.
 +/// Only `UPDATES_RESET_SERVER_SESSION` carries a payload, the server's `new_session_created` message.
 +pub const UPDATES_RESET_SERVER_SESSION: i32 = 1;
@@ -8033,7 +9524,7 @@ index 68468db..877fd31 100644
  #[repr(C)]
  #[derive(Clone, Copy)]
  pub struct MTBytes {
-@@ -210,6 +221,7 @@ pub struct MTWebEndpoint {
+@@ -210,6 +225,7 @@ pub struct MTWebEndpoint {
  
  pub type MTEventCallback = Option<unsafe extern "C" fn(context: *mut c_void, session: u64, event: *const MTEvent)>;
  pub type MTLogCallback = Option<unsafe extern "C" fn(context: *mut c_void, level: i32, message: MTString)>;
@@ -8041,7 +9532,7 @@ index 68468db..877fd31 100644
  
  pub struct MTEngine {
      engine: Engine,
-@@ -297,7 +309,7 @@ impl EngineCallbacks for Bridge {
+@@ -297,7 +313,7 @@ impl EngineCallbacks for Bridge {
                  event.value2 = packet_length as f64;
                  self.emit(session, event, None);
              }
@@ -8050,7 +9541,7 @@ index 68468db..877fd31 100644
                  let mut event = blank(18);
                  let mut flags = 0u32;
                  if state.network_available {
-@@ -321,6 +333,8 @@ impl EngineCallbacks for Bridge {
+@@ -321,6 +337,8 @@ impl EngineCallbacks for Bridge {
                  event.flags = flags;
                  let address = proxy_address.unwrap_or_default();
                  event.text = string_ref(&address);
@@ -8059,7 +9550,7 @@ index 68468db..877fd31 100644
                  self.emit(session, event, None);
              }
              EngineEvent::AuthKeyRequired => self.emit(session, blank(19), None),
-@@ -345,6 +359,12 @@ impl EngineCallbacks for Bridge {
+@@ -345,6 +363,12 @@ impl EngineCallbacks for Bridge {
                  self.emit(session, event, None);
              }
              EngineEvent::TransportFlood => self.emit(session, blank(23), None),
@@ -8072,7 +9563,19 @@ index 68468db..877fd31 100644
              EngineEvent::PermanentKeyInvalid => self.emit(session, blank(32), None),
              EngineEvent::TemporaryKeyInUse { key_id, expires_at, adopted, dc_id, permanent_key_id } => {
                  let mut event = blank(33);
-@@ -381,6 +401,17 @@ impl EngineCallbacks for Bridge {
+@@ -373,14 +397,28 @@ impl EngineCallbacks for Bridge {
+                 event.code = i32::from(success);
+                 self.emit(session, event, None);
+             }
+-            EngineEvent::ConnectionDropped { reason, answered, age } => {
++            EngineEvent::ConnectionDropped { reason, answered, fake_tls_unverified, age } => {
+                 let mut event = blank(29);
+                 event.text = string_ref(reason.name());
+                 event.flags = u32::from(answered);
++                if fake_tls_unverified {
++                    event.flags |= CONNECTION_DROPPED_FAKE_TLS_UNVERIFIED;
++                }
+                 event.value1 = age;
                  self.emit(session, event, None);
              }
              EngineEvent::Closed => self.emit(session, blank(26), None),
@@ -8090,7 +9593,7 @@ index 68468db..877fd31 100644
              EngineEvent::RouteMemory { memory } => self.emit(session, blank(35), Some(memory)),
          }
      }
-@@ -466,7 +497,17 @@ impl Bridge {
+@@ -466,7 +504,17 @@ impl Bridge {
                      }
                  }
              }
@@ -8109,7 +9612,7 @@ index 68468db..877fd31 100644
              RpcEvent::Update { body } => self.emit(session, blank(14), Some(body)),
              RpcEvent::TimeDifferenceUpdated { difference } => {
                  let mut event = blank(15);
-@@ -646,6 +687,7 @@ unsafe fn request(value: &MTRequest) -> RpcRequest {
+@@ -646,6 +694,7 @@ unsafe fn request(value: &MTRequest) -> RpcRequest {
              timeout_timer: flags & 32 != 0,
              without_updates: flags & 64 != 0,
              delegate_retry_decisions: flags & 128 != 0,
@@ -8117,7 +9620,7 @@ index 68468db..877fd31 100644
              expected_response_size: value.expected_response_size,
          },
          invoke_after: (value.invoke_after != 0).then_some(RequestId(value.invoke_after)),
-@@ -658,9 +700,41 @@ unsafe fn engine<'a>(pointer: *mut MTEngine) -> Option<&'a Engine> {
+@@ -658,9 +707,41 @@ unsafe fn engine<'a>(pointer: *mut MTEngine) -> Option<&'a Engine> {
  
  #[unsafe(no_mangle)]
  pub extern "C" fn mt_engine_abi_version() -> u32 {
@@ -8159,7 +9662,7 @@ index 68468db..877fd31 100644
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_create(
      worker_threads: u32,
-@@ -668,6 +742,7 @@ pub unsafe extern "C" fn mt_engine_create(
+@@ -668,6 +749,7 @@ pub unsafe extern "C" fn mt_engine_create(
      on_event: MTEventCallback,
      on_log: MTLogCallback,
  ) -> *mut MTEngine {
@@ -8167,7 +9670,7 @@ index 68468db..877fd31 100644
      let mut config = EngineConfig::default();
      if worker_threads > 0 {
          config.worker_threads = worker_threads as usize;
-@@ -682,6 +757,7 @@ pub unsafe extern "C" fn mt_engine_create(
+@@ -682,6 +764,7 @@ pub unsafe extern "C" fn mt_engine_create(
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_destroy(pointer: *mut MTEngine) {
@@ -8175,7 +9678,7 @@ index 68468db..877fd31 100644
      if pointer.is_null() {
          return;
      }
-@@ -692,11 +768,13 @@ pub unsafe extern "C" fn mt_engine_destroy(pointer: *mut MTEngine) {
+@@ -692,11 +775,13 @@ pub unsafe extern "C" fn mt_engine_destroy(pointer: *mut MTEngine) {
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_next_request_id(pointer: *mut MTEngine) -> u64 {
@@ -8189,7 +9692,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_network_available(available != 0);
      }
-@@ -706,6 +784,7 @@ pub unsafe extern "C" fn mt_engine_set_network_available(pointer: *mut MTEngine,
+@@ -706,6 +791,7 @@ pub unsafe extern "C" fn mt_engine_set_network_available(pointer: *mut MTEngine,
  /// empty when unknown. What sessions learn about TCP and HTTP is remembered per key.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_set_network(pointer: *mut MTEngine, key: MTBytes) {
@@ -8197,7 +9700,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_network(&unsafe { bytes(key) });
      }
-@@ -714,6 +793,7 @@ pub unsafe extern "C" fn mt_engine_set_network(pointer: *mut MTEngine, key: MTBy
+@@ -714,6 +800,7 @@ pub unsafe extern "C" fn mt_engine_set_network(pointer: *mut MTEngine, key: MTBy
  /// The route memory an earlier run reported with `MTEventKindRouteMemoryChanged`.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_set_route_memory(pointer: *mut MTEngine, memory: MTBytes) {
@@ -8205,7 +9708,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_route_memory(&unsafe { bytes(memory) });
      }
-@@ -774,6 +854,7 @@ impl StreamHost for FfiStreamHost {
+@@ -774,6 +861,7 @@ impl StreamHost for FfiStreamHost {
  /// the engine.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_set_stream_host(pointer: *mut MTEngine, host: *const MTStreamHost) {
@@ -8213,7 +9716,7 @@ index 68468db..877fd31 100644
      if pointer.is_null() {
          return;
      }
-@@ -788,6 +869,7 @@ pub unsafe extern "C" fn mt_engine_set_stream_host(pointer: *mut MTEngine, host:
+@@ -788,6 +876,7 @@ pub unsafe extern "C" fn mt_engine_set_stream_host(pointer: *mut MTEngine, host:
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_stream_opened(pointer: *mut MTEngine, stream: u64) {
@@ -8221,7 +9724,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.stream_opened(StreamId(stream));
      }
-@@ -796,6 +878,7 @@ pub unsafe extern "C" fn mt_stream_opened(pointer: *mut MTEngine, stream: u64) {
+@@ -796,6 +885,7 @@ pub unsafe extern "C" fn mt_stream_opened(pointer: *mut MTEngine, stream: u64) {
  /// 1 while the host may go on receiving; 0 when it should wait for the resume callback.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_stream_received(pointer: *mut MTEngine, stream: u64, bytes: MTBytes) -> u8 {
@@ -8229,7 +9732,7 @@ index 68468db..877fd31 100644
      let Some(engine) = (unsafe { engine(pointer) }) else {
          return 0;
      };
-@@ -805,6 +888,7 @@ pub unsafe extern "C" fn mt_stream_received(pointer: *mut MTEngine, stream: u64,
+@@ -805,6 +895,7 @@ pub unsafe extern "C" fn mt_stream_received(pointer: *mut MTEngine, stream: u64,
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_stream_sent(pointer: *mut MTEngine, stream: u64, count: usize) {
@@ -8237,7 +9740,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.stream_sent(StreamId(stream), count);
      }
-@@ -813,6 +897,7 @@ pub unsafe extern "C" fn mt_stream_sent(pointer: *mut MTEngine, stream: u64, cou
+@@ -813,6 +904,7 @@ pub unsafe extern "C" fn mt_stream_sent(pointer: *mut MTEngine, stream: u64, cou
  /// The stream ended: `error` empty for a clean end.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_stream_closed(pointer: *mut MTEngine, stream: u64, error: MTString) {
@@ -8245,7 +9748,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          let error = unsafe { text(error) };
          engine.stream_closed(StreamId(stream), (!error.is_empty()).then_some(error));
-@@ -827,6 +912,7 @@ pub unsafe extern "C" fn mt_session_set_web_endpoint(
+@@ -827,6 +919,7 @@ pub unsafe extern "C" fn mt_session_set_web_endpoint(
      session: u64,
      endpoint: *const MTWebEndpoint,
  ) {
@@ -8253,7 +9756,7 @@ index 68468db..877fd31 100644
      let Some(engine) = (unsafe { engine(pointer) }) else {
          return;
      };
-@@ -848,6 +934,7 @@ pub unsafe extern "C" fn mt_session_set_web_endpoint(
+@@ -848,6 +941,7 @@ pub unsafe extern "C" fn mt_session_set_web_endpoint(
  /// `/apiw1`, or `/apiws_test` and `/apiw_test1` for the test servers).
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_use_telegram_web(pointer: *mut MTEngine, session: u64, test: u8) {
@@ -8261,7 +9764,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.use_telegram_web(SessionHandle(session), test != 0);
      }
-@@ -855,6 +942,7 @@ pub unsafe extern "C" fn mt_session_use_telegram_web(pointer: *mut MTEngine, ses
+@@ -855,6 +949,7 @@ pub unsafe extern "C" fn mt_session_use_telegram_web(pointer: *mut MTEngine, ses
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_engine_reset_connections(pointer: *mut MTEngine) {
@@ -8269,7 +9772,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.reset_connections();
      }
-@@ -862,6 +950,7 @@ pub unsafe extern "C" fn mt_engine_reset_connections(pointer: *mut MTEngine) {
+@@ -862,6 +957,7 @@ pub unsafe extern "C" fn mt_engine_reset_connections(pointer: *mut MTEngine) {
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_create(pointer: *mut MTEngine, setup: *const MTSessionSetup) -> u64 {
@@ -8277,7 +9780,7 @@ index 68468db..877fd31 100644
      let (Some(engine), false) = (unsafe { engine(pointer) }, setup.is_null()) else {
          return 0;
      };
-@@ -931,6 +1020,7 @@ pub unsafe extern "C" fn mt_session_create(pointer: *mut MTEngine, setup: *const
+@@ -931,6 +1027,7 @@ pub unsafe extern "C" fn mt_session_create(pointer: *mut MTEngine, setup: *const
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_destroy(pointer: *mut MTEngine, session: u64) {
@@ -8285,7 +9788,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.destroy_session(SessionHandle(session));
      }
-@@ -938,6 +1028,7 @@ pub unsafe extern "C" fn mt_session_destroy(pointer: *mut MTEngine, session: u64
+@@ -938,6 +1035,7 @@ pub unsafe extern "C" fn mt_session_destroy(pointer: *mut MTEngine, session: u64
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_send(pointer: *mut MTEngine, session: u64, value: *const MTRequest) {
@@ -8293,7 +9796,7 @@ index 68468db..877fd31 100644
      if let (Some(engine), false) = (unsafe { engine(pointer) }, value.is_null()) {
          engine.send(SessionHandle(session), unsafe { request(&*value) });
      }
-@@ -945,6 +1036,7 @@ pub unsafe extern "C" fn mt_session_send(pointer: *mut MTEngine, session: u64, v
+@@ -945,6 +1043,7 @@ pub unsafe extern "C" fn mt_session_send(pointer: *mut MTEngine, session: u64, v
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_cancel(pointer: *mut MTEngine, session: u64, id: u64) {
@@ -8301,7 +9804,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.cancel(SessionHandle(session), RequestId(id));
      }
-@@ -952,6 +1044,7 @@ pub unsafe extern "C" fn mt_session_cancel(pointer: *mut MTEngine, session: u64,
+@@ -952,6 +1051,7 @@ pub unsafe extern "C" fn mt_session_cancel(pointer: *mut MTEngine, session: u64,
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_paused(pointer: *mut MTEngine, session: u64, paused: u8) {
@@ -8309,7 +9812,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_paused(SessionHandle(session), paused != 0);
      }
-@@ -959,6 +1052,7 @@ pub unsafe extern "C" fn mt_session_set_paused(pointer: *mut MTEngine, session:
+@@ -959,6 +1059,7 @@ pub unsafe extern "C" fn mt_session_set_paused(pointer: *mut MTEngine, session:
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_online(pointer: *mut MTEngine, session: u64, online: u8) {
@@ -8317,7 +9820,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_online(SessionHandle(session), online != 0);
      }
-@@ -974,6 +1068,7 @@ pub unsafe extern "C" fn mt_session_set_auth_key(
+@@ -974,6 +1075,7 @@ pub unsafe extern "C" fn mt_session_set_auth_key(
      has_init_hash: u8,
      init_hash: MTString,
  ) {
@@ -8325,7 +9828,7 @@ index 68468db..877fd31 100644
      let Some(engine) = (unsafe { engine(pointer) }) else {
          return;
      };
-@@ -995,6 +1090,7 @@ pub unsafe extern "C" fn mt_session_set_addresses(
+@@ -995,6 +1097,7 @@ pub unsafe extern "C" fn mt_session_set_addresses(
      values: *const MTAddress,
      count: usize,
  ) {
@@ -8333,7 +9836,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_addresses(SessionHandle(session), unsafe { addresses(values, count) });
      }
-@@ -1002,6 +1098,7 @@ pub unsafe extern "C" fn mt_session_set_addresses(
+@@ -1002,6 +1105,7 @@ pub unsafe extern "C" fn mt_session_set_addresses(
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_obfuscation_dc_id(pointer: *mut MTEngine, session: u64, dc_id: i16) {
@@ -8341,7 +9844,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_obfuscation_dc_id(SessionHandle(session), dc_id);
      }
-@@ -1009,12 +1106,50 @@ pub unsafe extern "C" fn mt_session_set_obfuscation_dc_id(pointer: *mut MTEngine
+@@ -1009,12 +1113,50 @@ pub unsafe extern "C" fn mt_session_set_obfuscation_dc_id(pointer: *mut MTEngine
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_proxy(pointer: *mut MTEngine, session: u64, value: *const MTProxy) {
@@ -8392,7 +9895,7 @@ index 68468db..877fd31 100644
  /// The engine makes temporary keys that live `lifetime` seconds and binds them to the session's key,
  /// which becomes the permanent key, before anything else goes out. Without `make_permanent_key` a
  /// session with no key asks the host for the permanent key instead of making one. `temporary_key`, when
-@@ -1029,6 +1164,7 @@ pub unsafe extern "C" fn mt_session_enable_pfs(
+@@ -1029,6 +1171,7 @@ pub unsafe extern "C" fn mt_session_enable_pfs(
      make_permanent_key: u8,
      temporary_key: *const MTTemporaryKey,
  ) -> u8 {
@@ -8400,7 +9903,7 @@ index 68468db..877fd31 100644
      let Some(engine) = (unsafe { engine(pointer) }) else {
          return 0;
      };
-@@ -1051,6 +1187,7 @@ pub unsafe extern "C" fn mt_session_offer_temporary_key(
+@@ -1051,6 +1194,7 @@ pub unsafe extern "C" fn mt_session_offer_temporary_key(
      session: u64,
      key: *const MTTemporaryKey,
  ) {
@@ -8408,7 +9911,7 @@ index 68468db..877fd31 100644
      if let (Some(engine), false) = (unsafe { engine(pointer) }, key.is_null())
          && let Some(key) = unsafe { bound_temporary_key(&*key) }
      {
-@@ -1061,6 +1198,7 @@ pub unsafe extern "C" fn mt_session_offer_temporary_key(
+@@ -1061,6 +1205,7 @@ pub unsafe extern "C" fn mt_session_offer_temporary_key(
  /// Whether a PFS session without a permanent key may make one itself (1) or waits for the host's (0).
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_allow_permanent_key(pointer: *mut MTEngine, session: u64, allowed: u8) {
@@ -8416,7 +9919,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.allow_permanent_key(SessionHandle(session), allowed != 0);
      }
-@@ -1084,6 +1222,7 @@ unsafe fn bound_temporary_key(value: &MTTemporaryKey) -> Option<BoundTemporaryKe
+@@ -1084,6 +1229,7 @@ unsafe fn bound_temporary_key(value: &MTTemporaryKey) -> Option<BoundTemporaryKe
  /// `transport`: 0 TCP, 1 HTTP, 2 TCP falling back to HTTP. `http_port` 0 keeps each address's port.
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_transport(pointer: *mut MTEngine, session: u64, transport: u8, http_port: u16) {
@@ -8424,7 +9927,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          let preference = match transport {
              1 => TransportPreference::Http,
-@@ -1094,6 +1233,22 @@ pub unsafe extern "C" fn mt_session_set_transport(pointer: *mut MTEngine, sessio
+@@ -1094,6 +1240,22 @@ pub unsafe extern "C" fn mt_session_set_transport(pointer: *mut MTEngine, sessio
      }
  }
  
@@ -8447,7 +9950,7 @@ index 68468db..877fd31 100644
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_update_environment(
      pointer: *mut MTEngine,
-@@ -1101,6 +1256,7 @@ pub unsafe extern "C" fn mt_session_update_environment(
+@@ -1101,6 +1263,7 @@ pub unsafe extern "C" fn mt_session_update_environment(
      value: *const MTEnvironment,
      noop: *const MTRequest,
  ) {
@@ -8455,7 +9958,7 @@ index 68468db..877fd31 100644
      if let (Some(engine), false) = (unsafe { engine(pointer) }, value.is_null()) {
          let noop = (!noop.is_null()).then(|| unsafe { request(&*noop) });
          engine.update_environment(SessionHandle(session), unsafe { environment(&*value) }, noop);
-@@ -1109,6 +1265,7 @@ pub unsafe extern "C" fn mt_session_update_environment(
+@@ -1109,6 +1272,7 @@ pub unsafe extern "C" fn mt_session_update_environment(
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_auth_token_ready(pointer: *mut MTEngine, session: u64, ready: u8) {
@@ -8463,7 +9966,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_auth_token_ready(SessionHandle(session), ready != 0);
      }
-@@ -1122,6 +1279,7 @@ pub unsafe extern "C" fn mt_session_resolve_apns(
+@@ -1122,6 +1286,7 @@ pub unsafe extern "C" fn mt_session_resolve_apns(
      nonce: MTString,
      secret: MTString,
  ) {
@@ -8471,7 +9974,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          let verification = Verification::Apns { nonce: unsafe { text(nonce) }, secret: unsafe { text(secret) } };
          engine.resolve_verification(SessionHandle(session), RequestId(id), verification);
-@@ -1130,6 +1288,7 @@ pub unsafe extern "C" fn mt_session_resolve_apns(
+@@ -1130,6 +1295,7 @@ pub unsafe extern "C" fn mt_session_resolve_apns(
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_resolve_recaptcha(pointer: *mut MTEngine, session: u64, id: u64, token: MTString) {
@@ -8479,7 +9982,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          let verification = Verification::Recaptcha { token: unsafe { text(token) } };
          engine.resolve_verification(SessionHandle(session), RequestId(id), verification);
-@@ -1144,6 +1303,7 @@ pub unsafe extern "C" fn mt_session_fail_request(
+@@ -1144,6 +1310,7 @@ pub unsafe extern "C" fn mt_session_fail_request(
      code: i32,
      message: MTString,
  ) {
@@ -8487,7 +9990,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.fail_request(SessionHandle(session), RequestId(id), code, unsafe { text(message) });
      }
-@@ -1151,6 +1311,7 @@ pub unsafe extern "C" fn mt_session_fail_request(
+@@ -1151,6 +1318,7 @@ pub unsafe extern "C" fn mt_session_fail_request(
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_decide_retry(pointer: *mut MTEngine, session: u64, id: u64, retry: u8) {
@@ -8495,7 +9998,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.decide_retry(SessionHandle(session), RequestId(id), retry != 0);
      }
-@@ -1158,6 +1319,7 @@ pub unsafe extern "C" fn mt_session_decide_retry(pointer: *mut MTEngine, session
+@@ -1158,6 +1326,7 @@ pub unsafe extern "C" fn mt_session_decide_retry(pointer: *mut MTEngine, session
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_invalidate_initialization(pointer: *mut MTEngine, session: u64) {
@@ -8503,7 +10006,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.invalidate_initialization(SessionHandle(session));
      }
-@@ -1165,6 +1327,7 @@ pub unsafe extern "C" fn mt_session_invalidate_initialization(pointer: *mut MTEn
+@@ -1165,13 +1334,31 @@ pub unsafe extern "C" fn mt_session_invalidate_initialization(pointer: *mut MTEn
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_set_time_difference(pointer: *mut MTEngine, session: u64, difference: f64) {
@@ -8511,15 +10014,31 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.set_time_difference(SessionHandle(session), difference);
      }
-@@ -1172,6 +1335,7 @@ pub unsafe extern "C" fn mt_session_set_time_difference(pointer: *mut MTEngine,
+ }
  
++/// From the next connection on, a fake-TLS hello says the wall clock plus `*offset`, copied here; NULL clears it.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn mt_session_set_tls_hello_time_offset(
++    pointer: *mut MTEngine,
++    session: u64,
++    offset: *const f64,
++) {
++    let _engine = enter_engine_code();
++    let Some(engine) = (unsafe { engine(pointer) }) else {
++        return;
++    };
++    // Unaligned: 32-bit MSVC can place a local double at an address Rust's f64 does not allow.
++    let offset = (!offset.is_null()).then(|| unsafe { offset.read_unaligned() });
++    engine.set_tls_hello_time_offset(SessionHandle(session), offset);
++}
++
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_destroy_auth_key(pointer: *mut MTEngine, session: u64) {
 +    let _engine = enter_engine_code();
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.destroy_auth_key(SessionHandle(session));
      }
-@@ -1179,6 +1343,7 @@ pub unsafe extern "C" fn mt_session_destroy_auth_key(pointer: *mut MTEngine, ses
+@@ -1179,6 +1366,7 @@ pub unsafe extern "C" fn mt_session_destroy_auth_key(pointer: *mut MTEngine, ses
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_session_drain(pointer: *mut MTEngine, session: u64, deadline: f64) {
@@ -8527,7 +10046,7 @@ index 68468db..877fd31 100644
      if let Some(engine) = unsafe { engine(pointer) } {
          engine.drain(SessionHandle(session), deadline);
      }
-@@ -1186,6 +1351,7 @@ pub unsafe extern "C" fn mt_session_drain(pointer: *mut MTEngine, session: u64,
+@@ -1186,6 +1374,7 @@ pub unsafe extern "C" fn mt_session_drain(pointer: *mut MTEngine, session: u64,
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_buffer_data(buffer: *const MTBuffer) -> *const u8 {
@@ -8535,7 +10054,7 @@ index 68468db..877fd31 100644
      if buffer.is_null() {
          return std::ptr::null();
      }
-@@ -1194,6 +1360,7 @@ pub unsafe extern "C" fn mt_buffer_data(buffer: *const MTBuffer) -> *const u8 {
+@@ -1194,6 +1383,7 @@ pub unsafe extern "C" fn mt_buffer_data(buffer: *const MTBuffer) -> *const u8 {
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_buffer_length(buffer: *const MTBuffer) -> usize {
@@ -8543,7 +10062,7 @@ index 68468db..877fd31 100644
      if buffer.is_null() {
          return 0;
      }
-@@ -1202,7 +1369,128 @@ pub unsafe extern "C" fn mt_buffer_length(buffer: *const MTBuffer) -> usize {
+@@ -1202,7 +1392,128 @@ pub unsafe extern "C" fn mt_buffer_length(buffer: *const MTBuffer) -> usize {
  
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn mt_buffer_free(buffer: *mut MTBuffer) {
@@ -8592,7 +10111,7 @@ index 68468db..877fd31 100644
 +            assert_eq!(lines[body + 1], "let _engine = enter_engine_code();", "{line}");
 +        }
 +        let exported = lines.iter().filter(|line| **line == "#[unsafe(no_mangle)]").count();
-+        assert_eq!((entry_points, exported), (47, 47), "every exported function is an mt_* entry point");
++        assert_eq!((entry_points, exported), (48, 48), "every exported function is an mt_* entry point");
 +    }
 +
 +    const CHILD: &str = "MTPROTO_FFI_PANIC_CHILD";
@@ -8673,7 +10192,7 @@ index 68468db..877fd31 100644
 +    }
 +}
 diff --git a/crates/mtproto-ffi/tests/ffi.rs b/crates/mtproto-ffi/tests/ffi.rs
-index d0da713..ac2ec39 100644
+index d0da713..1d8d8f9 100644
 --- a/crates/mtproto-ffi/tests/ffi.rs
 +++ b/crates/mtproto-ffi/tests/ffi.rs
 @@ -51,7 +51,7 @@ fn c_abi_end_to_end() {
@@ -8681,7 +10200,7 @@ index d0da713..ac2ec39 100644
      let engine = unsafe { mt_engine_create(2, sink as *const Sink as *mut c_void, Some(on_event), None) };
      assert!(!engine.is_null());
 -    assert_eq!(mt_engine_abi_version(), 5);
-+    assert_eq!(mt_engine_abi_version(), 10);
++    assert_eq!(mt_engine_abi_version(), 11);
      let host = server.address.ip().to_string();
      let address = MTAddress { host: string(&host), port: server.address.port(), secret: bytes(&[]) };
      let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
@@ -8700,7 +10219,7 @@ index d0da713..ac2ec39 100644
 +    }
 +    let _: MTPanicCallback = None::<unsafe extern "C" fn(*mut c_void, MTString, MTString)>;
 +    let _: unsafe extern "C" fn(*mut c_void, MTPanicCallback) = mt_set_panic_callback;
-+    assert_eq!(mt_engine_abi_version(), 10);
++    assert_eq!(mt_engine_abi_version(), 11);
 +}
 +
  #[test]
@@ -8744,7 +10263,7 @@ index d0da713..ac2ec39 100644
          ("MTString".into(), size_of::<MTString>()),
 diff --git a/crates/mtproto-ffi/tests/ffi_abi10.rs b/crates/mtproto-ffi/tests/ffi_abi10.rs
 new file mode 100644
-index 0000000..74be079
+index 0000000..3ea445a
 --- /dev/null
 +++ b/crates/mtproto-ffi/tests/ffi_abi10.rs
 @@ -0,0 +1,450 @@
@@ -9009,7 +10528,7 @@ index 0000000..74be079
 +    for declared in ["MTEventKindTransportError = 38,", "The event only observes"] {
 +        assert!(header.contains(declared), "{declared}");
 +    }
-+    assert_eq!(mt_engine_abi_version(), 10);
++    assert_eq!(mt_engine_abi_version(), 11);
 +}
 +
 +/// A real answer of each code through each kind of MTProxy, whose frames differ on the wire: the host gets
@@ -9198,9 +10717,393 @@ index 0000000..74be079
 +    rig.run(session, &plain);
 +    assert_eq!(observed(), (2, vec![present, None]));
 +}
+diff --git a/crates/mtproto-ffi/tests/ffi_abi11.rs b/crates/mtproto-ffi/tests/ffi_abi11.rs
+new file mode 100644
+index 0000000..961fe13
+--- /dev/null
++++ b/crates/mtproto-ffi/tests/ffi_abi11.rs
+@@ -0,0 +1,378 @@
++//! What ABI 11 added, through the C ABI with real callbacks: `mt_session_set_tls_hello_time_offset`, the time a
++//! fake-TLS hello says, and `MTConnectionDroppedFakeTlsUnverified`, the bit that tells a host a connection's hello
++//! never verified. `Stats::tls_hello_times` reads each hello on the server, `Stats::first_executions` each call's
++//! msg id.
++
++use std::ffi::c_void;
++use std::sync::{Condvar, Mutex};
++use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
++
++use mtproto_engine::mtproto_core::auth_key::AuthKey;
++use mtproto_engine_ffi::*;
++use mtproto_testserver::*;
++
++const COMPLETED: u32 = 1;
++const TIME_DIFFERENCE_UPDATED: u32 = 15;
++const CONNECTION_STATE: u32 = 18;
++const CONNECTION_DROPPED: u32 = 29;
++/// `MTConnectionStateConnected`.
++const CONNECTED: u32 = 1 << 1;
++/// `MTConnectionDroppedAnswered`.
++const ANSWERED: u32 = 1 << 0;
++const WAIT: Duration = Duration::from_secs(20);
++/// What the proxy allows either way, and a clock far outside it.
++const WINDOW: f64 = 120.0;
++const SKEW: f64 = -600.0;
++const FORWARD: f64 = 3600.0;
++/// What a hello's time or a msg id's seconds, truncated, may read beyond the wall clock around it.
++const SLACK: f64 = 2.0;
++
++#[derive(Clone, Debug)]
++struct Seen {
++    kind: u32,
++    request: u64,
++    flags: u32,
++    text: String,
++    value: f64,
++}
++
++#[derive(Default)]
++struct Sink {
++    events: Mutex<Vec<Seen>>,
++    condvar: Condvar,
++}
++
++impl Sink {
++    fn wait(&self, predicate: impl Fn(&[Seen]) -> bool) -> bool {
++        let deadline = Instant::now() + WAIT;
++        let mut events = self.events.lock().unwrap();
++        while !predicate(&events) {
++            let now = Instant::now();
++            if now >= deadline {
++                return false;
++            }
++            events = self.condvar.wait_timeout(events, deadline - now).unwrap().0;
++        }
++        true
++    }
++
++    fn of(&self, kind: u32) -> Vec<Seen> {
++        self.events.lock().unwrap().iter().filter(|event| event.kind == kind).cloned().collect()
++    }
++}
++
++fn text_of(value: MTString) -> String {
++    if value.data.is_null() {
++        return String::new();
++    }
++    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(value.data, value.length) }).into_owned()
++}
++
++/// Copies what the test needs, and only then frees the payload, as a host must for every event.
++unsafe extern "C" fn on_event(context: *mut c_void, _session: u64, event: *const MTEvent) {
++    let sink = unsafe { &*(context as *const Sink) };
++    let event = unsafe { &*event };
++    let seen = Seen {
++        kind: event.kind,
++        request: event.request_id,
++        flags: event.flags,
++        text: text_of(event.text),
++        value: event.value1,
++    };
++    if !event.payload.is_null() {
++        unsafe { mt_buffer_free(event.payload) };
++    }
++    sink.events.lock().unwrap().push(seen);
++    sink.condvar.notify_all();
++}
++
++fn bytes(data: &[u8]) -> MTBytes {
++    MTBytes { data: data.as_ptr(), length: data.len() }
++}
++
++fn string(text: &str) -> MTString {
++    MTString { data: text.as_ptr(), length: text.len() }
++}
++
++fn wall_clock() -> f64 {
++    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
++}
++
++/// The kinds a host hands over as they are, each with a secret that is wrong for it.
++fn secrets() -> [(&'static str, Vec<u8>, Vec<u8>); 3] {
++    let prefixed = |first: u8, fill: u8, rest: &[u8]| [&[first][..], &[fill; 16], rest].concat();
++    [
++        ("plain", vec![0x11; 16], vec![0x12; 16]),
++        ("dd", prefixed(0xdd, 0x22, &[]), prefixed(0xdd, 0x23, &[])),
++        ("ee", prefixed(0xee, 0x33, b"www.example.com"), prefixed(0xee, 0x34, b"www.example.com")),
++    ]
++}
++
++fn fake_tls() -> Vec<u8> {
++    let [.., (_, secret, _)] = secrets();
++    secret
++}
++
++fn proxy_server(key: &AuthKey, secret: &[u8]) -> TestServer {
++    TestServer::start(vec![key.clone()], ServerOptions { secret: Some(secret.to_vec()), ..Default::default() })
++}
++
++/// A port nothing listens at.
++fn closed_port() -> u16 {
++    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
++}
++
++struct Rig {
++    engine: *mut MTEngine,
++    sink: &'static Sink,
++    session: u64,
++}
++
++impl Rig {
++    /// One main session behind the MTProxy at `port`, whose datacenter address leads nowhere (RFC 5737).
++    fn new(port: u16, secret: &[u8], key: &AuthKey, time_difference: f64) -> Self {
++        let sink: &'static Sink = Box::leak(Box::default());
++        let engine = unsafe { mt_engine_create(1, sink as *const Sink as *mut c_void, Some(on_event), None) };
++        assert!(!engine.is_null());
++        let address = MTAddress { host: string("192.0.2.1"), port: 443, secret: bytes(&[]) };
++        let now = wall_clock();
++        // Valid over every clock the tests use: a salt out of range is another way to hold a call.
++        let (valid_since, valid_until) = (now - 2.0 * FORWARD, now + 2.0 * FORWARD);
++        let salt = MTSaltEntry { salt: SERVER_SALT, valid_since, valid_until };
++        let setup = MTSessionSetup {
++            datacenter_id: 2,
++            obfuscation_dc_id: 2,
++            role: 0,
++            framing: 0,
++            addresses: &address,
++            address_count: 1,
++            proxy: MTProxy {
++                kind: 2,
++                host: string("127.0.0.1"),
++                port,
++                username: string(""),
++                password: string(""),
++                secret: bytes(secret),
++            },
++            auth_key: bytes(key.bytes()),
++            salts: &salt,
++            salt_count: 1,
++            has_init_hash: 0,
++            init_hash: string(""),
++            generate_key: 0,
++            public_keys_pem: std::ptr::null(),
++            public_key_count: 0,
++            temp_key_expires_in: 0,
++            environment: std::ptr::null(),
++            time_difference,
++            online: 1,
++            paused: 0,
++            keep_connected: 1,
++            idle_disconnect_after: 0.0,
++            request_timeout: 5.0,
++            pfs_lifetime: 0,
++            pfs_make_permanent_key: 0,
++            pfs_temporary_key: std::ptr::null(),
++        };
++        let session = unsafe { mt_session_create(engine, &setup) };
++        assert_ne!(session, 0);
++        Self { engine, sink, session }
++    }
++
++    /// Sends a call of the `tag` whose payload is its id, as `first_executions` keys it.
++    fn send(&self, tag: u32) -> u64 {
++        let id = unsafe { mt_engine_next_request_id(self.engine) };
++        let body = call(tag, &id.to_le_bytes());
++        let request = MTRequest { id, body: bytes(&body), flags: 0, expected_response_size: 0, invoke_after: 0 };
++        unsafe { mt_session_send(self.engine, self.session, &request) };
++        id
++    }
++
++    fn wait_completed(&self, id: u64) {
++        let done = self.sink.wait(|events| events.iter().any(|event| event.kind == COMPLETED && event.request == id));
++        assert!(done, "call {id} did not complete: {:?}", self.sink.of(CONNECTION_DROPPED));
++    }
++
++    fn wait_drops(&self, count: usize) {
++        let dropped = |event: &&Seen| event.kind == CONNECTION_DROPPED;
++        let came = self.sink.wait(|events| events.iter().filter(dropped).count() >= count);
++        assert!(came, "fewer than {count} drops: {:?}", self.sink.of(CONNECTION_DROPPED));
++    }
++
++    /// Whether any state said connected.
++    fn said_connected(&self) -> bool {
++        self.sink.of(CONNECTION_STATE).iter().any(|state| state.flags & CONNECTED != 0)
++    }
++
++    /// The exported setter, as a host calls it: the value in its own local, or NULL.
++    fn set_offset(&self, offset: *const f64) {
++        unsafe { mt_session_set_tls_hello_time_offset(self.engine, self.session, offset) };
++    }
++
++    /// A new connection, and what its hello says.
++    fn reconnect(&self, server: &TestServer) -> f64 {
++        let hellos = hello_times(server).len();
++        unsafe { mt_engine_reset_connections(self.engine) };
++        let deadline = Instant::now() + WAIT;
++        while hello_times(server).len() <= hellos {
++            assert!(Instant::now() < deadline, "no hello after the reset");
++            std::thread::sleep(Duration::from_millis(5));
++        }
++        f64::from(hello_times(server)[hellos])
++    }
++
++    /// The seconds of the msg id of a new call, once it completed.
++    fn call_seconds(&self, server: &TestServer) -> f64 {
++        let id = self.send(1);
++        self.wait_completed(id);
++        let (_, msg_id, _) = server.with_stats(|stats| stats.first_executions[&(1, id)]);
++        (msg_id >> 32) as f64
++    }
++
++    fn assert_no_correction(&self) {
++        let reports = self.sink.of(TIME_DIFFERENCE_UPDATED);
++        assert!(reports.iter().all(|report| report.value.abs() < 60.0), "the RPC clock moved: {reports:?}");
++    }
++}
++
++impl Drop for Rig {
++    fn drop(&mut self) {
++        unsafe { mt_engine_destroy(self.engine) };
++    }
++}
++
++fn hello_times(server: &TestServer) -> Vec<i32> {
++    server.with_stats(|stats| stats.tls_hello_times.clone())
++}
++
++/// `reading` is the clock plus `offset`, the clock taken from `since` until now.
++fn assert_says(what: &str, reading: f64, offset: f64, since: f64) {
++    let (low, high) = (since + offset - SLACK, wall_clock() + offset + SLACK);
++    assert!(low <= reading && reading <= high, "{what}: {reading}, expected {low} to {high}");
++}
++
++#[test]
++fn the_header_declares_abi_11() {
++    let header = include_str!("../include/mtproto_engine.h");
++    for declared in [
++        "void mt_session_set_tls_hello_time_offset(MTEngine *engine, MTSessionHandle session, const double *offset);",
++        "MTConnectionDroppedAnswered = 1 << 0,",
++        "MTConnectionDroppedFakeTlsUnverified = 1 << 1,",
++    ] {
++        assert!(header.contains(declared), "{declared}");
++    }
++    assert_eq!(mt_engine_abi_version(), 11);
++    assert_eq!(CONNECTION_DROPPED_FAKE_TLS_UNVERIFIED, 1 << 1);
++}
++
++/// The setter copies the value during the call: the local it read is gone by the next connection, whose hello says
++/// it. A non-finite value is ignored, an address no double may sit at is read all the same, and NULL clears. Msg ids
++/// and reports stay at the RPC clock's throughout, and no setter touches the connection.
++#[test]
++fn the_exported_offset_moves_the_hello_and_no_msg_id() {
++    let key = random_key(1101);
++    let secret = fake_tls();
++    let server = proxy_server(&key, &secret);
++    let rig = Rig::new(server.address.port(), &secret, &key, 0.0);
++    let since = wall_clock();
++    assert_says("the first msg id", rig.call_seconds(&server), 0.0, since);
++    assert_says("the first hello", f64::from(hello_times(&server)[0]), 0.0, since);
++    let connections = server.with_stats(|stats| stats.connections);
++
++    let mut local = FORWARD;
++    rig.set_offset(&local);
++    local = -9.0e9;
++    std::hint::black_box(&mut local);
++    assert_says("a msg id on the same connection", rig.call_seconds(&server), 0.0, since);
++    assert_eq!(server.with_stats(|stats| stats.connections), connections, "the setter touched the connection");
++    assert_says("the copied offset", rig.reconnect(&server), FORWARD, since);
++    assert_says("a msg id under it", rig.call_seconds(&server), 0.0, since);
++
++    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
++        rig.set_offset(&value);
++    }
++    assert_says("non-finite values", rig.reconnect(&server), FORWARD, since);
++
++    let mut unaligned = [0u8; 2 * size_of::<f64>()];
++    let misplaced = unaligned.iter().position(|byte| !(byte as *const u8 as usize).is_multiple_of(align_of::<f64>()));
++    let misplaced = misplaced.unwrap();
++    unaligned[misplaced..misplaced + size_of::<f64>()].copy_from_slice(&SKEW.to_ne_bytes());
++    rig.set_offset(unaligned[misplaced..].as_ptr().cast());
++    assert_says("an unaligned offset", rig.reconnect(&server), SKEW, since);
++
++    rig.set_offset(std::ptr::null());
++    assert_says("NULL", rig.reconnect(&server), 0.0, since);
++    assert_says("the last msg id", rig.call_seconds(&server), 0.0, since);
++    rig.assert_no_correction();
++}
++
++/// A hello outside the window, refused: the drop says unverified and not answered, and the session is not connected.
++/// The offset through the C ABI, on the same handle, and the call completes; the server's correction reaches the host.
++#[test]
++fn a_refused_hello_is_flagged_and_recovers_through_the_exported_offset() {
++    let key = random_key(1102);
++    let secret = fake_tls();
++    let options = ServerOptions {
++        secret: Some(secret.clone()),
++        tls_time_window: Some(WINDOW),
++        validate_msg_id_time: true,
++        ..Default::default()
++    };
++    let server = TestServer::start(vec![key.clone()], options);
++    let rig = Rig::new(server.address.port(), &secret, &key, SKEW);
++    let since = wall_clock();
++    let id = rig.send(1);
++    rig.wait_drops(1);
++    assert!(server.with_stats(|stats| stats.tls_time_refusals) > 0);
++    assert!(!rig.said_connected(), "connected while refused");
++    for dropped in rig.sink.of(CONNECTION_DROPPED) {
++        assert_eq!(dropped.flags, CONNECTION_DROPPED_FAKE_TLS_UNVERIFIED, "{dropped:?}");
++        assert!(["closed", "io_error"].contains(&dropped.text.as_str()), "{dropped:?}");
++    }
++    assert_says("a refused hello", f64::from(hello_times(&server)[0]), SKEW, since);
++
++    let correct = 0.0f64;
++    rig.set_offset(&correct);
++    rig.wait_completed(id);
++    assert_says("the hello that got through", f64::from(*hello_times(&server).last().unwrap()), 0.0, since);
++    assert!(rig.said_connected(), "completed without saying connected");
++    let corrected = |event: &Seen| event.kind == TIME_DIFFERENCE_UPDATED && event.value.abs() < 60.0;
++    let reported = rig.sink.wait(|events| events.iter().any(corrected));
++    assert!(reported, "the server's correction was not reported: {:?}", rig.sink.of(TIME_DIFFERENCE_UPDATED));
++}
++
++/// A connection that had taken a packet reads the first bit and not the second, whatever the secret.
++#[test]
++fn a_connection_that_took_a_packet_reads_answered_alone() {
++    for (kind, secret, _) in secrets() {
++        let key = random_key(1103);
++        let server = proxy_server(&key, &secret);
++        let rig = Rig::new(server.address.port(), &secret, &key, 0.0);
++        let id = rig.send(1);
++        rig.wait_completed(id);
++        let id = rig.send(TAG_DROP_CONNECTION_ONCE);
++        rig.wait_completed(id);
++        let drops = rig.sink.of(CONNECTION_DROPPED);
++        assert!(!drops.is_empty(), "{kind}: the server's close dropped nothing");
++        assert!(drops.iter().all(|dropped| dropped.flags == ANSWERED), "{kind}: {drops:?}");
++    }
++}
++
++/// Plain and `dd` never set the second bit: at a wrong secret, and before TCP connected, where `ee` sets it.
++#[test]
++fn only_ee_sets_the_second_bit_before_anything_answered() {
++    for (kind, secret, wrong) in secrets() {
++        let key = random_key(1104);
++        let server = proxy_server(&key, &secret);
++        let wrong_secret = Rig::new(server.address.port(), &wrong, &key, 0.0);
++        let closed = Rig::new(closed_port(), &secret, &key, 0.0);
++        let expected = if kind == "ee" { CONNECTION_DROPPED_FAKE_TLS_UNVERIFIED } else { 0 };
++        for (what, rig) in [("a wrong secret", &wrong_secret), ("a closed port", &closed)] {
++            rig.send(1);
++            rig.wait_drops(2);
++            let drops = rig.sink.of(CONNECTION_DROPPED);
++            assert!(drops.iter().all(|dropped| dropped.flags == expected), "{kind}, {what}: {drops:?}");
++        }
++        assert!(hello_times(&server).is_empty(), "{kind}: {:?}", hello_times(&server));
++    }
++}
 diff --git a/crates/mtproto-ffi/tests/ffi_abi6.rs b/crates/mtproto-ffi/tests/ffi_abi6.rs
 new file mode 100644
-index 0000000..cd2ef4e
+index 0000000..1edc675
 --- /dev/null
 +++ b/crates/mtproto-ffi/tests/ffi_abi6.rs
 @@ -0,0 +1,298 @@
@@ -9416,7 +11319,7 @@ index 0000000..cd2ef4e
 +    }
 +    assert_eq!((UPDATES_RESET_SERVER_SESSION, UPDATES_RESET_LOCAL_SESSION, UPDATES_RESET_UPDATES_LOST), (1, 2, 3));
 +    assert_eq!(UPDATES_RESET_UPDATES_TOO_LONG, 4);
-+    assert_eq!(mt_engine_abi_version(), 10);
++    assert_eq!(mt_engine_abi_version(), 11);
 +}
 +
 +#[test]
@@ -9504,7 +11407,7 @@ index 0000000..cd2ef4e
 +}
 diff --git a/crates/mtproto-ffi/tests/ffi_abi8.rs b/crates/mtproto-ffi/tests/ffi_abi8.rs
 new file mode 100644
-index 0000000..0289420
+index 0000000..4a34782
 --- /dev/null
 +++ b/crates/mtproto-ffi/tests/ffi_abi8.rs
 @@ -0,0 +1,326 @@
@@ -9751,7 +11654,7 @@ index 0000000..0289420
 +    let _: unsafe extern "C" fn(*mut MTEngine, u64, u8) = mt_session_set_route_admission;
 +    let _: unsafe extern "C" fn(*mut MTEngine, u64, u64, u8) = mt_session_admit_route;
 +    assert_eq!((ROUTE_TCP, ROUTE_HTTP), (0, 1));
-+    assert_eq!(mt_engine_abi_version(), 10);
++    assert_eq!(mt_engine_abi_version(), 11);
 +    unsafe {
 +        mt_session_set_route_admission(std::ptr::null_mut(), 1, 1);
 +        mt_session_admit_route(std::ptr::null_mut(), 1, 1, 1);
@@ -9836,7 +11739,7 @@ index 0000000..0289420
 +}
 diff --git a/crates/mtproto-ffi/tests/ffi_abi9.rs b/crates/mtproto-ffi/tests/ffi_abi9.rs
 new file mode 100644
-index 0000000..e40bfc2
+index 0000000..0275299
 --- /dev/null
 +++ b/crates/mtproto-ffi/tests/ffi_abi9.rs
 @@ -0,0 +1,184 @@
@@ -9943,7 +11846,7 @@ index 0000000..e40bfc2
 +        assert!(header.contains(declared), "{declared}");
 +    }
 +    let _: unsafe extern "C" fn(*mut MTEngine, u64, MTString, *const MTString, usize) = mt_session_set_proxy_addresses;
-+    assert_eq!(mt_engine_abi_version(), 10);
++    assert_eq!(mt_engine_abi_version(), 11);
 +    let addresses = [string("127.0.0.1")];
 +    unsafe { mt_session_set_proxy_addresses(std::ptr::null_mut(), 1, string(NAME), addresses.as_ptr(), 1) };
 +}
@@ -10025,7 +11928,7 @@ index 0000000..e40bfc2
 +    assert!(other.iter().all(|state| state.text2.is_empty()), "{shown:?}");
 +}
 diff --git a/crates/mtproto-ffi/tests/ffi_drain.rs b/crates/mtproto-ffi/tests/ffi_drain.rs
-index 8a9c32b..8d74a2d 100644
+index 8a9c32b..da2538c 100644
 --- a/crates/mtproto-ffi/tests/ffi_drain.rs
 +++ b/crates/mtproto-ffi/tests/ffi_drain.rs
 @@ -155,5 +155,5 @@ fn the_header_declares_the_drain_abi() {
@@ -10033,7 +11936,7 @@ index 8a9c32b..8d74a2d 100644
      assert!(header.contains("void mt_session_drain(MTEngine *engine, MTSessionHandle session, double deadline);"));
      assert_eq!(RELEASED_MAY_HAVE_RUN, 1);
 -    assert_eq!(mt_engine_abi_version(), 5);
-+    assert_eq!(mt_engine_abi_version(), 10);
++    assert_eq!(mt_engine_abi_version(), 11);
  }
 diff --git a/crates/mtproto-ffi/tests/sec_rows_zeroize.rs b/crates/mtproto-ffi/tests/sec_rows_zeroize.rs
 index 84ec57f..1b791f7 100644
@@ -10575,7 +12478,7 @@ index 6abc6f2..eb8c95b 100644
 +    }
 +}
 diff --git a/crates/mtproto-testserver/src/lib.rs b/crates/mtproto-testserver/src/lib.rs
-index c5686c6..1516edf 100644
+index c5686c6..b426025 100644
 --- a/crates/mtproto-testserver/src/lib.rs
 +++ b/crates/mtproto-testserver/src/lib.rs
 @@ -57,6 +57,9 @@ pub const SERVER_PING_ID: i64 = 0x5e57_9149;
@@ -10588,7 +12491,17 @@ index c5686c6..1516edf 100644
  
  pub fn call(tag: u32, payload: &[u8]) -> Vec<u8> {
      let mut writer = Writer::new();
-@@ -142,15 +145,27 @@ pub enum HttpProxyMode {
+@@ -128,6 +131,9 @@ pub struct ServerOptions {
+     /// `auth.bindTempAuthKey` for a temporary key bound before is refused with this error, as Telegram
+     /// answers CONNECTION_NOT_INITED for a key another client bound and used without initConnection.
+     pub refuse_rebinds: Option<&'static str>,
++    /// A fake-TLS hello whose time is further than this from the server's clock is refused before any
++    /// ServerHello: the connection closes.
++    pub tls_time_window: Option<f64>,
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+@@ -142,15 +148,27 @@ pub enum HttpProxyMode {
  pub struct Stats {
      pub connections: usize,
      pub obfuscation_dc_ids: Vec<i16>,
@@ -10616,7 +12529,18 @@ index c5686c6..1516edf 100644
      pub client_pongs: usize,
      pub retransmissions: usize,
      pub retransmissions_in_container: usize,
-@@ -229,6 +244,36 @@ struct SessionState {
+@@ -204,6 +222,10 @@ pub struct Stats {
+     pub executed_with_key: Vec<(u32, u64)>,
+     /// Each executed call's tag and the client session it arrived in.
+     pub executed_in_session: Vec<(u32, i64)>,
++    /// The time each fake-TLS hello signed with the secret says, refused or not.
++    pub tls_hello_times: Vec<i32>,
++    /// Fake-TLS hellos refused for their time (`ServerOptions::tls_time_window`).
++    pub tls_time_refusals: usize,
+ }
+ 
+ /// A key made by a `p_q_inner_data_temp_dc` handshake: it expires, and API calls under it are refused
+@@ -229,6 +251,36 @@ struct SessionState {
      clock_offset: f64,
      awaiting_retransmission: HashSet<i64>,
      sent_packets: VecDeque<Vec<u8>>,
@@ -10653,7 +12577,28 @@ index c5686c6..1516edf 100644
  }
  
  #[derive(Clone, Copy)]
-@@ -784,7 +829,10 @@ fn serve_connection(
+@@ -700,8 +752,19 @@ fn serve_connection(
+         let record_length = ((record_header[3] as usize) << 8) | record_header[4] as usize;
+         let mut hello = record_header;
+         hello.extend(read_exact_raw(&mut stream, &mut raw, record_length, &stop)?);
+-        if verify_client_hello_for_tests(&hello, proxy_key.as_ref().unwrap()).is_none() {
++        let Some(hello_time) = verify_client_hello_for_tests(&hello, proxy_key.as_ref().unwrap()) else {
+             return Ok(());
++        };
++        {
++            let refused = options
++                .tls_time_window
++                .is_some_and(|window| (f64::from(hello_time) - server_now(options.clock_offset)).abs() > window);
++            let mut guard = shared.lock().unwrap();
++            guard.stats.tls_hello_times.push(hello_time);
++            if refused {
++                guard.stats.tls_time_refusals += 1;
++                return Ok(());
++            }
+         }
+         let response = server_hello_for_tests(&hello, proxy_key.as_ref().unwrap(), &mut rng);
+         stream.write_all(&response)?;
+@@ -784,7 +847,10 @@ fn serve_connection(
      let Some(obfuscation) = accept_obfuscated_header(&header, proxy_key.as_ref()) else {
          return Ok(());
      };
@@ -10665,7 +12610,7 @@ index c5686c6..1516edf 100644
      let framing = obfuscation.framing;
      let mut wire = Wire {
          stream,
-@@ -826,6 +874,11 @@ fn serve_frames(
+@@ -826,6 +892,11 @@ fn serve_frames(
      let mut delayed: Vec<Delayed> = Vec::new();
      let result = serve_frames_inner(wire, shared.clone(), stop, options, &mut delayed);
      let mut guard = shared.lock().unwrap();
@@ -10677,7 +12622,7 @@ index c5686c6..1516edf 100644
      for item in delayed {
          if let Some(session) = guard.sessions.get_mut(&item.session_id) {
              seal_tracked(session, &item.body, true);
-@@ -1126,6 +1179,7 @@ fn process_packet(
+@@ -1126,6 +1197,7 @@ fn process_packet(
                  clock_offset: options.clock_offset,
                  awaiting_retransmission: HashSet::new(),
                  sent_packets: VecDeque::new(),
@@ -10685,7 +12630,7 @@ index c5686c6..1516edf 100644
              }
          });
          session.peer.server_time = server_now(session.clock_offset);
-@@ -1199,6 +1253,8 @@ fn process_packet(
+@@ -1199,6 +1271,8 @@ fn process_packet(
                      kill_now = true;
                  }
              }
@@ -10694,7 +12639,7 @@ index c5686c6..1516edf 100644
              for message in decoded.messages.iter().filter(|_| !kill_now) {
                  if !session.received.insert(message.msg_id) {
                      stats.duplicate_msg_ids += 1;
-@@ -1313,11 +1369,20 @@ fn process_packet(
+@@ -1313,11 +1387,20 @@ fn process_packet(
                      _ => {
                          let (call, flags) = unwrap_wrappers(&message.body);
                          stats.init_connections += usize::from(flags.init_connection);
@@ -10716,7 +12661,7 @@ index c5686c6..1516edf 100644
                          let (tag, payload) = match call {
                              Some(Inner::Call(tag, payload)) => (tag, payload),
                              Some(Inner::Api(constructor, body)) => {
-@@ -1823,6 +1888,7 @@ fn process_packet(
+@@ -1823,6 +1906,7 @@ fn process_packet(
                      }
                  }
              }
@@ -10724,7 +12669,7 @@ index c5686c6..1516edf 100644
          }
      }
      Reaction {
-@@ -2067,8 +2133,11 @@ fn future_salts_reply(req_msg_id: i64, salt: i64, clock_offset: f64) -> Vec<u8>
+@@ -2067,8 +2151,11 @@ fn future_salts_reply(req_msg_id: i64, salt: i64, clock_offset: f64) -> Vec<u8>
  #[derive(Default)]
  struct WrapperFlags {
      init_connection: bool,
@@ -10737,7 +12682,7 @@ index c5686c6..1516edf 100644
  }
  
  enum Inner {
-@@ -2085,10 +2154,10 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+@@ -2085,10 +2172,10 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
          };
          match constructor {
              ids::INVOKE_AFTER_MSG => {
@@ -10751,7 +12696,7 @@ index c5686c6..1516edf 100644
              }
              ids::INVOKE_WITHOUT_UPDATES => flags.without_updates = true,
              ids::INVOKE_WITH_LAYER => {
-@@ -2097,19 +2166,18 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+@@ -2097,19 +2184,18 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
                      return (None, flags);
                  }
                  flags.init_connection = true;
@@ -10778,7 +12723,7 @@ index c5686c6..1516edf 100644
              }
              INVOKE_WITH_APNS_SECRET => {
                  let _ = reader.read_bytes();
-@@ -2133,9 +2201,10 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+@@ -2133,9 +2219,10 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
                      return (None, flags);
                  };
                  let (inner, inner_flags) = unwrap_wrappers(&unpacked);
@@ -10790,7 +12735,7 @@ index c5686c6..1516edf 100644
                  return (inner, flags);
              }
              _ => return (None, flags),
-@@ -2143,6 +2212,14 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+@@ -2143,6 +2230,14 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
      }
  }
  
@@ -10805,7 +12750,7 @@ index c5686c6..1516edf 100644
  /// Skips the JSONValue `initConnection` carries as `params`, which tdlib sends.
  fn skip_json_value(reader: &mut Reader<'_>, depth: usize) -> Option<()> {
      const JSON_NULL: u32 = 0x3f6d_7b68;
-@@ -2190,3 +2267,121 @@ pub fn random_key(seed: u64) -> AuthKey {
+@@ -2190,3 +2285,168 @@ pub fn random_key(seed: u64) -> AuthKey {
      let mut rng = XorShiftRandom::new(seed);
      AuthKey::new(rng.array())
  }
@@ -10813,6 +12758,7 @@ index c5686c6..1516edf 100644
 +#[cfg(test)]
 +mod tests {
 +    use mtproto_core::rpc::{ApiEnvironment, ClientProxy, wrap_request};
++    use mtproto_core::transport::client_hello;
 +
 +    use super::*;
 +
@@ -10897,6 +12843,52 @@ index c5686c6..1516edf 100644
 +        assert_eq!(observed(&init_connection(None, Some(vec![1, 2, 3, 4]))), (true, None), "params that do not parse");
 +    }
 +
++    /// Connects, sends a fake-TLS hello saying `time` and reads what comes back: true for a first byte, false for
++    /// a close.
++    fn answered_hello(server: &TestServer, secret: &[u8], time: i32) -> bool {
++        let secret = ProxySecret::from_binary(secret, true).unwrap();
++        let hello = client_hello(secret.domain().unwrap(), &secret.proxy_key(), time, &mut XorShiftRandom::new(7));
++        let mut stream = TcpStream::connect(server.address).unwrap();
++        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
++        stream.write_all(&hello).unwrap();
++        let mut first = [0u8; 1];
++        match stream.read(&mut first) {
++            Ok(1) => {
++                assert_eq!(first[0], 0x16, "a ServerHello opens with a handshake record");
++                true
++            }
++            Ok(_) => false,
++            Err(error) => {
++                assert!(!matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock), "no answer, no close");
++                false
++            }
++        }
++    }
++
++    /// The window reads the hello's time against the server's own clock, offset included, in both directions; a
++    /// hello outside it gets no ServerHello. Without a window every time is answered. Each time is kept either way.
++    #[test]
++    fn a_fake_tls_hello_outside_the_window_is_closed_before_any_server_hello() {
++        let mut secret = vec![0xee];
++        secret.extend_from_slice(&[0x33; 16]);
++        secret.extend_from_slice(b"www.example.com");
++        let options = ServerOptions { secret: Some(secret.clone()), clock_offset: 1000.0, ..Default::default() };
++        let windowed = TestServer::start(Vec::new(), ServerOptions { tls_time_window: Some(120.0), ..options.clone() });
++        let now = server_now(1000.0) as i32;
++        let hellos = [(now - 300, false), (now - 60, true), (now + 60, true), (now + 300, false), (now - 1000, false)];
++        for (time, answered) in hellos {
++            assert_eq!(answered_hello(&windowed, &secret, time), answered, "{} s from the server", time - now);
++        }
++        let times = hellos.map(|(time, _)| time).to_vec();
++        let read = windowed.with_stats(|stats| (stats.tls_hello_times.clone(), stats.tls_time_refusals));
++        assert_eq!(read, (times, 3));
++
++        let open = TestServer::start(Vec::new(), options);
++        assert!(answered_hello(&open, &secret, now - 100_000), "no window, and the hello was refused");
++        let read = open.with_stats(|stats| (stats.tls_hello_times.clone(), stats.tls_time_refusals));
++        assert_eq!(read, (vec![now - 100_000], 0));
++    }
++
 +    #[test]
 +    fn a_session_remembers_the_latest_failed_queries() {
 +        let mut session = SessionState {
@@ -10928,9 +12920,18 @@ index c5686c6..1516edf 100644
 +    }
 +}
 diff --git a/docs/swift-integration.md b/docs/swift-integration.md
-index 8977917..7cc547c 100644
+index 8977917..2bd017d 100644
 --- a/docs/swift-integration.md
 +++ b/docs/swift-integration.md
+@@ -188,7 +188,7 @@ and send them (see 9).
+ | `ConnectionState` | main only, to `networkSessionConnectionStateChanged` (deduplicated); `proxyAddress` is the proxy's `ip` like MtProtoKit. While the session is held for a replacement key or an unsupported proxy and not paused by TelegramCore: reported as connecting (`isNetworkAvailable` from reachability, `proxyHasConnectionIssues` for the proxy case). Also drives the connection watchdog |
+ | `NetworkUsage` | `MTNetworkUsageManager(info: usageCalculationInfo)`: `addIncomingBytes`/`addOutgoingBytes`, interface `Other` |
+ | `AddressResult` | `reportTransportSchemeSuccess` / `reportTransportSchemeFailure` for the scheme at that index |
+-| `ConnectionDropped` | every observer from `observeConnectionDrops` gets `NetworkEngineConnectionDrop(reason: text, answered: flags & 1, age: value1)`; `RecordingNetworkEngine` feeds them to `NetworkTelemetry` (drops per role and reason, and the latest on failure records). `text` is the reason (`probe_timeout`, `racer_won`, `session_error`, …), `answered` whether the session took a packet from the connection, `age` seconds since it started connecting |
++| `ConnectionDropped` | every observer from `observeConnectionDrops` gets `NetworkEngineConnectionDrop(reason: text, answered: flags & 1, age: value1)`; `RecordingNetworkEngine` feeds them to `NetworkTelemetry` (drops per role and reason, and the latest on failure records). `text` is the reason (`probe_timeout`, `racer_won`, `session_error`, …), `answered` whether the session took a packet from the connection, `age` seconds since it started connecting. `flags & 2` (`MTConnectionDroppedFakeTlsUnverified`) says the connection was to carry a fake-TLS hello, from an `ee` secret, and no ServerHello verified on it |
+ | `AuthKeyCreated` | `flags` says which key (ABI 4: `MTAuthKeyCreatedTemporary` or `MTAuthKeyCreatedPermanent`), `code` the `dc` its handshake carried; only keys the session keeps are reported. PFS sessions: a temporary key is held until `TemporaryKeyInUse` names it (a permanent key cannot come: the session never allows the engine to make one). The key maker of section 9b hands its permanent key to `MTContext`. Other sessions: logged only |
+ | `TemporaryKeyInUse` | the key the session talks under (salts and init hash go to its auth info). One the session made (`flags & 1 == 0`), for the address class the session has now (`code` is the obfuscation id it was made for), is written to the class's ephemeral selector with `rustEngineBoundTo` = the permanent key id in `request_id`, unless the context keeps a longer-lived key bound to the same permanent key |
+ | `TemporaryKeyDropped` | the context's key for the selector is removed if it is that key |
 @@ -313,17 +313,17 @@ is created with `pfs_lifetime = tempKeyExpiration` (24 h) and `pfs_make_permanen
    bound to another permanent key, and drops what it kept when the permanent key changes.
  - Whenever the context gets another key for that selector (another session, MtProtoKit's refresh), it is
@@ -10956,13 +12957,16 @@ index 8977917..7cc547c 100644
  - `AUTH_KEY_PERM_EMPTY` and `-404` are handled inside the engine (rebind or a new temporary key); the
    session never drops the permanent key for them.
  
-@@ -639,8 +639,16 @@ exactly as `MTTcpConnection` does; iOS only.
+@@ -639,8 +639,19 @@ exactly as `MTTcpConnection` does; iOS only.
  The C ABI in `crates/mtproto-ffi/include/mtproto_engine.h` follows these rules. Any other host must
  follow them too.
  
 -- **Version.** `mt_engine_abi_version()` must equal the version the host was built against (5: ABI 5
 -  added `mt_session_drain` and `MTEventKindReleased`).
-+- **Version.** `mt_engine_abi_version()` must equal the version the host was built against (10: ABI 10
++- **Version.** `mt_engine_abi_version()` must equal the version the host was built against (11: ABI 11
++  added `mt_session_set_tls_hello_time_offset`, a fake-TLS hello's time apart from the session's time
++  difference, and `MTConnectionDroppedFakeTlsUnverified` in `MTEventKindConnectionDropped`'s `flags`, and
++  a host need not use either; ABI 10
 +  added `MTEventKindTransportError`, a connection's transport error code with the session's proxy
 +  serial in `request_id`; ABI 9 added `mt_session_set_proxy_addresses` and the address a named proxy
 +  reached in `MTEventKindConnectionState`'s `text2`; ABI 8 added route admission,
