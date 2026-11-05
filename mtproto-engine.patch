@@ -9,9 +9,11 @@ frees them, let the host resolve a proxy's host name, keeping a
 session's reconnect backoff across the name's addresses (ABI 9), wipe
 the address lists a host hands it too, count a client's reset as its
 close in the paused sessions test, tell the host each transport error
-code a connection gets (ABI 10), and let the host set a fake-TLS
-hello's time apart from the session's, telling it when a dropped
-connection's hello never verified (ABI 11).
+code a connection gets (ABI 10), let the host set a fake-TLS hello's
+time apart from the session's, telling it when a dropped connection's
+hello never verified (ABI 11), and ask the server about a query left
+without an answer on a connection that stays up, never running one it
+may have run again.
 
 Upstream: https://github.com/TelegramMessenger/mtproto-engine
 Branch: main
@@ -22,7 +24,7 @@ Apply with `git apply` right after checking out that revision.
 Builds for i686-win7-windows-msvc and x86_64-win7-windows-msvc (std built
 from source with -Z build-std and +crt-static) and aarch64-pc-windows-msvc.
 Every hunk is Windows-gated, or moves a test helper unchanged off Windows,
-except twelve changes, made for every platform. First, the engine's threads
+except thirteen changes, made for every platform. First, the engine's threads
 (mtproto-main, mtproto-worker-N, mtproto-resolver) run under an
 abort-on-panic guard, so a host built with panic = "unwind" ends the
 process on a panic there, as the engine's own panic = "abort" profile does,
@@ -468,6 +470,74 @@ mtproto-ffi ffi_abi11::a_refused_hello_is_flagged_and_recovers_through_the_expor
 mtproto-ffi ffi_abi11::a_connection_that_took_a_packet_reads_answered_alone,
 mtproto-ffi ffi_abi11::only_ee_sets_the_second_bit_before_anything_answered.
 
+Thirteenth, a session asks the server about a query that went ten
+seconds without an answer on a connection that stays up. Only a closed
+connection's queries were asked about or sent again, while the liveness
+checks watch the link, which pings and the other answers keep alive, so
+a query whose copy was lost on the way, or whose answer the server sent
+on another connection of the session that then closed, waited for good:
+an upload part did, for over five minutes, after an outage. Now each
+query still without an answer, acknowledged or not, gets msgs_state_req
+after ANSWER_WAIT (ten seconds, as Telegram Desktop's
+checkSentRequests), again each time it waits that long more, also after
+a reconnect, but not while large packets may still be crossing the
+uplink, and not while a request is out for an answer the server
+announced for it. When such a request goes unanswered for
+TCP_ASK_BACKSTOP (its reply lost, or sent on another connection that
+closed) the query is asked about again, and the server saying the
+answer exists (+64) asks for that answer again: the reply comes behind
+anything the server still sends on the connection, the answer included.
+An announced answer the server no longer has fails the query once with
+PROTOCOL_ERROR_ANSWER_LOST, never sent again: the server ran it, so a
+host must not send it again either. As the server reads a connection in
+order, and a closed connection's packets came before the question, a
+reply to a request that went out after the query's latest copy speaks
+of that copy. Not received sends it again under its msg_id while the
+server still takes it, else under a new msg_id (a draining session
+releases it as not run). Nothing known, which a server that ran the
+query and forgot its msg_id also says, sends it again only under its
+msg_id; past RETRANSMIT_WINDOW, after the server refused that copy, or
+for a query the server acknowledged and no longer has, the query fails
+once as possibly run with PROTOCOL_ERROR_QUERY_FORGOTTEN and code 0,
+which is no server error for a host to retry (a draining session
+releases it as possibly run), and never goes under a new msg_id, which
+would run it a second time. Received with its answer made (+64) sends
+it again under its msg_id to fetch that answer, which the server
+answers from what it has without running it twice, each time the answer
+stays away; received and still running, or not started, waits. A reply
+about an earlier copy sends nothing again. Over HTTP nothing is asked,
+and a reply there gives a query the server may have run no new msg_id
+either. The test server reports +32 and +64 as Telegram's servers do,
+can lose a query once on a live connection (TAG_SWALLOW_ONCE,
+Stats::swallowed) and keep an answer off the connection its query came
+on (TAG_ANSWER_ELSEWHERE_ONCE, Stats::answers_elsewhere). No C ABI
+change. Tests:
+mtproto-core session::tests::answer_wait_tests::a_query_left_unanswered_on_a_live_connection_is_asked_about_after_the_wait,
+mtproto-core session::tests::answer_wait_tests::a_query_the_server_did_not_receive_goes_again_under_its_msg_id_and_completes_once,
+mtproto-core session::tests::answer_wait_tests::a_question_repeats_while_the_query_stays_unanswered,
+mtproto-core session::tests::answer_wait_tests::a_query_the_server_received_without_answering_here_goes_again_under_its_msg_id_once,
+mtproto-core session::tests::answer_wait_tests::a_query_the_server_runs_is_asked_about_once_per_wait_and_never_goes_again,
+mtproto-core session::tests::answer_wait_tests::an_acknowledged_query_whose_answer_was_lost_is_asked_about_and_fetched_under_its_msg_id,
+mtproto-core session::tests::answer_wait_tests::a_query_whose_answer_the_server_keeps_completes_once_through_a_lost_fetch_and_a_reconnect,
+mtproto-core session::tests::answer_wait_tests::a_fetch_whose_answer_was_lost_is_made_again_after_the_wait,
+mtproto-core session::tests::answer_wait_tests::past_the_retransmit_window_a_query_the_server_forgot_fails_once_and_never_gets_a_new_msg_id,
+mtproto-core session::tests::answer_wait_tests::past_the_retransmit_window_a_query_the_server_never_received_runs_once_under_a_new_msg_id,
+mtproto-core session::tests::answer_wait_tests::a_query_the_server_forgot_whose_copy_it_refused_fails_once_and_never_gets_a_new_msg_id,
+mtproto-core session::tests::answer_wait_tests::a_query_the_server_acknowledged_and_then_does_not_know_fails_once_as_possibly_run,
+mtproto-core session::tests::answer_wait_tests::a_session_handing_over_releases_a_query_the_server_knows_nothing_of_as_possibly_run,
+mtproto-core session::tests::answer_wait_tests::a_late_reply_about_an_earlier_copy_sends_nothing_again,
+mtproto-core session::tests::answer_wait_tests::nothing_is_asked_while_a_large_packet_may_still_be_crossing,
+mtproto-core session::tests::answer_wait_tests::past_the_retransmit_window_a_query_not_received_gets_a_new_msg_id_and_a_received_one_waits,
+mtproto-core session::tests::answer_wait_tests::a_session_handing_over_releases_a_query_the_server_did_not_receive_as_not_run,
+mtproto-core session::tests::answer_wait_tests::a_closed_connection_leaves_its_queries_to_the_reconnect_and_asks_nothing,
+mtproto-core session::tests::answer_wait_tests::an_announced_answer_whose_reply_was_lost_is_asked_for_again_and_completes_once,
+mtproto-core session::tests::answer_wait_tests::an_announced_answer_the_server_no_longer_has_fails_the_query_once_and_it_never_goes_again,
+mtproto-core session::tests::answer_wait_tests::an_announced_answer_the_fetch_brought_completes_the_query_once,
+mtproto-core rpc::tests::a_call_the_server_forgot_fails_once_with_code_0_and_never_runs_again,
+mtproto-core rpc::tests::a_call_whose_fetched_answer_the_server_no_longer_has_fails_once_and_never_runs_again,
+mtproto-engine unanswered_queries::a_query_lost_on_a_live_connection_completes_once_within_the_wait,
+mtproto-engine unanswered_queries::an_answer_sent_on_a_second_connection_that_closed_completes_the_query_once.
+
 Test gated off on Windows, with its reason in the source:
 - mtproto-engine interface::tests::loopback_resolves_to_lo0 (Windows):
   Windows names no interface for an address, and its loopback is not lo0.
@@ -691,7 +761,7 @@ index 5f7b5eb..345f6ec 100644
  mod factor;
  mod fixed_modpow;
 diff --git a/crates/mtproto-core/src/rpc/mod.rs b/crates/mtproto-core/src/rpc/mod.rs
-index 91e26c3..8af184a 100644
+index 91e26c3..2704759 100644
 --- a/crates/mtproto-core/src/rpc/mod.rs
 +++ b/crates/mtproto-core/src/rpc/mod.rs
 @@ -59,6 +59,12 @@ pub struct RequestFlags {
@@ -867,8 +937,16 @@ index 91e26c3..8af184a 100644
              if let Some(state) = self.requests.get_mut(&id) {
                  state.waiting_for_dependency = dependency;
              }
+@@ -1173,6 +1214,7 @@ fn is_local_terminal_error(message: &str) -> bool {
+         || message.starts_with(PROTOCOL_ERROR_PREFIX)
+         || message == crate::session::PROTOCOL_REJECTED
+         || message == crate::session::ANSWER_LOST
++        || message == crate::session::QUERY_FORGOTTEN
+ }
+ 
+ fn is_updates_too_long(body: &[u8]) -> bool {
 diff --git a/crates/mtproto-core/src/rpc/tests.rs b/crates/mtproto-core/src/rpc/tests.rs
-index 0da76e6..4346b40 100644
+index 0da76e6..b7a8880 100644
 --- a/crates/mtproto-core/src/rpc/tests.rs
 +++ b/crates/mtproto-core/src/rpc/tests.rs
 @@ -163,6 +163,71 @@ fn init_connection_until_first_success_then_hash_stored() {
@@ -1167,11 +1245,1115 @@ index 0da76e6..4346b40 100644
          "{events:?}"
      );
  }
+@@ -1313,6 +1565,147 @@ fn a_call_whose_announced_answer_never_comes_fails_instead_of_running_again() {
+     }
+ }
+ 
++/// The server ran a call whose acknowledgement and answer were lost, and past the retransmit window it says
++/// it knows nothing of its msg_id. The call fails to the host once with `PROTOCOL_ERROR_QUERY_FORGOTTEN` and
++/// code 0, which is no server error a host retries, never as a retry decision, and it never goes again as a
++/// new message, which would run it a second time.
++#[test]
++fn a_call_the_server_forgot_fails_once_with_code_0_and_never_runs_again() {
++    for flags in [RequestFlags::default(), RequestFlags { delegate_retry_decisions: true, ..RequestFlags::default() }] {
++        let mut h = Harness::new(SessionRole::Main, Some("h1"));
++        h.send(1, flags);
++        let calls = h.flush_calls();
++        assert_eq!(calls.len(), 1);
++        let start = h.now.mono;
++        let mut ran = vec![calls[0].0];
++        let mut surfaced = Vec::new();
++        let mut questions = 0;
++        let mut replied = false;
++        for _ in 0..400 {
++            h.advance(1.0);
++            let _ = h.client.handle_timeout(h.now);
++            while let Some(transmit) = h.client.poll_transmit(h.now, &mut h.rng) {
++                let packet = h.server.decode(&transmit.data);
++                let mut replies = Vec::new();
++                for message in &packet.messages {
++                    if unwrap_call(&message.body).1.is_some() && !ran.contains(&message.msg_id) {
++                        ran.push(message.msg_id);
++                    }
++                    if message.constructor() == ids::PING_DELAY_DISCONNECT || message.constructor() == ids::PING {
++                        let ping_id = i64::from_le_bytes(message.body[4..12].try_into().unwrap());
++                        replies.push(Outgoing::Service(pong(message.msg_id, ping_id)));
++                    }
++                    if message.constructor() == ids::MSGS_STATE_REQ {
++                        questions += 1;
++                        if !replied && h.now.mono - start > crate::session::RETRANSMIT_WINDOW {
++                            let asked = read_vector_after_constructor(&message.body);
++                            replies.push(Outgoing::Service(msgs_state_info(message.msg_id, &vec![1; asked.len()])));
++                            replied = true;
++                        }
++                    }
++                }
++                if !replies.is_empty() {
++                    h.reply(replies);
++                }
++            }
++            for event in h.events() {
++                match event {
++                    RpcEvent::Failed { code, message, .. } => surfaced.push((code, message)),
++                    RpcEvent::RetryDecisionRequired { id, message, .. } => {
++                        surfaced.push((-1, format!("decision:{message}")));
++                        h.client.decide_retry(id, true, h.now);
++                    }
++                    RpcEvent::Completed { .. } => surfaced.push((-1, "completed".into())),
++                    _ => {}
++                }
++            }
++        }
++        assert!(replied && questions >= 5, "asked about while unanswered: {questions}");
++        assert_eq!(ran, vec![calls[0].0], "only the copy the server ran ever went");
++        assert_eq!(surfaced, vec![(0, crate::session::QUERY_FORGOTTEN.to_string())]);
++    }
++}
++
++/// The server ran a call whose acknowledgement and answer were lost. Asked about it, the server says its
++/// answer was made (+64), and the copy under its msg_id that fetches it gets msg_detailed_info announcing a
++/// large answer. The server no longer has that answer when asked for it, at once or when asked again after
++/// the first request's reply was lost. The call fails to the host once with `PROTOCOL_ERROR_ANSWER_LOST` and
++/// code 500, never as a retry decision, and never goes under a new msg_id; the host must not send it again
++/// either (Telegram Desktop fails it as possibly run).
++#[test]
++fn a_call_whose_fetched_answer_the_server_no_longer_has_fails_once_and_never_runs_again() {
++    for flags in [RequestFlags::default(), RequestFlags { delegate_retry_decisions: true, ..RequestFlags::default() }] {
++        for lose_first_reply in [false, true] {
++            let mut h = Harness::new(SessionRole::Main, Some("h1"));
++            h.send(1, flags);
++            let calls = h.flush_calls();
++            assert_eq!(calls.len(), 1);
++            let original = calls[0].0;
++            let answer = h.server.next_msg_id(true);
++            let (mut copies, mut asks) = (0, 0);
++            let mut ran = vec![original];
++            let mut surfaced = Vec::new();
++            for _ in 0..400 {
++                h.advance(1.0);
++                let _ = h.client.handle_timeout(h.now);
++                while let Some(transmit) = h.client.poll_transmit(h.now, &mut h.rng) {
++                    let packet = h.server.decode(&transmit.data);
++                    let mut replies = Vec::new();
++                    for message in &packet.messages {
++                        if unwrap_call(&message.body).1.is_some() {
++                            if ran.contains(&message.msg_id) {
++                                copies += 1;
++                                replies.push(Outgoing::Service(msg_detailed_info(message.msg_id, answer, 40_000)));
++                            } else {
++                                ran.push(message.msg_id);
++                            }
++                        }
++                        match message.constructor() {
++                            ids::PING_DELAY_DISCONNECT | ids::PING => {
++                                let ping_id = i64::from_le_bytes(message.body[4..12].try_into().unwrap());
++                                replies.push(Outgoing::Service(pong(message.msg_id, ping_id)));
++                            }
++                            ids::MSGS_STATE_REQ => {
++                                let info: Vec<u8> = read_vector_after_constructor(&message.body)
++                                    .iter()
++                                    .map(|id| if ran.contains(id) { 4 | 32 | 64 } else { 2 })
++                                    .collect();
++                                replies.push(Outgoing::Service(msgs_state_info(message.msg_id, &info)));
++                            }
++                            ids::MSG_RESEND_REQ if read_vector_after_constructor(&message.body).contains(&answer) => {
++                                asks += 1;
++                                if !(lose_first_reply && asks == 1) {
++                                    replies.push(Outgoing::Service(msgs_state_info(message.msg_id, &[2])));
++                                }
++                            }
++                            _ => {}
++                        }
++                    }
++                    if !replies.is_empty() {
++                        h.reply(replies);
++                    }
++                }
++                for event in h.events() {
++                    match event {
++                        RpcEvent::Failed { code, message, .. } => surfaced.push((code, message)),
++                        RpcEvent::RetryDecisionRequired { id, message, .. } => {
++                            surfaced.push((-1, format!("decision:{message}")));
++                            h.client.decide_retry(id, true, h.now);
++                        }
++                        RpcEvent::Completed { .. } => surfaced.push((-1, "completed".into())),
++                        _ => {}
++                    }
++                }
++            }
++            let case = format!("lose_first_reply={lose_first_reply}");
++            assert_eq!(ran, vec![original], "{case}: only the copy the server ran ever went");
++            assert_eq!(copies, 1, "{case}: one copy under its msg_id fetched the answer");
++            assert_eq!(asks, 1 + usize::from(lose_first_reply), "{case}");
++            assert_eq!(surfaced, vec![(500, crate::session::ANSWER_LOST.to_string())], "{case}");
++        }
++    }
++}
++
+ #[path = "coverage_tests.rs"]
+ mod coverage;
+ 
+diff --git a/crates/mtproto-core/src/session/answer_model_tests.rs b/crates/mtproto-core/src/session/answer_model_tests.rs
+index 04ad8fd..fed48cd 100644
+--- a/crates/mtproto-core/src/session/answer_model_tests.rs
++++ b/crates/mtproto-core/src/session/answer_model_tests.rs
+@@ -402,6 +402,15 @@ impl World {
+                                 self.server.reset_forgotten.contains(&tag)
+                             ));
+                         }
++                    } else if message == QUERY_FORGOTTEN {
++                        // Only a call the server ran in a session it has reset since, which no longer knows
++                        // its msg_id and says so about a call it had acknowledged: it may have run.
++                        let ran_before_reset = (self.server.forgotten.contains(&tag)
++                            || self.server.reset_forgotten.contains(&tag))
++                            && !self.server.executed.contains_key(&tag);
++                        if !ran_before_reset {
++                            self.violation(format!("QUERY_FORGOTTEN for tag {tag} the server still knows"));
++                        }
+                     } else {
+                         self.violation(format!("error {message} for tag {tag}"));
+                     }
+@@ -837,6 +846,7 @@ impl World {
+         self.reconnect(1.0);
+         self.run_for(400.0);
+         let mut unresolved = Vec::new();
++        let mut unknowable_msg_ids = HashSet::new();
+         let mut tags: Vec<u32> = self.live.keys().copied().collect();
+         tags.sort_unstable();
+         for tag in tags {
+@@ -859,6 +869,7 @@ impl World {
+             let lost = self.server.forgotten.contains(&tag) || self.server.reset_forgotten.contains(&tag);
+             if lost && (!answer_known || unlinked) && awaited.is_empty() {
+                 self.unknowable += 1;
++                unknowable_msg_ids.extend(query.map(|(_, msg_id, _)| msg_id));
+                 continue;
+             }
+             unresolved.push(format!(
+@@ -870,7 +881,19 @@ impl World {
+         for line in unresolved {
+             self.violation(format!("unresolved after quiet phase: {line}"));
+         }
+-        if self.h.session.is_performing_service_tasks() {
++        // A call still waiting for an answer nobody can give is asked about every `ANSWER_WAIT`, as by
++        // native's checkSentRequests: such a question in flight is the session's work, not a leftover.
++        let asking_about_unknowable = !self.h.session.service_requests.is_empty()
++            && self.h.session.service_requests.values().all(|request| match request {
++                ServiceRequest::StateRequest { msg_ids, .. } => {
++                    msg_ids.iter().all(|msg_id| unknowable_msg_ids.contains(msg_id))
++                }
++                ServiceRequest::ResendRequest { .. } => false,
++            });
++        let idle_but_asking = asking_about_unknowable
++            && !self.h.session.has_unknown_queries()
++            && self.h.session.to_resend_answer.is_empty();
++        if self.h.session.is_performing_service_tasks() && !idle_but_asking {
+             let requests: Vec<String> =
+                 self.h.session.service_requests.iter().map(|(id, r)| format!("{id:x}:{r:?}")).collect();
+             let text = format!(
+diff --git a/crates/mtproto-core/src/session/answer_wait_tests.rs b/crates/mtproto-core/src/session/answer_wait_tests.rs
+new file mode 100644
+index 0000000..7372d07
+--- /dev/null
++++ b/crates/mtproto-core/src/session/answer_wait_tests.rs
+@@ -0,0 +1,842 @@
++//! A query left without an answer, acknowledged or not, is asked about after `ANSWER_WAIT`, on the
++//! connection that stays up and after a reconnect, as long as it stays so, and goes again only under its
++//! msg_id while the server takes it: the link's liveness checks see only the link, which answers to other
++//! queries and pings keep alive. A query the server may have run and no longer knows never gets a new
++//! msg_id: it fails once as possibly run (`QUERY_FORGOTTEN`). An answer the server announced for it is
++//! asked for again after a request for it went unanswered, and one the server no longer has fails it once
++//! (`ANSWER_LOST`).
++use super::*;
++
++/// msgs_state_info's flags, as Telegram's servers set them: the query is being run or was run, and its
++/// answer was made.
++const RUNNING: u8 = 32;
++const ANSWERED: u8 = 64;
++
++/// Runs the session for `seconds` on a link that answers every ping, with nothing else from the server:
++/// the packets the session sent meanwhile, in order.
++fn live(h: &mut Harness, seconds: f64) -> Vec<DecodedPacket> {
++    let mut packets = Vec::new();
++    let until = h.now.mono + seconds;
++    while h.now.mono < until {
++        h.advance(0.25);
++        h.session.handle_timeout(h.now).expect("the link stays up");
++        for packet in h.flush_all() {
++            h.answer_pings(&packet);
++            packets.push(packet);
++        }
++    }
++    packets
++}
++
++/// Runs the session for `seconds` as its owner does, waking it only at the deadlines it gives (a timer
++/// fires a little late, at least 1 ms after its last wake-up), on a link that answers every ping when
++/// `pongs` says so: each packet it sent, with when it went out.
++fn by_deadlines(h: &mut Harness, seconds: f64, pongs: bool) -> Vec<(f64, DecodedPacket)> {
++    let until = h.now.mono + seconds;
++    let mut packets = Vec::new();
++    let mut idle_wakes: Vec<f64> = Vec::new();
++    loop {
++        let at = h.session.poll_timeout(h.now).expect("a live connection always has a deadline");
++        assert!(at >= h.now.mono, "asks to be woken {:.3} s in the past", h.now.mono - at);
++        if at > until {
++            break;
++        }
++        h.advance(at.max(h.now.mono + 0.001) - h.now.mono);
++        h.session.handle_timeout(h.now).expect("the link stays up");
++        let mut sent = false;
++        while let Some(transmit) = h.session.poll_transmit(h.now, &mut h.rng) {
++            let packet = h.server.decode(&transmit.data);
++            if pongs {
++                h.answer_pings(&packet);
++            }
++            packets.push((h.now.mono, packet));
++            sent = true;
++        }
++        if !sent {
++            idle_wakes.push(h.now.mono);
++            let storm = idle_wakes.iter().rev().take_while(|at| h.now.mono - **at < 1.0).count();
++            assert!(storm < 100, "{storm} idle wake-ups within a second at {}", h.now.mono);
++        }
++    }
++    if until > h.now.mono {
++        h.advance(until - h.now.mono);
++    }
++    packets
++}
++
++/// The msg_ids each state request in `packets` asked about, with the request's own msg_id.
++fn state_requests(packets: &[DecodedPacket]) -> Vec<(i64, Vec<i64>)> {
++    packets
++        .iter()
++        .flat_map(|packet| packet.messages.iter())
++        .filter(|message| message.constructor() == ids::MSGS_STATE_REQ)
++        .map(|message| (message.msg_id, read_vector_after_constructor(&message.body)))
++        .collect()
++}
++
++/// Each copy of query `tag` in `packets`: its msg_id and seq_no.
++fn copies(packets: &[DecodedPacket], tag: u32) -> Vec<(i64, i32)> {
++    packets
++        .iter()
++        .flat_map(|packet| packet.messages.iter())
++        .filter(|message| query_tag(&message.body) == Some(tag))
++        .map(|message| (message.msg_id, message.seq_no))
++        .collect()
++}
++
++fn results_for(events: &[SessionEvent], id: QueryId) -> usize {
++    events.iter().filter(|event| matches!(event, SessionEvent::Result { id: done, .. } if *done == id)).count()
++}
++
++/// The events that end query `id`: an answer, an error, or leaving a session that hands over.
++fn terminal_events(events: &[SessionEvent], id: QueryId) -> usize {
++    events
++        .iter()
++        .filter(|event| match event {
++            SessionEvent::Result { id: done, .. }
++            | SessionEvent::Error { id: done, .. }
++            | SessionEvent::Released { id: done, .. } => *done == id,
++            _ => false,
++        })
++        .count()
++}
++
++/// The failures of query `id` as possibly run and forgotten: code 0, `QUERY_FORGOTTEN`.
++fn forgotten(events: &[SessionEvent], id: QueryId) -> usize {
++    let failure = SessionEvent::Error { id, code: 0, message: QUERY_FORGOTTEN.to_string(), response_msg_id: 0 };
++    events.iter().filter(|event| **event == failure).count()
++}
++
++/// Sends query `tag` with two neighbours, as one burst on the live connection, and answers the
++/// neighbours: query `tag` is left with neither an answer nor an acknowledgement.
++fn burst_with_one_lost(h: &mut Harness, tag: u32) -> (i64, i32) {
++    for other in [tag, tag + 1, tag + 2] {
++        h.session.send(QueryId(u64::from(other)), query_body(other), QueryOptions::default(), h.now);
++    }
++    let packet = h.flush().expect("the burst");
++    h.answer_pings(&packet);
++    let lost = copies(std::slice::from_ref(&packet), tag)[0];
++    let answers: Vec<Outgoing> = [tag + 1, tag + 2]
++        .iter()
++        .map(|other| Outgoing::Content(rpc_result(h.sent_query(&packet, *other), &[1, 0, 0, 0])))
++        .collect();
++    h.deliver(answers).unwrap();
++    assert_eq!(h.results().len(), 2, "the neighbours are answered");
++    lost
++}
++
++#[test]
++fn a_query_left_unanswered_on_a_live_connection_is_asked_about_after_the_wait() {
++    let mut h = Harness::new();
++    let (lost, _) = burst_with_one_lost(&mut h, 1);
++    let sent = h.now.mono;
++    let packets = by_deadlines(&mut h, ANSWER_WAIT + 1.0, true);
++    let asked: Vec<(f64, Vec<i64>)> = packets
++        .iter()
++        .flat_map(|(at, packet)| state_requests(std::slice::from_ref(packet)).into_iter().map(|(_, ids)| (*at, ids)))
++        .collect();
++    assert_eq!(asked.len(), 1, "{asked:x?}");
++    assert!((asked[0].0 - sent - ANSWER_WAIT).abs() < 0.01, "asked as the wait ended: {}", asked[0].0 - sent);
++    assert_eq!(asked[0].1, vec![lost], "the question names the lost query alone");
++    let copies_sent: Vec<DecodedPacket> = packets.into_iter().map(|(_, packet)| packet).collect();
++    assert!(copies(&copies_sent, 1).is_empty(), "nothing goes again before the server says what it has");
++}
++
++#[test]
++fn a_query_the_server_did_not_receive_goes_again_under_its_msg_id_and_completes_once() {
++    let mut h = Harness::new();
++    let lost = burst_with_one_lost(&mut h, 1);
++    let asked = state_requests(&live(&mut h, ANSWER_WAIT + 1.0));
++    h.deliver(vec![Outgoing::Service(msgs_state_info(asked[0].0, &[2]))]).unwrap();
++    let again = live(&mut h, 0.5);
++    assert_eq!(copies(&again, 1), vec![lost], "the same msg_id and seq_no, once");
++    h.deliver(vec![Outgoing::Content(rpc_result(lost.0, &[7, 0, 0, 0]))]).unwrap();
++    assert_eq!(results_for(&h.events(), QueryId(1)), 1);
++    assert!(state_requests(&live(&mut h, 2.0 * ANSWER_WAIT)).is_empty(), "an answered query is not asked about");
++}
++
++#[test]
++fn a_question_repeats_while_the_query_stays_unanswered() {
++    let mut h = Harness::new();
++    let lost = burst_with_one_lost(&mut h, 1);
++    for round in 0..3 {
++        let packets = live(&mut h, ANSWER_WAIT + 1.0);
++        let asked = state_requests(&packets);
++        assert_eq!(asked.len(), 1, "round {round}: {asked:x?}");
++        assert_eq!(asked[0].1, vec![lost.0]);
++        h.deliver(vec![Outgoing::Service(msgs_state_info(asked[0].0, &[3]))]).unwrap();
++        assert_eq!(copies(&live(&mut h, 0.5), 1), vec![lost], "round {round}: again under its msg_id");
++    }
++}
++
++#[test]
++fn a_query_the_server_received_without_answering_here_goes_again_under_its_msg_id_once() {
++    let mut h = Harness::new();
++    let lost = burst_with_one_lost(&mut h, 1);
++    let asked = state_requests(&live(&mut h, ANSWER_WAIT + 1.0));
++    h.deliver(vec![Outgoing::Service(msgs_state_info(asked[0].0, &[4 | 32 | 64]))]).unwrap();
++    assert!(h.events().iter().any(|event| matches!(event, SessionEvent::Acknowledged { id: QueryId(1) })));
++    let again = live(&mut h, 0.5);
++    assert_eq!(copies(&again, 1), vec![lost], "one copy under its msg_id fetches the answer");
++    h.deliver(vec![Outgoing::Content(rpc_result(lost.0, &[7, 0, 0, 0]))]).unwrap();
++    assert_eq!(results_for(&h.events(), QueryId(1)), 1);
++    let later = live(&mut h, 3.0 * ANSWER_WAIT);
++    assert!(copies(&later, 1).is_empty() && state_requests(&later).is_empty());
++}
++
++/// Received and still running at the server (+32 without +64), or received and not started (4 alone, as
++/// Telegram's servers say of a query waiting its turn): it is asked about once per wait and never goes
++/// again, then its answer completes it once.
++#[test]
++fn a_query_the_server_runs_is_asked_about_once_per_wait_and_never_goes_again() {
++    let mut h = Harness::new();
++    let lost = burst_with_one_lost(&mut h, 1);
++    for (round, state) in [4 | RUNNING, 4, 4 | 8 | RUNNING, 4 | RUNNING].into_iter().enumerate() {
++        let packets = live(&mut h, ANSWER_WAIT + 1.0);
++        let asked = state_requests(&packets);
++        assert_eq!(asked.len(), 1, "round {round}: one question per wait: {asked:x?}");
++        assert_eq!(asked[0].1, vec![lost.0], "round {round}");
++        assert!(copies(&packets, 1).is_empty(), "round {round}: the server has it, it never goes again");
++        h.deliver(vec![Outgoing::Service(msgs_state_info(asked[0].0, &[state]))]).unwrap();
++    }
++    assert!(copies(&live(&mut h, 1.0), 1).is_empty());
++    h.deliver(vec![Outgoing::Content(rpc_result(lost.0, &[7, 0, 0, 0]))]).unwrap();
++    let events = h.events();
++    assert_eq!(results_for(&events, QueryId(1)), 1);
++    assert_eq!(terminal_events(&events, QueryId(1)), 1);
++    let later = live(&mut h, 3.0 * ANSWER_WAIT);
++    assert!(copies(&later, 1).is_empty() && state_requests(&later).is_empty(), "an answered query is done");
++}
++
++/// The server acknowledged the query and then its answer was lost: native's `checkSentRequests` asks
++/// about every request still without an answer, acknowledged or not, and so does the session; the answer
++/// the server made is fetched by a copy under the query's msg_id.
++#[test]
++fn an_acknowledged_query_whose_answer_was_lost_is_asked_about_and_fetched_under_its_msg_id() {
++    let mut h = Harness::new();
++    h.session.send(QueryId(1), query_body(1), QueryOptions::default(), h.now);
++    let packet = h.flush().unwrap();
++    let sent = copies(std::slice::from_ref(&packet), 1)[0];
++    h.answer_pings(&packet);
++    h.deliver(vec![Outgoing::Service(msgs_ack(&[sent.0]))]).unwrap();
++    let packets = live(&mut h, ANSWER_WAIT + 1.0);
++    let asked = state_requests(&packets);
++    assert_eq!(asked.len(), 1, "acknowledged and unanswered, it is asked about after the wait: {asked:x?}");
++    assert_eq!(asked[0].1, vec![sent.0]);
++    assert!(copies(&packets, 1).is_empty(), "nothing goes again before the server says what it has");
++    h.deliver(vec![Outgoing::Service(msgs_state_info(asked[0].0, &[4 | 8 | RUNNING | ANSWERED]))]).unwrap();
++    assert_eq!(copies(&live(&mut h, 0.5), 1), vec![sent], "the answer is fetched under its msg_id and seq_no");
++    h.deliver(vec![Outgoing::Content(rpc_result(sent.0, &[7, 0, 0, 0]))]).unwrap();
++    let events = h.events();
++    assert_eq!(results_for(&events, QueryId(1)), 1);
++    assert_eq!(terminal_events(&events, QueryId(1)), 1);
++}
++
++/// The server side of query 1, which it ran under the msg_ids in `ran` and whose answer it keeps: it
++/// answers pings and other queries at once, a state request about query 1 with `state` (none while
++/// `state` is None), a copy under a msg_id it ran with the answer from what it has, losing the first
++/// `lose` of those answers on the way, and runs the query again under a msg_id it never saw.
++struct Holder {
++    ran: Vec<i64>,
++    lose: usize,
++    state: Option<u8>,
++}
++
++impl Holder {
++    fn replies(&mut self, packet: &DecodedPacket) -> Vec<Outgoing> {
++        let mut replies = Vec::new();
++        for message in &packet.messages {
++            match query_tag(&message.body) {
++                Some(1) => {
++                    if !self.ran.contains(&message.msg_id) {
++                        self.ran.push(message.msg_id);
++                    }
++                    if self.lose > 0 {
++                        self.lose -= 1;
++                    } else {
++                        replies.push(Outgoing::Content(rpc_result(message.msg_id, &[7, 0, 0, 0])));
++                    }
++                }
++                Some(_) => replies.push(Outgoing::Content(rpc_result(message.msg_id, &[1, 0, 0, 0]))),
++                None if message.constructor() == ids::MSGS_STATE_REQ => {
++                    if let Some(state) = self.state {
++                        let info: Vec<u8> = read_vector_after_constructor(&message.body)
++                            .iter()
++                            .map(|id| if self.ran.contains(id) { state } else { 2 })
++                            .collect();
++                        replies.push(Outgoing::Service(msgs_state_info(message.msg_id, &info)));
++                    }
++                }
++                None => {}
++            }
++        }
++        replies
++    }
++}
++
++/// `live` with `holder` as the server: it answers each packet as it arrives.
++fn serve(h: &mut Harness, seconds: f64, holder: &mut Holder) -> Vec<DecodedPacket> {
++    let mut packets = Vec::new();
++    let until = h.now.mono + seconds;
++    while h.now.mono < until {
++        h.advance(0.25);
++        h.session.handle_timeout(h.now).expect("the link stays up");
++        for packet in h.flush_all() {
++            h.answer_pings(&packet);
++            let replies = holder.replies(&packet);
++            if !replies.is_empty() {
++                h.deliver(replies).unwrap();
++            }
++            packets.push(packet);
++        }
++    }
++    packets
++}
++
++/// The finite losses of G1: the server ran the query once and keeps its answer, which went elsewhere;
++/// the answer to the first fetch is lost, and the connection closes with the next fetch queued, before
++/// it goes out. Other queries are answered before and after, pings all along. The query is asked about
++/// again after each, on the new connection too, and completes once, every copy under the msg_id the
++/// server ran it under.
++#[test]
++fn a_query_whose_answer_the_server_keeps_completes_once_through_a_lost_fetch_and_a_reconnect() {
++    let mut h = Harness::new();
++    let lost = burst_with_one_lost(&mut h, 1);
++    let mut holder = Holder { ran: vec![lost.0], lose: 1, state: Some(4 | RUNNING | ANSWERED) };
++    let mut packets = serve(&mut h, ANSWER_WAIT + 1.0, &mut holder);
++    assert_eq!(copies(&packets, 1), vec![lost], "the first fetch went, under its msg_id");
++    assert_eq!(holder.lose, 0, "and its answer was lost");
++    holder.state = None;
++    let asked = state_requests(&serve(&mut h, ANSWER_WAIT + 1.0, &mut holder));
++    assert_eq!(asked.len(), 1, "asked about again after the wait from the lost fetch: {asked:x?}");
++    h.deliver(vec![Outgoing::Service(msgs_state_info(asked[0].0, &[4 | RUNNING | ANSWERED]))]).unwrap();
++    h.session.connection_closed();
++    h.advance(1.0);
++    h.session.connection_opened(h.now);
++    h.session.send(QueryId(9), query_body(9), QueryOptions::default(), h.now);
++    holder.state = Some(4 | RUNNING | ANSWERED);
++    let after = serve(&mut h, 2.0 * ANSWER_WAIT, &mut holder);
++    assert!(
++        state_requests(&after).iter().any(|(_, ids)| ids == &vec![lost.0]),
++        "asked about on the new connection, though the server acknowledged it"
++    );
++    packets.extend(after);
++    let events = h.events();
++    assert_eq!(results_for(&events, QueryId(1)), 1, "completed once");
++    assert_eq!(terminal_events(&events, QueryId(1)), 1);
++    assert_eq!(results_for(&events, QueryId(9)), 1, "the link answered other queries meanwhile");
++    assert!(copies(&packets, 1).iter().all(|copy| *copy == lost), "every copy under its msg_id and seq_no");
++    assert_eq!(holder.ran, vec![lost.0], "the server ran it once");
++    assert!(!h.session.contains(QueryId(1)));
++}
++
++/// The answer to the fetch is lost while the connection stays up: the query is asked about again after
++/// the wait and fetched again, never sent under a new msg_id.
++#[test]
++fn a_fetch_whose_answer_was_lost_is_made_again_after_the_wait() {
++    let mut h = Harness::new();
++    let lost = burst_with_one_lost(&mut h, 1);
++    let mut holder = Holder { ran: vec![lost.0], lose: 1, state: Some(4 | RUNNING | ANSWERED) };
++    let packets = serve(&mut h, 3.0 * ANSWER_WAIT, &mut holder);
++    let events = h.events();
++    assert_eq!(copies(&packets, 1), vec![lost, lost], "two fetches, the second after the first's answer was lost");
++    assert!(state_requests(&packets).len() >= 2);
++    assert_eq!(results_for(&events, QueryId(1)), 1);
++    assert_eq!(terminal_events(&events, QueryId(1)), 1);
++    assert_eq!(holder.ran, vec![lost.0]);
++}
++
++/// The server ran the query, its acknowledgement and answer were lost, and pongs keep the link up. Past
++/// `RETRANSMIT_WINDOW` a current state reply says "nothing known" (1): the server may have run it and
++/// forgotten. It must not go again under a new msg_id, which would run it a second time, and it cannot go
++/// under its own: it fails once as possibly run, with no further traffic about it.
++#[test]
++fn past_the_retransmit_window_a_query_the_server_forgot_fails_once_and_never_gets_a_new_msg_id() {
++    let mut h = Harness::new();
++    h.session.send(QueryId(1), query_body(1), QueryOptions::default(), h.now);
++    let packet = h.flush().unwrap();
++    let original = copies(std::slice::from_ref(&packet), 1)[0];
++    h.answer_pings(&packet);
++    let start = h.now.mono;
++    let mut ran = vec![original.0];
++    let mut questions = 0;
++    let mut replied = false;
++    while h.now.mono - start < RETRANSMIT_WINDOW + 4.0 * ANSWER_WAIT {
++        let packets = live(&mut h, 1.0);
++        for (msg_id, _) in copies(&packets, 1) {
++            if !ran.contains(&msg_id) {
++                ran.push(msg_id);
++            }
++        }
++        let asked = state_requests(&packets);
++        questions += asked.len();
++        if !replied
++            && h.now.mono - start > RETRANSMIT_WINDOW
++            && let Some((request, ids)) = asked.last()
++        {
++            h.deliver(vec![Outgoing::Service(msgs_state_info(*request, &vec![1; ids.len()]))]).unwrap();
++            replied = true;
++        }
++    }
++    assert!(replied && questions >= 5, "asked about while it stayed unanswered: {questions}");
++    assert_eq!(ran, vec![original.0], "no copy under a new msg_id: the server ran it once");
++    let events = h.events();
++    assert_eq!(forgotten(&events, QueryId(1)), 1, "{events:?}");
++    assert_eq!(terminal_events(&events, QueryId(1)), 1, "one terminal event, of the kind no host retries");
++    assert!(!h.session.contains(QueryId(1)));
++    let later = live(&mut h, 3.0 * ANSWER_WAIT);
++    assert!(copies(&later, 1).is_empty() && state_requests(&later).is_empty(), "nothing more about it");
++}
++
++/// The control of the case above: the first copy never reached the server, which past the window says
++/// "not received" (2). A new msg_id is safe then: the query runs once, under it, and completes once.
++#[test]
++fn past_the_retransmit_window_a_query_the_server_never_received_runs_once_under_a_new_msg_id() {
++    let mut h = Harness::new();
++    h.session.send(QueryId(1), query_body(1), QueryOptions::default(), h.now);
++    let packet = h.flush().unwrap();
++    let original = copies(std::slice::from_ref(&packet), 1)[0];
++    h.answer_pings(&packet);
++    let start = h.now.mono;
++    let mut ran: Vec<i64> = Vec::new();
++    let mut replied = false;
++    while h.now.mono - start < RETRANSMIT_WINDOW + 4.0 * ANSWER_WAIT {
++        let packets = live(&mut h, 1.0);
++        for (msg_id, _) in copies(&packets, 1) {
++            if !ran.contains(&msg_id) {
++                ran.push(msg_id);
++                h.deliver(vec![Outgoing::Content(rpc_result(msg_id, &[7, 0, 0, 0]))]).unwrap();
++            }
++        }
++        if !replied
++            && h.now.mono - start > RETRANSMIT_WINDOW
++            && let Some((request, ids)) = state_requests(&packets).last()
++        {
++            h.deliver(vec![Outgoing::Service(msgs_state_info(*request, &vec![2; ids.len()]))]).unwrap();
++            replied = true;
++        }
++    }
++    assert!(replied);
++    assert_eq!(ran.len(), 1, "the server ran it once: {ran:x?}");
++    assert_ne!(ran[0], original.0, "under a new msg_id");
++    let events = h.events();
++    assert_eq!(results_for(&events, QueryId(1)), 1);
++    assert_eq!(terminal_events(&events, QueryId(1)), 1);
++}
++
++/// "Nothing known" within the window: the query goes again under its msg_id, and the server refuses that
++/// copy. Whatever the state reply after that says, "nothing known" again or "not received", the query may
++/// have run and been forgotten: it fails once as possibly run and never goes under a new msg_id.
++#[test]
++fn a_query_the_server_forgot_whose_copy_it_refused_fails_once_and_never_gets_a_new_msg_id() {
++    for after in [1u8, 2] {
++        let mut h = Harness::new();
++        let lost = burst_with_one_lost(&mut h, 1);
++        let asked = state_requests(&live(&mut h, ANSWER_WAIT + 1.0));
++        h.deliver(vec![Outgoing::Service(msgs_state_info(asked[0].0, &[1]))]).unwrap();
++        let packets = live(&mut h, 0.5);
++        assert_eq!(copies(&packets, 1), vec![lost], "{after}: within the window, again under its msg_id");
++        let carrier = packets.iter().find(|packet| !copies(std::slice::from_ref(*packet), 1).is_empty()).unwrap();
++        let refusal = bad_msg_notification(carrier.header.msg_id, carrier.header.seq_no, 20);
++        h.deliver(vec![Outgoing::Service(refusal)]).unwrap();
++        let packets = live(&mut h, 1.0);
++        assert!(copies(&packets, 1).is_empty(), "{after}: a refused copy is not sent again blindly");
++        let question = state_requests(&packets);
++        assert!(question.iter().any(|(_, ids)| ids.contains(&lost.0)), "{after}: asked about: {question:x?}");
++        let (request, ids) = question.last().unwrap();
++        let info: Vec<u8> = ids.iter().map(|id| if *id == lost.0 { after } else { 2 }).collect();
++        h.deliver(vec![Outgoing::Service(msgs_state_info(*request, &info))]).unwrap();
++        let later = live(&mut h, 2.0 * ANSWER_WAIT);
++        assert!(copies(&later, 1).is_empty(), "{after}: never under a new msg_id");
++        let events = h.events();
++        assert_eq!(forgotten(&events, QueryId(1)), 1, "{after}: {events:?}");
++        assert_eq!(terminal_events(&events, QueryId(1)), 1, "{after}");
++    }
++}
++
++/// The server acknowledged the query and then says it never received it: it lost its record of a query
++/// it had, which may have run. The query fails once as possibly run, without a new msg_id.
++#[test]
++fn a_query_the_server_acknowledged_and_then_does_not_know_fails_once_as_possibly_run() {
++    let mut h = Harness::new();
++    h.session.send(QueryId(1), query_body(1), QueryOptions::default(), h.now);
++    let packet = h.flush().unwrap();
++    let sent = copies(std::slice::from_ref(&packet), 1)[0];
++    h.answer_pings(&packet);
++    h.deliver(vec![Outgoing::Service(msgs_ack(&[sent.0]))]).unwrap();
++    let asked = state_requests(&live(&mut h, ANSWER_WAIT + 1.0));
++    assert_eq!(asked.len(), 1, "{asked:x?}");
++    h.deliver(vec![Outgoing::Service(msgs_state_info(asked[0].0, &[2]))]).unwrap();
++    let later = live(&mut h, 2.0 * ANSWER_WAIT);
++    assert!(copies(&later, 1).is_empty(), "no copy under any msg_id");
++    let events = h.events();
++    assert_eq!(forgotten(&events, QueryId(1)), 1, "{events:?}");
++    assert_eq!(terminal_events(&events, QueryId(1)), 1);
++}
++
++/// While handing over, a query the server knows nothing of leaves the session as possibly run, once, and
++/// no copy of it goes.
++#[test]
++fn a_session_handing_over_releases_a_query_the_server_knows_nothing_of_as_possibly_run() {
++    let mut h = Harness::new();
++    let lost = burst_with_one_lost(&mut h, 1);
++    h.session.hand_over();
++    let asked = state_requests(&live(&mut h, ANSWER_WAIT + 1.0));
++    assert_eq!(asked[0].1, vec![lost.0]);
++    h.deliver(vec![Outgoing::Service(msgs_state_info(asked[0].0, &[1]))]).unwrap();
++    let events = h.events();
++    let released: Vec<&SessionEvent> =
++        events.iter().filter(|event| matches!(event, SessionEvent::Released { .. })).collect();
++    assert_eq!(released, vec![&SessionEvent::Released { id: QueryId(1), may_have_run: true }]);
++    assert_eq!(terminal_events(&events, QueryId(1)), 1);
++    assert!(copies(&live(&mut h, 2.0 * ANSWER_WAIT), 1).is_empty());
++}
++
++#[test]
++fn a_late_reply_about_an_earlier_copy_sends_nothing_again() {
++    let mut h = Harness::new();
++    let lost = burst_with_one_lost(&mut h, 1);
++    let asked = state_requests(&live(&mut h, ANSWER_WAIT + 1.0));
++    h.deliver(vec![Outgoing::Service(msg_resend_req(&[lost.0]))]).unwrap();
++    assert_eq!(copies(&live(&mut h, 0.5), 1), vec![lost], "the server asked for it again");
++    h.deliver(vec![Outgoing::Service(msgs_state_info(asked[0].0, &[2]))]).unwrap();
++    let packets = live(&mut h, 1.0);
++    assert!(copies(&packets, 1).is_empty(), "the reply predates the copy sent since: {:x?}", copies(&packets, 1));
++    h.deliver(vec![Outgoing::Content(rpc_result(lost.0, &[7, 0, 0, 0]))]).unwrap();
++    assert_eq!(results_for(&h.events(), QueryId(1)), 1);
++}
++
++#[test]
++fn nothing_is_asked_while_a_large_packet_may_still_be_crossing() {
++    let mut h = Harness::new();
++    answer_probe(&mut h);
++    let (msg_id, _) = send_large(&mut h, 1, 128 * 1024);
++    assert!(h.session.transmit_grace_until() > h.now.mono + 2.0 * ANSWER_WAIT, "a 4 KB/s uplink is assumed");
++    let packets: Vec<DecodedPacket> =
++        by_deadlines(&mut h, 2.0 * ANSWER_WAIT, false).into_iter().map(|(_, packet)| packet).collect();
++    assert!(h.session.is_transmitting(h.now), "the part may still be crossing");
++    let last_ping = packets.iter().rev().find_map(|packet| packet.find(ids::PING_DELAY_DISCONNECT)).cloned();
++    assert!(state_requests(&packets).is_empty(), "nothing is asked meanwhile");
++    let ping = last_ping.expect("pings go out behind the part");
++    h.deliver(vec![Outgoing::Service(pong(ping.msg_id, ping_id_of(&ping).unwrap()))]).unwrap();
++    assert!(!h.session.is_transmitting(h.now), "a pong sent after the part shows it arrived");
++    let asked = state_requests(&live(&mut h, 1.0));
++    assert_eq!(asked.len(), 1, "the wait is long over once the part arrived: {asked:x?}");
++    assert_eq!(asked[0].1, vec![msg_id]);
++}
++
++#[test]
++fn past_the_retransmit_window_a_query_not_received_gets_a_new_msg_id_and_a_received_one_waits() {
++    let mut h = Harness::new();
++    for tag in [1, 4] {
++        h.session.send(QueryId(u64::from(tag)), query_body(tag), QueryOptions::default(), h.now);
++    }
++    let packet = h.flush().unwrap();
++    let first = (h.sent_query(&packet, 1), h.sent_query(&packet, 4));
++    h.answer_pings(&packet);
++    let start = h.now.mono;
++    let mut asked = 0;
++    let (request, ids) = loop {
++        let packets = live(&mut h, 1.0);
++        let questions = state_requests(&packets);
++        asked += questions.len();
++        if h.now.mono - start > RETRANSMIT_WINDOW
++            && let Some(question) = questions.last()
++        {
++            break question.clone();
++        }
++        assert!(h.now.mono - start < RETRANSMIT_WINDOW + 4.0 * ANSWER_WAIT, "asked on and on");
++    };
++    assert!(asked >= 5, "asked again while no reply came: {asked}");
++    assert!(ids.contains(&first.0) && ids.contains(&first.1), "{ids:x?}");
++    let info: Vec<u8> = ids.iter().map(|id| if *id == first.0 { 2 } else { 4 }).collect();
++    h.deliver(vec![Outgoing::Service(msgs_state_info(request, &info))]).unwrap();
++    let packets = live(&mut h, 1.0);
++    let resent = copies(&packets, 1);
++    assert_eq!(resent.len(), 1);
++    assert_ne!(resent[0].0, first.0, "too old for the server to take again: a new msg_id, safe as never received");
++    assert!(copies(&packets, 4).is_empty(), "a received query that old cannot go again: it waits");
++}
++
++#[test]
++fn a_session_handing_over_releases_a_query_the_server_did_not_receive_as_not_run() {
++    let mut h = Harness::new();
++    let lost = burst_with_one_lost(&mut h, 1);
++    h.session.hand_over();
++    let asked = state_requests(&live(&mut h, ANSWER_WAIT + 1.0));
++    assert_eq!(asked[0].1, vec![lost.0], "a draining session asks too");
++    h.deliver(vec![Outgoing::Service(msgs_state_info(asked[0].0, &[2]))]).unwrap();
++    let released: Vec<SessionEvent> =
++        h.events().into_iter().filter(|event| matches!(event, SessionEvent::Released { .. })).collect();
++    assert_eq!(released, vec![SessionEvent::Released { id: QueryId(1), may_have_run: false }]);
++    assert!(copies(&live(&mut h, 1.0), 1).is_empty(), "nothing goes again in the draining session");
++}
++
++#[test]
++fn a_closed_connection_leaves_its_queries_to_the_reconnect_and_asks_nothing() {
++    let mut h = Harness::new();
++    let lost = burst_with_one_lost(&mut h, 1);
++    h.advance(ANSWER_WAIT - 2.0);
++    h.session.connection_closed();
++    h.session.connection_opened(h.now);
++    let packets = live(&mut h, 1.0);
++    assert_eq!(copies(&packets, 1), vec![lost], "retransmitted at once on the new connection");
++    assert!(state_requests(&packets).is_empty());
++    let asked = state_requests(&live(&mut h, ANSWER_WAIT));
++    assert_eq!(asked.len(), 1, "the wait starts over from the copy on the new connection: {asked:x?}");
++}
++
++/// The size the server announces for query 1's answer: large enough that it announces the answer to a
++/// copy of the query instead of sending it again.
++const ANSWER_BYTES: i32 = 40_000;
++
++/// What the server does with a request for the answer it announced.
++#[derive(Clone, Copy, Debug, PartialEq)]
++enum Fetch {
++    /// The reply is lost on the way.
++    Lost,
++    /// The answer goes out on another connection of the session, which closes before it is read.
++    Elsewhere,
++    /// The server no longer has the answer and says so (msgs_state_info about the request).
++    Unavailable,
++}
++
++/// The server side of query 1, whose answer was lost and which the server ran under the msg_ids in `ran`;
++/// it keeps the answer, `answer`, and as Telegram's servers do with a large one, announces it with
++/// msg_detailed_info to a copy under a msg_id it ran instead of sending it again. A state request about
++/// query 1 gets 4 + 32 + 64; a request for `answer` gets the next of `fetches` and, once they ran out, the
++/// answer. It answers pings and other queries at once, and runs query 1 again under a msg_id it never saw.
++struct Announcer {
++    ran: Vec<i64>,
++    answer: i64,
++    fetches: std::collections::VecDeque<Fetch>,
++    /// When each request for `answer` arrived.
++    asks: Vec<f64>,
++    /// The packets that carried the answer on the other connection, never read by this session.
++    elsewhere: Vec<Vec<u8>>,
++}
++
++impl Announcer {
++    fn new(ran: i64, answer: i64, fetches: &[Fetch]) -> Self {
++        Self {
++            ran: vec![ran],
++            answer,
++            fetches: fetches.iter().copied().collect(),
++            asks: Vec::new(),
++            elsewhere: Vec::new(),
++        }
++    }
++
++    fn answer_body(&self) -> Vec<u8> {
++        rpc_result(self.ran[0], &[7, 0, 0, 0])
++    }
++
++    fn replies(&mut self, packet: &DecodedPacket, peer: &mut ServerPeer, now: f64) -> Vec<Outgoing> {
++        let mut replies = Vec::new();
++        for message in &packet.messages {
++            match query_tag(&message.body) {
++                Some(1) if self.ran.contains(&message.msg_id) => {
++                    replies.push(Outgoing::Service(msg_detailed_info(message.msg_id, self.answer, ANSWER_BYTES)));
++                }
++                Some(1) => {
++                    self.ran.push(message.msg_id);
++                    replies.push(Outgoing::Content(rpc_result(message.msg_id, &[7, 0, 0, 0])));
++                }
++                Some(_) => replies.push(Outgoing::Content(rpc_result(message.msg_id, &[1, 0, 0, 0]))),
++                None if message.constructor() == ids::MSGS_STATE_REQ => {
++                    let info: Vec<u8> = read_vector_after_constructor(&message.body)
++                        .iter()
++                        .map(|id| if self.ran.contains(id) { 4 | RUNNING | ANSWERED } else { 2 })
++                        .collect();
++                    replies.push(Outgoing::Service(msgs_state_info(message.msg_id, &info)));
++                }
++                None if message.constructor() == ids::MSG_RESEND_REQ => {
++                    if !read_vector_after_constructor(&message.body).contains(&self.answer) {
++                        continue;
++                    }
++                    self.asks.push(now);
++                    match self.fetches.pop_front() {
++                        Some(Fetch::Lost) => {}
++                        Some(Fetch::Elsewhere) => {
++                            let carried = peer.seal(self.answer, 1, &self.answer_body());
++                            self.elsewhere.push(carried);
++                        }
++                        Some(Fetch::Unavailable) => {
++                            replies.push(Outgoing::Service(msgs_state_info(message.msg_id, &[2])));
++                        }
++                        None => {
++                            let body = self.answer_body();
++                            replies.push(Outgoing::Raw { body, seq_no: 1, msg_id: Some(self.answer) });
++                        }
++                    }
++                }
++                None => {}
++            }
++        }
++        replies
++    }
++}
++
++/// What `run_announced` saw: the packets the session sent, with when each went out, and the events.
++struct Announced {
++    h: Harness,
++    lost: (i64, i32),
++    packets: Vec<DecodedPacket>,
++    sent_at: Vec<f64>,
++    events: Vec<SessionEvent>,
++    server: Announcer,
++}
++
++impl Announced {
++    /// When each state request naming query 1 went out.
++    fn questions(&self) -> Vec<f64> {
++        self.packets
++            .iter()
++            .zip(&self.sent_at)
++            .filter(|(packet, _)| {
++                state_requests(std::slice::from_ref(*packet)).iter().any(|(_, ids)| ids.contains(&self.lost.0))
++            })
++            .map(|(_, at)| *at)
++            .collect()
++    }
++
++    /// After the run nothing more goes about query 1: no copy, no question, no request for its answer.
++    fn nothing_more(&mut self) {
++        let later = live(&mut self.h, 3.0 * ANSWER_WAIT);
++        assert!(copies(&later, 1).is_empty(), "no copy of a finished query");
++        assert!(state_requests(&later).iter().all(|(_, ids)| !ids.contains(&self.lost.0)), "no question about it");
++        let answer = self.server.answer;
++        let asks = later
++            .iter()
++            .flat_map(|packet| packet.messages.iter())
++            .filter(|message| message.constructor() == ids::MSG_RESEND_REQ)
++            .filter(|message| read_vector_after_constructor(&message.body).contains(&answer))
++            .count();
++        assert_eq!(asks, 0, "no request for its answer");
++    }
++}
++
++/// `by_deadlines` with `run.server` answering each packet as it arrives and every ping answered.
++fn announced_by_deadlines(run: &mut Announced, seconds: f64) {
++    let h = &mut run.h;
++    let until = h.now.mono + seconds;
++    let mut idle_wakes: Vec<f64> = Vec::new();
++    loop {
++        let at = h.session.poll_timeout(h.now).expect("a live connection always has a deadline");
++        assert!(at >= h.now.mono, "asks to be woken {:.3} s in the past", h.now.mono - at);
++        if at > until {
++            break;
++        }
++        h.advance(at.max(h.now.mono + 0.001) - h.now.mono);
++        h.session.handle_timeout(h.now).expect("the link stays up");
++        let mut sent = false;
++        while let Some(transmit) = h.session.poll_transmit(h.now, &mut h.rng) {
++            let packet = h.server.decode(&transmit.data);
++            h.answer_pings(&packet);
++            let replies = run.server.replies(&packet, &mut h.server, h.now.mono);
++            if !replies.is_empty() {
++                h.deliver(replies).unwrap();
++            }
++            run.packets.push(packet);
++            run.sent_at.push(h.now.mono);
++            sent = true;
++        }
++        if !sent {
++            idle_wakes.push(h.now.mono);
++            let storm = idle_wakes.iter().rev().take_while(|at| h.now.mono - **at < 1.0).count();
++            assert!(storm < 100, "{storm} idle wake-ups within a second at {}", h.now.mono);
++        }
++    }
++    if until > h.now.mono {
++        h.advance(until - h.now.mono);
++    }
++}
++
++/// Runs query 1, left without an answer by `burst_with_one_lost`, against an `Announcer` with `fetches`
++/// for `seconds`, query 9 going out on the same connection meanwhile.
++fn run_announced(fetches: &[Fetch], seconds: f64) -> Announced {
++    let mut h = Harness::new();
++    let lost = burst_with_one_lost(&mut h, 1);
++    let answer = h.server.next_msg_id(true);
++    let server = Announcer::new(lost.0, answer, fetches);
++    let mut run = Announced { h, lost, packets: Vec::new(), sent_at: Vec::new(), events: Vec::new(), server };
++    announced_by_deadlines(&mut run, 3.0 * ANSWER_WAIT);
++    run.h.session.send(QueryId(9), query_body(9), QueryOptions::default(), run.h.now);
++    announced_by_deadlines(&mut run, seconds - 3.0 * ANSWER_WAIT);
++    run.events = run.h.events();
++    run
++}
++
++/// The failures of query `id` with `ANSWER_LOST`: the server ran it and no longer has its answer.
++fn answers_lost(events: &[SessionEvent], id: QueryId) -> usize {
++    let failure = SessionEvent::Error { id, code: 500, message: ANSWER_LOST.to_string(), response_msg_id: 0 };
++    events.iter().filter(|event| **event == failure).count()
++}
++
++/// P1 of review round 4. The server ran query 1 and keeps its answer, which it announces with
++/// msg_detailed_info to the copy under the query's msg_id that its +64 fetched. The reply to the request
++/// for that answer is lost, or goes out on another connection of the session that closes before it is
++/// read, once or more, while pongs and another query's answer keep the link up. Each request that expires
++/// leaves the query to be asked about again, the server's +64 asks for the answer again, never sooner than
++/// `TCP_ASK_BACKSTOP` after the last request, and the query completes once, its one copy under its msg_id:
++/// the server ran it once.
++#[test]
++fn an_announced_answer_whose_reply_was_lost_is_asked_for_again_and_completes_once() {
++    for fetches in [vec![Fetch::Lost], vec![Fetch::Elsewhere], vec![Fetch::Lost, Fetch::Elsewhere, Fetch::Lost]] {
++        let rounds = fetches.len() as f64 + 1.0;
++        let mut run = run_announced(&fetches, rounds * (TCP_ASK_BACKSTOP + 3.0 * ANSWER_WAIT));
++        let (events, asks) = (&run.events, &run.server.asks);
++        assert_eq!(results_for(events, QueryId(1)), 1, "{fetches:?}: completed once, asks at {asks:?}");
++        assert_eq!(terminal_events(events, QueryId(1)), 1, "{fetches:?}");
++        assert_eq!(results_for(events, QueryId(9)), 1, "{fetches:?}: the link answered another query meanwhile");
++        assert_eq!(run.server.ran, vec![run.lost.0], "{fetches:?}: the server ran it once");
++        assert_eq!(copies(&run.packets, 1), vec![run.lost], "{fetches:?}: one copy, the fetch, under its msg_id");
++        assert_eq!(asks.len(), fetches.len() + 1, "{fetches:?}: asks at {asks:?}");
++        for pair in asks.windows(2) {
++            let gap = pair[1] - pair[0];
++            assert!(gap > TCP_ASK_BACKSTOP, "{fetches:?}: asked again {gap:.1} s after the last request");
++            assert!(gap < TCP_ASK_BACKSTOP + 2.0 * ANSWER_WAIT, "{fetches:?}: asked again only {gap:.1} s after");
++        }
++        let elsewhere = fetches.iter().filter(|fetch| **fetch == Fetch::Elsewhere).count();
++        assert_eq!(run.server.elsewhere.len(), elsewhere, "{fetches:?}");
++        let questions = run.questions();
++        for pair in questions.windows(2) {
++            assert!(pair[1] - pair[0] >= ANSWER_WAIT - 0.01, "{fetches:?}: questions at {questions:?}");
++        }
++        assert!(!run.h.session.contains(QueryId(1)));
++        run.nothing_more();
++    }
++}
++
++/// P2 of review round 4. The announced answer the +64 fetch brought is gone when the session asks for it,
++/// at once or when it asks again after the first request's reply was lost: the server ran the query. It
++/// fails once with `ANSWER_LOST`, of the kind a host must not send again, and never goes again under any
++/// msg_id.
++#[test]
++fn an_announced_answer_the_server_no_longer_has_fails_the_query_once_and_it_never_goes_again() {
++    for fetches in [vec![Fetch::Unavailable], vec![Fetch::Lost, Fetch::Unavailable]] {
++        let rounds = fetches.len() as f64;
++        let mut run = run_announced(&fetches, rounds * (TCP_ASK_BACKSTOP + 3.0 * ANSWER_WAIT));
++        let (events, asks) = (&run.events, &run.server.asks);
++        assert_eq!(answers_lost(events, QueryId(1)), 1, "{fetches:?}: asks at {asks:?}, {events:?}");
++        assert_eq!(terminal_events(events, QueryId(1)), 1, "{fetches:?}: one terminal event");
++        assert_eq!(results_for(events, QueryId(9)), 1, "{fetches:?}");
++        assert_eq!(run.server.ran, vec![run.lost.0], "{fetches:?}: the server ran it once");
++        assert_eq!(copies(&run.packets, 1), vec![run.lost], "{fetches:?}: one copy, the fetch, under its msg_id");
++        assert_eq!(asks.len(), fetches.len(), "{fetches:?}: asks at {asks:?}");
++        assert!(!run.h.session.contains(QueryId(1)));
++        run.nothing_more();
++    }
++}
++
++/// The control of the two above: the first request for the announced answer brings it.
++#[test]
++fn an_announced_answer_the_fetch_brought_completes_the_query_once() {
++    let mut run = run_announced(&[], TCP_ASK_BACKSTOP);
++    assert_eq!(results_for(&run.events, QueryId(1)), 1);
++    assert_eq!(terminal_events(&run.events, QueryId(1)), 1);
++    assert_eq!(run.server.ran, vec![run.lost.0]);
++    assert_eq!(copies(&run.packets, 1), vec![run.lost]);
++    assert_eq!(run.server.asks.len(), 1);
++    run.nothing_more();
++}
 diff --git a/crates/mtproto-core/src/session/mod.rs b/crates/mtproto-core/src/session/mod.rs
-index 1b999e8..3fb6e6a 100644
+index 1b999e8..bcb29b6 100644
 --- a/crates/mtproto-core/src/session/mod.rs
 +++ b/crates/mtproto-core/src/session/mod.rs
-@@ -160,6 +160,8 @@ impl Default for SessionConfig {
+@@ -25,6 +25,13 @@ pub const FUTURE_SALTS_RETRY: f64 = 60.0;
+ pub const FUTURE_SALTS_COUNT: i32 = 64;
+ pub const MAX_IDS_PER_SERVICE_MESSAGE: usize = 8192;
+ pub const STATE_REQUEST_RETRY: f64 = 20.0;
++/// How long a query sent on a stream connection waits for its answer before the session asks the server
++/// about it with msgs_state_req, and again each time it waits that long more, acknowledged or not, on the
++/// connection its copy went on or a later one (Telegram Desktop's own sessions ask after 10 s too). A copy
++/// the server says it never got goes again under its msg_id; one it ran whose answer it generated and that
++/// did not come goes again under its msg_id to fetch the answer, which the server never runs twice and
++/// answers from what it has; one it still runs, or has not started, waits.
++pub const ANSWER_WAIT: f64 = 10.0;
+ pub const DEFAULT_CONTAINER_BYTES: usize = 1 << 15;
+ pub const DEFAULT_CONTAINER_QUERIES: usize = 1000;
+ pub const MAX_RECENT_QUICK_ACKS: usize = 256;
+@@ -64,18 +71,29 @@ pub const PROTOCOL_ERROR_PREFIX: &str = "PROTOCOL_ERROR_BAD_MSG_";
+ pub const PROTOCOL_REJECTED: &str = "PROTOCOL_ERROR_REJECTED";
+ /// A call whose answer the server announced (so it executed the call) and then said it no longer has.
+ /// The call fails with this rather than going again under a new msg_id, which would execute it a second
+-/// time; the host decides what the caller hears (as with tdlib and MtProtoKit, the call may just wait).
++/// time; the host decides what the caller hears, and a host sending it again would execute it a second
++/// time too (as with tdlib and MtProtoKit, the call may just wait).
+ /// An announced answer that does not come is asked for again on every new connection, on an announcement
+-/// while no request for it is out and, over HTTP, up to `MAX_EXPIRED_ANSWER_ASKS` times when a request
+-/// goes unanswered.
++/// while no request for it is out, over a stream connection when the server says it still has the answer
++/// (msgs_state_info +64) after a request for it went unanswered past `TCP_ASK_BACKSTOP` and, over HTTP, up
++/// to `MAX_EXPIRED_ANSWER_ASKS` times when a request goes unanswered.
+ pub const ANSWER_LOST: &str = "PROTOCOL_ERROR_ANSWER_LOST";
++/// A call the server may have run and no longer knows (msgs_state_info "nothing known", or "not received"
++/// about a call it acknowledged), once it cannot go again under its msg_id: past `RETRANSMIT_WINDOW` or after
++/// the server refused a copy. A new msg_id could run it a second time, so it fails with this, code 0, which
++/// is no server error for a host to retry; a session handing over releases it as possibly run instead.
++pub const QUERY_FORGOTTEN: &str = "PROTOCOL_ERROR_QUERY_FORGOTTEN";
+ /// HTTP: an announced answer whose re-send request expired with no sign of it is asked for again at most
+ /// this many times until the server announces it again (it does in every response while it holds it).
+-/// Over TCP a re-send request is not repeated: the server answers every one on the connection it came on
+-/// (re-sending the answer or saying it has none), and a new connection asks again.
++/// Over TCP an expired re-send request is not repeated as such: the server answers every one on the
++/// connection it came on (re-sending the answer or saying it has none), and a new connection asks again.
++/// The call it was for is asked about again instead (`ANSWER_WAIT`): the reply comes after whatever the
++/// server still sends on the connection, a copy of the answer included, and when it says the answer
++/// exists (+64) the answer is asked for again.
+ pub const MAX_EXPIRED_ANSWER_ASKS: u32 = 3;
+-/// TCP: how long a re-send request waits for the server's reply before it is dropped (not repeated), in
+-/// case the reply was lost to us (an answer dropped as too old, a call cancelled meanwhile).
++/// TCP: how long a re-send request waits for the server's reply before it is dropped, in case the reply
++/// was lost to us (an answer dropped as too old, a call cancelled meanwhile, a reply sent on another
++/// connection of the session that closed).
+ pub const TCP_ASK_BACKSTOP: f64 = 120.0;
+ pub const MAX_QUERY_REJECTIONS: u32 = 12;
+ pub const MAX_SERVER_RESENDS: u32 = 8;
+@@ -160,6 +178,8 @@ impl Default for SessionConfig {
      }
  }
  
@@ -1180,7 +2362,7 @@ index 1b999e8..3fb6e6a 100644
  #[derive(Debug, Clone, PartialEq)]
  pub enum SessionEvent {
      Result { id: QueryId, body: Vec<u8>, response_msg_id: i64, original_size: usize },
-@@ -167,7 +169,7 @@ pub enum SessionEvent {
+@@ -167,7 +187,7 @@ pub enum SessionEvent {
      Acknowledged { id: QueryId },
      Update { body: Vec<u8>, msg_id: i64 },
      UpdatesLost,
@@ -1189,7 +2371,142 @@ index 1b999e8..3fb6e6a 100644
      LocalSessionReset { previous_session_id: i64 },
      TimeDifferenceUpdated { difference: f64, forced: bool },
      SaltsUpdated { salts: Vec<ServerSalt> },
-@@ -2279,7 +2281,7 @@ impl Session {
+@@ -333,9 +353,18 @@ struct Query {
+     /// Sticky, for a handover (`Session::may_have_run`).
+     maybe_ran_before: bool,
+     retransmit_refused: bool,
++    /// The server said it knows nothing of the msg_id (msgs_state_info status 1) and the query went again
++    /// under it: the server may have run it and forgotten, so the server's word never gets it a new
++    /// msg_id (`QUERY_FORGOTTEN`). Cleared with the msg_id.
++    forgotten: bool,
+     /// The packet that carried the query under its current msg_id on this connection. None once the
+     /// query is retransmitted, as its answer may then be for a transmission on an earlier connection.
+     arrival_seq: Option<u64>,
++    /// The packet that carried the latest copy of the query, fresh or again.
++    transmitted_seq: u64,
++    /// When the session asks the server about the query if it is still unanswered: `ANSWER_WAIT` after
++    /// its latest copy went out, after the connection it waits on opened, and again after each ask.
++    answer_check_at: f64,
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+@@ -346,7 +375,8 @@ enum FailureKind {
+ 
+ #[derive(Debug, Clone)]
+ enum ServiceRequest {
+-    StateRequest { msg_ids: Vec<i64>, sent_at: f64 },
++    /// `packet_seq` is the packet that carried the request.
++    StateRequest { msg_ids: Vec<i64>, sent_at: f64, packet_seq: u64 },
+     ResendRequest { msg_ids: Vec<i64>, sent_at: f64 },
+ }
+ 
+@@ -515,6 +545,8 @@ pub struct Session {
+     liveness_hold_until: f64,
+     last_future_salts_at: Option<f64>,
+     unknown_since: Option<f64>,
++    /// The earliest `Query::answer_check_at` of the queries the session may ask about.
++    next_answer_check: Option<f64>,
+     dropped_answer_bytes: usize,
+     dropped_answer_window_start: f64,
+ 
+@@ -634,6 +666,7 @@ impl Session {
+             liveness_hold_until: 0.0,
+             last_future_salts_at: None,
+             unknown_since: None,
++            next_answer_check: None,
+             dropped_answer_bytes: 0,
+             dropped_answer_window_start: now.mono,
+             need_destroy_auth_key: false,
+@@ -1407,7 +1440,10 @@ impl Session {
+                 may_have_arrived: false,
+                 maybe_ran_before: false,
+                 retransmit_refused: false,
++                forgotten: false,
+                 arrival_seq: None,
++                transmitted_seq: 0,
++                answer_check_at: 0.0,
+             },
+         );
+         self.pending_queries += 1;
+@@ -1486,6 +1522,9 @@ impl Session {
+             self.unknown_since.get_or_insert(now.mono);
+             self.send_before(now.mono);
+         }
++        if self.queries.values().any(|query| query.state == QueryState::Sent) {
++            self.next_answer_check = Some(now.mono + ANSWER_WAIT);
++        }
+         let queued: HashSet<i64> = self.to_resend_answer.iter().copied().collect();
+         let awaited: Vec<i64> =
+             self.awaited_answers.keys().copied().filter(|answer| !queued.contains(answer)).collect();
+@@ -1518,6 +1557,7 @@ impl Session {
+         self.service_containers.clear();
+         self.future_salts_requests.clear();
+         self.last_future_salts_at = None;
++        self.next_answer_check = None;
+         self.quick_acks.clear();
+         self.pending_pings.clear();
+         self.to_pong.clear();
+@@ -1591,6 +1631,7 @@ impl Session {
+         self.received.clear();
+         self.updates.clear();
+         self.unknown_since = None;
++        self.next_answer_check = None;
+         self.last_ping_at = None;
+         self.last_ping_msg_id = 0;
+         self.last_ping_container_id = 0;
+@@ -1640,6 +1681,7 @@ impl Session {
+         query.acknowledged = false;
+         query.may_have_arrived = false;
+         query.retransmit_refused = false;
++        query.forgotten = false;
+         self.by_msg_id.remove(&released.0);
+         self.detach_from_container(released.1, released.0);
+         self.to_retransmit.retain(|other| *other != id);
+@@ -1843,19 +1885,21 @@ impl Session {
+         }
+     }
+ 
+-    fn acknowledge(&mut self, msg_id: i64) {
++    fn acknowledge(&mut self, msg_id: i64, now: Now) {
+         let mut targets = vec![msg_id];
+         if let Some(children) = self.containers.get(&msg_id) {
+             targets.extend(children.iter().copied());
+         }
+         for target in targets {
+             if let Some(id) = self.by_msg_id.get(&target).copied() {
+-                self.mark_acknowledged(id);
++                self.mark_acknowledged(id, now);
+             }
+         }
+     }
+ 
+-    fn mark_acknowledged(&mut self, id: QueryId) {
++    /// The server has the query. One left from a closed connection waits for its answer on this one, so
++    /// from now on it is asked about like the queries sent on it.
++    fn mark_acknowledged(&mut self, id: QueryId, now: Now) {
+         if let Some(query) = self.queries.get_mut(&id) {
+             if query.state == QueryState::Pending {
+                 return;
+@@ -1863,6 +1907,9 @@ impl Session {
+             if query.state == QueryState::Unknown {
+                 query.state = QueryState::Sent;
+                 self.unknown_queries -= 1;
++                query.answer_check_at = now.mono + ANSWER_WAIT;
++                let at = query.answer_check_at;
++                self.next_answer_check = Some(self.next_answer_check.map_or(at, |next| next.min(at)));
+             }
+             query.acknowledged = true;
+             query.rejections = 0;
+@@ -1900,7 +1947,7 @@ impl Session {
+         };
+         let (_, ids, seq) = self.quick_acks.remove(position).expect("position is valid");
+         for id in ids {
+-            self.mark_acknowledged(id);
++            self.mark_acknowledged(id, now);
+         }
+         if self.connected {
+             self.last_read_at = self.last_read_at.max(now.mono);
+@@ -2279,11 +2326,11 @@ impl Session {
                  self.on_bad_msg_notification(msg_id, bad_msg_id, error_code, now)
              }
              ServiceMessage::NewSessionCreated { first_msg_id, unique_id, server_salt } => {
@@ -1198,7 +2515,32 @@ index 1b999e8..3fb6e6a 100644
              }
              ServiceMessage::MsgsAck(msg_ids) => {
                  for acked in msg_ids {
-@@ -2591,6 +2593,7 @@ impl Session {
+-                    self.acknowledge(acked);
++                    self.acknowledge(acked, now);
+                 }
+             }
+             ServiceMessage::MsgDetailedInfo { msg_id: query_msg_id, answer_msg_id, bytes, status } => {
+@@ -2294,14 +2341,17 @@ impl Session {
+                 self.on_message_info(msg_id, None, 0, Some(answer_msg_id).filter(|id| *id != 0), bytes, now);
+             }
+             ServiceMessage::MsgsStateInfo { req_msg_id, info } => match self.service_requests.remove(&req_msg_id) {
+-                Some(ServiceRequest::StateRequest { msg_ids, .. }) => self.on_state_info(&msg_ids, info, now),
++                Some(ServiceRequest::StateRequest { msg_ids, packet_seq, .. }) => {
++                    let asked_in = (!self.http).then_some(packet_seq);
++                    self.on_state_info(&msg_ids, info, asked_in, now)
++                }
+                 Some(ServiceRequest::ResendRequest { msg_ids, .. }) => {
+                     self.on_answers_unavailable(&msg_ids, info.len(), now)
+                 }
+                 None => {}
+             },
+             ServiceMessage::MsgsAllInfo { msg_ids, info } => {
+-                self.on_state_info(&msg_ids, info, now);
++                self.on_state_info(&msg_ids, info, None, now);
+             }
+             ServiceMessage::MsgsStateReq(msg_ids) => {
+                 let info: Vec<u8> = msg_ids.iter().map(|id| self.received_state(*id)).collect();
+@@ -2591,6 +2641,7 @@ impl Session {
          self.refresh_unknown_tracking();
      }
  
@@ -1206,7 +2548,7 @@ index 1b999e8..3fb6e6a 100644
      fn on_new_session_created(
          &mut self,
          context: &mut PacketContext,
-@@ -2598,6 +2601,7 @@ impl Session {
+@@ -2598,6 +2649,7 @@ impl Session {
          unique_id: i64,
          first_msg_id: i64,
          server_salt: i64,
@@ -1214,7 +2556,7 @@ index 1b999e8..3fb6e6a 100644
          now: Now,
      ) {
          if context.mode == Mode::Replay || self.recent_unique_ids.contains(&unique_id) {
-@@ -2640,7 +2644,7 @@ impl Session {
+@@ -2640,7 +2692,7 @@ impl Session {
              self.withdraw_asks_for(answer);
          }
          context.deferred_resends.extend(resend.into_iter().map(|(msg_id, id)| (id, msg_id)));
@@ -1223,8 +2565,289 @@ index 1b999e8..3fb6e6a 100644
      }
  
      fn on_message_info(
+@@ -2670,7 +2722,7 @@ impl Session {
+                     return;
+                 }
+                 _ => {
+-                    self.mark_acknowledged(id);
++                    self.mark_acknowledged(id, now);
+                 }
+             }
+             answered_query = Some(id);
+@@ -2816,27 +2868,119 @@ impl Session {
+         }
+     }
+ 
+-    fn on_state_info(&mut self, msg_ids: &[i64], info: &[u8], now: Now) {
++    /// The server's word on queries. `asked_in` is the packet that carried our msgs_state_req over a
++    /// stream connection; None for msgs_all_info and over HTTP, where a reply may be older than a copy
++    /// sent since, so "not received" about a query sent again is ignored. Over a stream connection the
++    /// server reads every packet in order and a closed connection's packets came before the question, so
++    /// a reply about a query whose latest copy went out in an earlier packet speaks of that copy.
++    /// Not received (2, 3): it goes again under its msg_id, or a new one once the server would refuse that.
++    /// Nothing known (1): the server may have run it and forgotten, so it goes again only under its msg_id
++    /// and otherwise fails as possibly run (`QUERY_FORGOTTEN`), as does a query the server acknowledged and
++    /// no longer has. Received (4): with its answer generated (+64) and not here, it goes again under its
++    /// msg_id to fetch the answer, which the server never runs twice, or, once the server announced that
++    /// answer (`awaited_answers`), the answer is asked for again; still running (+32) or not started, it
++    /// waits and is asked about again.
++    fn on_state_info(&mut self, msg_ids: &[i64], info: &[u8], asked_in: Option<u64>, now: Now) {
+         if msg_ids.len() != info.len() {
+             return;
+         }
++        let server_time = self.server_time(now);
+         for (msg_id, state) in msg_ids.iter().zip(info) {
+-            if let Some(id) = self.by_msg_id.get(msg_id).copied() {
+-                let stale = self
+-                    .queries
+-                    .get(&id)
+-                    .is_some_and(|query| query.state == QueryState::Sent && query.may_have_arrived);
+-                match state & 7 {
+-                    1..=3 if stale => {}
+-                    1..=3 => self.resend_unconfirmed(id, state & 7 == 1, now),
+-                    4 => self.mark_acknowledged(id),
+-                    _ => {}
++            let Some(id) = self.by_msg_id.get(msg_id).copied() else {
++                continue;
++            };
++            let Some(query) = self.queries.get(&id).filter(|query| query.state != QueryState::Pending) else {
++                continue;
++            };
++            let fresh = asked_in.is_some_and(|packet| query.transmitted_seq < packet);
++            let stale = match asked_in {
++                Some(_) => !fresh,
++                None => query.state == QueryState::Sent && query.may_have_arrived,
++            };
++            let same_msg_id = fresh
++                && !query.retransmit_refused
++                && server_time - msg_id_time(query.msg_id) < RETRANSMIT_WINDOW;
++            let nothing_known = state & 7 == 1;
++            let acknowledged = query.acknowledged;
++            let may_have_run = nothing_known || acknowledged || query.forgotten;
++            match state & 7 {
++                1..=3 if stale => {}
++                1..=3 if same_msg_id && !acknowledged && !self.handover => {
++                    if nothing_known && let Some(query) = self.queries.get_mut(&id) {
++                        query.forgotten = true;
++                    }
++                    self.retransmit(id, now);
+                 }
++                1..=3 if may_have_run => self.fail_forgotten(id),
++                1..=3 => self.resend_query(id, now),
++                4 => {
++                    self.mark_acknowledged(id, now);
++                    let answer_made = state & 64 != 0;
++                    if answer_made && self.awaits_announced_answer(id) {
++                        if !self.http {
++                            self.ask_again_for_answers_of(id, now);
++                        }
++                    } else if answer_made && same_msg_id {
++                        self.retransmit(id, now);
++                    }
++                }
++                _ => {}
+             }
+         }
+         self.refresh_unknown_tracking();
+     }
+ 
++    /// The server may have run the query and no longer knows it, and it cannot go again under its msg_id:
++    /// it ends once as possibly run, or leaves a session handing over as such.
++    fn fail_forgotten(&mut self, id: QueryId) {
++        if self.handover && self.hand_back(id, true) {
++            return;
++        }
++        let Some(msg_id) = self.query_msg_id(id) else {
++            return;
++        };
++        let message = QUERY_FORGOTTEN.to_string();
++        self.push_trace(QueryTrace::Answered { id, msg_id, response_msg_id: 0, error: Some((0, message.clone())) });
++        self.complete_query(id, msg_id);
++        self.events.push_back(SessionEvent::Error { id, code: 0, message, response_msg_id: 0 });
++    }
++
++    /// The server announced the query's answer: asking for that answer (`awaited_answers`) recovers it.
++    fn awaits_announced_answer(&self, id: QueryId) -> bool {
++        self.awaited_answers.values().any(|awaited| awaited.query == Some(id))
++    }
++
++    /// The server says it still has the answer it announced for the query, and no request for that answer
++    /// is out or queued: the last one went unanswered past `TCP_ASK_BACKSTOP` (its reply lost, or sent on
++    /// another connection that closed). The answer is asked for again under the msg_id it was announced
++    /// with, and the query keeps its own. The server sent this reply after anything it sent before on the
++    /// connection, so a copy of the answer still on its way here would have come first.
++    fn ask_again_for_answers_of(&mut self, id: QueryId, now: Now) {
++        let answers: Vec<i64> = self
++            .awaited_answers
++            .iter()
++            .filter(|(answer, awaited)| {
++                awaited.query == Some(id)
++                    && !self.to_resend_answer.contains(answer)
++                    && !self.is_answer_requested(**answer)
++            })
++            .map(|(answer, _)| *answer)
++            .collect();
++        if answers.is_empty() {
++            return;
++        }
++        self.to_resend_answer.extend(answers);
++        self.send_before(now.mono + QUERY_DELAY);
++    }
++
++    /// The query goes again under the msg_id it has.
++    fn retransmit(&mut self, id: QueryId, now: Now) {
++        if !self.to_retransmit.contains(&id) {
++            self.to_retransmit.push(id);
++        }
++        self.send_before(now.mono);
++    }
++
+     fn on_future_salts(&mut self, salts: &[FutureSalt], now: Now) {
+         let converted: Vec<ServerSalt> = salts
+             .iter()
+@@ -2978,6 +3122,12 @@ impl Session {
+         if let Some(since) = self.unknown_since {
+             deadline = deadline.min(since + STATE_REQUEST_RETRY);
+         }
++        if !self.http
++            && let Some(at) = self.next_answer_check
++        {
++            let held = if self.is_transmitting(now) { self.transmit_grace_until() } else { 0.0 };
++            deadline = deadline.min(at.max(held));
++        }
+         if let Some(at) = self.drain_reset_at {
+             deadline = deadline.min(at);
+         }
+@@ -3057,10 +3207,61 @@ impl Session {
+                 self.send_before(now.mono);
+             }
+         }
++        self.ask_about_unanswered(now);
+         self.expire_answer_requests(now);
+         Ok(())
+     }
+ 
++    /// Asks the server about each query sent over a stream connection that went `ANSWER_WAIT` without an
++    /// answer, acknowledged or not, sent on this connection or acknowledged on an earlier one, and again
++    /// each time it goes that long more, until its answer comes or the server's word ends it; one a
++    /// question about is still out, that waits to go again, or whose announced answer is being asked for
++    /// (until that request is answered or expires), is not asked about twice. Liveness checks see only the
++    /// link, which answers to other queries and pings keep alive while one query's copy or answer is lost.
++    /// Nothing is asked while large packets may still be crossing the uplink: the server cannot have what
++    /// has not reached it, and the question would queue behind them.
++    fn ask_about_unanswered(&mut self, now: Now) {
++        let Some(at) = self.next_answer_check else {
++            return;
++        };
++        if self.http || at > now.mono || self.is_transmitting(now) {
++            return;
++        }
++        let mut requested: HashSet<i64> = self.to_state_request.iter().copied().collect();
++        let mut asked_for: HashSet<i64> = self.to_resend_answer.iter().copied().collect();
++        for request in self.service_requests.values() {
++            match request {
++                ServiceRequest::StateRequest { msg_ids, .. } => requested.extend(msg_ids),
++                ServiceRequest::ResendRequest { msg_ids, .. } => asked_for.extend(msg_ids),
++            }
++        }
++        let fetching: HashSet<QueryId> = self
++            .awaited_answers
++            .iter()
++            .filter(|(answer, _)| asked_for.contains(*answer))
++            .filter_map(|(_, awaited)| awaited.query)
++            .collect();
++        let mut next: Option<f64> = None;
++        let mut asked = false;
++        for (id, query) in &mut self.queries {
++            if query.state != QueryState::Sent {
++                continue;
++            }
++            if query.answer_check_at <= now.mono {
++                query.answer_check_at = now.mono + ANSWER_WAIT;
++                if !requested.contains(&query.msg_id) && !self.to_retransmit.contains(id) && !fetching.contains(id) {
++                    self.to_state_request.push(query.msg_id);
++                    asked = true;
++                }
++            }
++            next = Some(next.map_or(query.answer_check_at, |next| next.min(query.answer_check_at)));
++        }
++        self.next_answer_check = next;
++        if asked {
++            self.send_before(now.mono);
++        }
++    }
++
+     fn expire_state_requests(&mut self, now: Now) {
+         let expired: Vec<i64> = self
+             .service_requests
+@@ -3218,7 +3419,10 @@ impl Session {
+                 may_have_arrived: false,
+                 maybe_ran_before: false,
+                 retransmit_refused: false,
++                forgotten: false,
+                 arrival_seq: None,
++                transmitted_seq: 0,
++                answer_check_at: 0.0,
+             },
+         );
+         self.pending_queries += 1;
+@@ -3380,6 +3584,8 @@ impl Session {
+                 query.connection_epoch = epoch;
+                 query.may_have_arrived = true;
+                 query.arrival_seq = None;
++                query.transmitted_seq = packet_seq;
++                query.answer_check_at = now.mono + ANSWER_WAIT;
+                 total += body.len();
+                 wants_quick_ack |= query.options.quick_ack;
+                 query_messages.push((id, messages.len()));
+@@ -3452,6 +3658,8 @@ impl Session {
+                 query.sent_at = now.mono;
+                 query.connection_epoch = epoch;
+                 query.arrival_seq = Some(packet_seq);
++                query.transmitted_seq = packet_seq;
++                query.answer_check_at = now.mono + ANSWER_WAIT;
+                 query.acknowledged = false;
+                 self.by_msg_id.insert(msg_id, id);
+                 sent_now.insert(id, msg_id);
+@@ -3459,6 +3667,9 @@ impl Session {
+                 messages.push(OutgoingMessage { msg_id, seq_no, body });
+             }
+         }
++        if !query_messages.is_empty() && !self.http {
++            self.next_answer_check.get_or_insert(now.mono + ANSWER_WAIT);
++        }
+ 
+         let mut ping_msg_id = 0;
+         if has_salt && self.may_ping(now) {
+@@ -3502,11 +3713,12 @@ impl Session {
+         if has_salt && !self.to_state_request.is_empty() {
+             let queries = &self.queries;
+             let by_msg_id = &self.by_msg_id;
++            let stream = !self.http;
+             self.to_state_request.retain(|msg_id| {
+-                by_msg_id
+-                    .get(msg_id)
+-                    .and_then(|id| queries.get(id))
+-                    .is_none_or(|query| query.state == QueryState::Unknown)
++                by_msg_id.get(msg_id).and_then(|id| queries.get(id)).is_none_or(|query| {
++                    query.state == QueryState::Unknown
++                        || (stream && query.state == QueryState::Sent && query.transmitted_seq < packet_seq)
++                })
+             });
+         }
+         if has_salt && !self.to_state_request.is_empty() {
+@@ -3713,7 +3925,8 @@ impl Session {
+         let mut service_ids: Vec<i64> = resend_requests.iter().map(|(msg_id, _)| *msg_id).collect();
+         if let Some((msg_id, ids)) = state_request {
+             service_ids.push(msg_id);
+-            self.service_requests.insert(msg_id, ServiceRequest::StateRequest { msg_ids: ids, sent_at: now.mono });
++            self.service_requests
++                .insert(msg_id, ServiceRequest::StateRequest { msg_ids: ids, sent_at: now.mono, packet_seq });
+         }
+         for (msg_id, ids) in resend_requests {
+             self.service_requests.insert(msg_id, ServiceRequest::ResendRequest { msg_ids: ids, sent_at: now.mono });
 diff --git a/crates/mtproto-core/src/session/tests.rs b/crates/mtproto-core/src/session/tests.rs
-index 9534f6b..f8befc6 100644
+index 9534f6b..34923d0 100644
 --- a/crates/mtproto-core/src/session/tests.rs
 +++ b/crates/mtproto-core/src/session/tests.rs
 @@ -331,6 +331,55 @@ fn new_session_created_resends_older_queries_and_reports_reset() {
@@ -1283,6 +2906,13 @@ index 9534f6b..f8befc6 100644
  #[test]
  fn reconnect_without_ack_retransmits_with_original_msg_ids() {
      let mut h = Harness::new();
+@@ -4930,3 +4979,6 @@ fn a_far_future_msg_id_does_not_hide_a_later_update_loss() {
+ 
+ #[path = "handover_tests.rs"]
+ mod handover_tests;
++
++#[path = "answer_wait_tests.rs"]
++mod answer_wait_tests;
 diff --git a/crates/mtproto-core/tests/sec_rows_rpc.rs b/crates/mtproto-core/tests/sec_rows_rpc.rs
 index fac3787..4604b82 100644
 --- a/crates/mtproto-core/tests/sec_rows_rpc.rs
@@ -9255,6 +10885,275 @@ index 0000000..2798eda
 +    rig.assert_no_correction();
 +    rig.finish();
 +}
+diff --git a/crates/mtproto-engine/tests/unanswered_queries.rs b/crates/mtproto-engine/tests/unanswered_queries.rs
+new file mode 100644
+index 0000000..6ae66f2
+--- /dev/null
++++ b/crates/mtproto-engine/tests/unanswered_queries.rs
+@@ -0,0 +1,263 @@
++//! A query the server leaves without an answer on a connection that stays up, while it answers the queries
++//! around it and every ping: the liveness checks see a healthy link, so only the session's own question about
++//! the query, msgs_state_req after mtproto-core's `ANSWER_WAIT`, brings it back. Over real sockets against the
++//! test server, a query lost on its way (`TAG_SWALLOW_ONCE`) and one whose answer the server sent on a second
++//! connection of the session that then closed (`TAG_ANSWER_ELSEWHERE_ONCE`) each complete once, within the
++//! wait and a few round trips, on the one connection the session opened, and the server runs each once.
++
++use std::io::{ErrorKind, Read, Write};
++use std::net::TcpStream;
++use std::sync::{Arc, Condvar, Mutex};
++use std::time::{Duration, Instant};
++
++use mtproto_engine::mtproto_core::auth_key::AuthKey;
++use mtproto_engine::mtproto_core::crypto::{Side, XorShiftRandom};
++use mtproto_engine::mtproto_core::message::{MessageHeader, PaddingPolicy, decrypt_message, encrypt_message};
++use mtproto_engine::mtproto_core::msg_id::msg_id_for_time;
++use mtproto_engine::mtproto_core::rpc::{RequestFlags, RequestId, RpcEvent, RpcRequest, SessionRole};
++use mtproto_engine::mtproto_core::session::ServerSalt;
++use mtproto_engine::mtproto_core::tl::Writer;
++use mtproto_engine::mtproto_core::tl::mtproto::{ServiceMessage, write_ping};
++use mtproto_engine::mtproto_core::transport::{Framing, Incoming, TransportConfig, TransportStream};
++use mtproto_engine::{
++    AuthKeyMaterial, DcAddress, DropReason, Engine, EngineCallbacks, EngineConfig, EngineEvent, SessionHandle,
++    SessionSetup, unix_seconds,
++};
++use mtproto_testserver::*;
++
++#[path = "support/eventually.rs"]
++mod eventually;
++use eventually::eventually;
++
++/// mtproto-core's `ANSWER_WAIT`, in seconds: how long a query waits for an answer or an acknowledgement
++/// before the session asks the server about it.
++const ANSWER_WAIT: f64 = 10.0;
++/// Beyond the wait: the question, the server's reply and the copy that brings the answer back are a few
++/// round trips on loopback.
++const SLACK: f64 = 3.0;
++const WAIT: Duration = Duration::from_secs(30);
++/// An ordinary call, run and answered at once.
++const PLAIN: u32 = 5;
++
++#[derive(Default)]
++struct Collector {
++    events: Mutex<Vec<EngineEvent>>,
++    condvar: Condvar,
++}
++
++impl EngineCallbacks for Collector {
++    fn on_event(&self, _session: SessionHandle, event: EngineEvent) {
++        self.events.lock().unwrap().push(event);
++        self.condvar.notify_all();
++    }
++
++    fn on_log(&self, _level: mtproto_engine::LogLevel, message: &str) {
++        if std::env::var_os("MTPROTO_TEST_LOG").is_some() {
++            eprintln!("LOG {message}");
++        }
++    }
++}
++
++fn completed(events: &[EngineEvent], id: u64) -> usize {
++    let done =
++        |event: &&EngineEvent| matches!(event, EngineEvent::Rpc(RpcEvent::Completed { id: done, .. }) if done.0 == id);
++    events.iter().filter(done).count()
++}
++
++impl Collector {
++    fn wait_completed(&self, id: u64) {
++        let deadline = Instant::now() + WAIT;
++        let mut events = self.events.lock().unwrap();
++        while completed(&events, id) == 0 {
++            let now = Instant::now();
++            assert!(now < deadline, "call {id} did not complete in {WAIT:?}; drops {:?}", drops_in(&events));
++            events = self.condvar.wait_timeout(events, deadline - now).unwrap().0;
++        }
++    }
++
++    fn completions(&self, id: u64) -> usize {
++        completed(&self.events.lock().unwrap(), id)
++    }
++
++    fn drops(&self) -> Vec<DropReason> {
++        drops_in(&self.events.lock().unwrap())
++    }
++}
++
++fn drops_in(events: &[EngineEvent]) -> Vec<DropReason> {
++    events
++        .iter()
++        .filter_map(|event| match event {
++            EngineEvent::ConnectionDropped { reason, .. } => Some(*reason),
++            _ => None,
++        })
++        .collect()
++}
++
++fn setup(server: &TestServer, key: &AuthKey) -> SessionSetup {
++    let now = unix_seconds();
++    let mut setup = SessionSetup::new(
++        2,
++        SessionRole::Main,
++        vec![DcAddress { host: server.address.ip().to_string(), port: server.address.port(), secret: None }],
++    );
++    let salts = vec![ServerSalt { salt: SERVER_SALT, valid_since: now - 60.0, valid_until: now + 3600.0 }];
++    setup.auth_key = Some(AuthKeyMaterial { key: key.clone(), salts, init_hash: None });
++    setup
++}
++
++fn request(id: u64, tag: u32) -> RpcRequest {
++    RpcRequest {
++        id: RequestId(id),
++        body: call(tag, &id.to_le_bytes()),
++        flags: RequestFlags::default(),
++        invoke_after: None,
++    }
++}
++
++/// An engine with a session whose first call has completed: its connection is up and has answered.
++fn live_session(server: &TestServer, key: &AuthKey, collector: &Arc<Collector>) -> (Engine, SessionHandle) {
++    let engine =
++        Engine::new(EngineConfig { worker_threads: 1, ..EngineConfig::default() }, collector.clone()).unwrap();
++    let session = engine.create_session(setup(server, key));
++    engine.send(session, request(1, PLAIN));
++    collector.wait_completed(1);
++    (engine, session)
++}
++
++/// What the server and the session went through, for a failed assertion.
++fn record(server: &TestServer, collector: &Collector) -> String {
++    let stats = server.with_stats(|stats| {
++        format!(
++            "connections {} state_requests {} duplicate_msg_ids {} redelivered_answers {} duplicate_executions {} \
++             swallowed {} answers_elsewhere {}",
++            stats.connections,
++            stats.state_requests,
++            stats.duplicate_msg_ids,
++            stats.redelivered_answers,
++            stats.duplicate_executions,
++            stats.swallowed,
++            stats.answers_elsewhere
++        )
++    });
++    format!("{stats}; drops {:?}", collector.drops())
++}
++
++#[test]
++fn a_query_lost_on_a_live_connection_completes_once_within_the_wait() {
++    let key = random_key(81);
++    let server = TestServer::start(vec![key.clone()], ServerOptions::default());
++    let collector = Arc::new(Collector::default());
++    let (engine, session) = live_session(&server, &key, &collector);
++    let lost = 5;
++    let burst: Vec<u64> = (2..=9).collect();
++    let sent = Instant::now();
++    for id in &burst {
++        engine.send(session, request(*id, if *id == lost { TAG_SWALLOW_ONCE } else { PLAIN }));
++    }
++    for id in burst.iter().filter(|id| **id != lost) {
++        collector.wait_completed(*id);
++    }
++    assert!(sent.elapsed().as_secs_f64() < SLACK, "the rest of the burst is answered at once");
++    collector.wait_completed(lost);
++    let took = sent.elapsed().as_secs_f64();
++    std::thread::sleep(Duration::from_millis(500));
++    let record = record(&server, &collector);
++    assert!(took >= ANSWER_WAIT, "{took:.2} s: brought back by the question after the wait; {record}");
++    assert!(took < ANSWER_WAIT + SLACK, "{took:.2} s: within the wait and a few round trips; {record}");
++    for id in std::iter::once(1).chain(burst.iter().copied()) {
++        assert_eq!(collector.completions(id), 1, "call {id} completes once; {record}");
++    }
++    assert_eq!(server.with_stats(|stats| stats.swallowed), 1, "{record}");
++    assert_eq!(server.executions(TAG_SWALLOW_ONCE), 1, "the copy after the question ran, once; {record}");
++    assert_eq!(server.executions(PLAIN), 8, "{record}");
++    assert_eq!(server.with_stats(|stats| stats.duplicate_executions), 0, "{record}");
++    assert!(server.with_stats(|stats| stats.state_requests) >= 1, "{record}");
++    assert_eq!(server.with_stats(|stats| stats.connections), 1, "the one connection stayed up; {record}");
++    assert!(collector.drops().is_empty(), "no liveness check fired; {record}");
++    engine.shutdown();
++}
++
++/// A second connection of `session_id` the test opens itself: it sends a ping, reads until the answer to a
++/// `TAG_ANSWER_ELSEWHERE_ONCE` call has come, and closes without acknowledging anything. Returns whether it
++/// came.
++fn answer_on_a_second_connection(server: &TestServer, key: &AuthKey, session_id: i64) -> bool {
++    let mut rng = XorShiftRandom::new(0x5eed);
++    let mut socket = TcpStream::connect(server.address).expect("connect");
++    socket.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
++    let unix_time = unix_seconds() as i32;
++    let config = TransportConfig { framing: Framing::PaddedIntermediate, dc_id: 2, secret: None, unix_time };
++    let mut stream = TransportStream::new(&config, &mut rng);
++    let mut ping = Writer::new();
++    write_ping(&mut ping, 0x0b5e_55ed);
++    let msg_id = (msg_id_for_time(unix_seconds()) & !3) + 4;
++    let header = MessageHeader { salt: SERVER_SALT, session_id, msg_id, seq_no: 0 };
++    let packet = encrypt_message(key, &header, &ping.into_inner(), Side::Client, PaddingPolicy::default(), &mut rng);
++    stream.send_packet(&packet.data, false, &mut rng);
++    socket.write_all(&stream.take_outgoing()).expect("write");
++    let deadline = Instant::now() + Duration::from_secs(5);
++    let mut buffer = [0u8; 65536];
++    while Instant::now() < deadline {
++        match socket.read(&mut buffer) {
++            Ok(0) => return false,
++            Ok(read) => stream.receive(&buffer[..read]).expect("receive"),
++            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
++            Err(error) => panic!("read: {error}"),
++        }
++        while let Some(incoming) = stream.next_incoming().expect("frame") {
++            let Incoming::Packet(data) = incoming else {
++                continue;
++            };
++            let message = decrypt_message(key, &data, Side::Server).expect("decrypt");
++            if carries_the_answer(message.body()) {
++                return true;
++            }
++        }
++    }
++    false
++}
++
++fn carries_the_answer(body: &[u8]) -> bool {
++    match ServiceMessage::parse(body) {
++        Ok(ServiceMessage::Container(children)) => children.iter().any(|child| carries_the_answer(child.body)),
++        Ok(ServiceMessage::RpcResult { result, .. }) => {
++            parse_result(result).is_some_and(|(tag, _)| tag == TAG_ANSWER_ELSEWHERE_ONCE)
++        }
++        _ => false,
++    }
++}
++
++#[test]
++fn an_answer_sent_on_a_second_connection_that_closed_completes_the_query_once() {
++    let key = random_key(82);
++    let server = TestServer::start(vec![key.clone()], ServerOptions::default());
++    let collector = Arc::new(Collector::default());
++    let (engine, session) = live_session(&server, &key, &collector);
++    let elsewhere = 2;
++    let sent = Instant::now();
++    engine.send(session, request(elsewhere, TAG_ANSWER_ELSEWHERE_ONCE));
++    engine.send(session, request(3, PLAIN));
++    collector.wait_completed(3);
++    assert!(eventually(WAIT, || server.executions(TAG_ANSWER_ELSEWHERE_ONCE) == 1), "{}", record(&server, &collector));
++    let sessions: Vec<i64> = server.with_stats(|stats| stats.session_ids.iter().copied().collect());
++    assert_eq!(sessions.len(), 1, "the engine's one session");
++    assert!(answer_on_a_second_connection(&server, &key, sessions[0]), "the second connection got the answer");
++    assert_eq!(collector.completions(elsewhere), 0, "the answer never reached the session's own connection");
++    collector.wait_completed(elsewhere);
++    let took = sent.elapsed().as_secs_f64();
++    std::thread::sleep(Duration::from_millis(500));
++    let record = record(&server, &collector);
++    assert!(took >= ANSWER_WAIT, "{took:.2} s: brought back by the question after the wait; {record}");
++    assert!(took < ANSWER_WAIT + SLACK, "{took:.2} s: within the wait and a few round trips; {record}");
++    for id in 1..=3 {
++        assert_eq!(collector.completions(id), 1, "call {id} completes once; {record}");
++    }
++    assert_eq!(server.executions(TAG_ANSWER_ELSEWHERE_ONCE), 1, "the server ran it once; {record}");
++    assert_eq!(server.with_stats(|stats| stats.answers_elsewhere), 1, "{record}");
++    let redelivered = server.with_stats(|stats| stats.redelivered_answers);
++    assert!(redelivered >= 1, "the copy under its msg_id fetched it; {record}");
++    assert!(server.with_stats(|stats| stats.state_requests) >= 1, "{record}");
++    assert_eq!(server.with_stats(|stats| stats.connections), 2, "the session's one and the test's own; {record}");
++    assert!(collector.drops().is_empty(), "no liveness check fired; {record}");
++    engine.shutdown();
++}
 diff --git a/crates/mtproto-ffi/Cargo.toml b/crates/mtproto-ffi/Cargo.toml
 index 8b16bc3..95642b7 100644
 --- a/crates/mtproto-ffi/Cargo.toml
@@ -12478,10 +14377,23 @@ index 6abc6f2..eb8c95b 100644
 +    }
 +}
 diff --git a/crates/mtproto-testserver/src/lib.rs b/crates/mtproto-testserver/src/lib.rs
-index c5686c6..b426025 100644
+index c5686c6..49535a4 100644
 --- a/crates/mtproto-testserver/src/lib.rs
 +++ b/crates/mtproto-testserver/src/lib.rs
-@@ -57,6 +57,9 @@ pub const SERVER_PING_ID: i64 = 0x5e57_9149;
+@@ -53,10 +53,22 @@ pub const TAG_TRICKLE_ONCE: u32 = 1020;
+ pub const TAG_FORGED_404_ONCE: u32 = 1021;
+ /// An upload part: the answer carries only the number of bytes received.
+ pub const TAG_UPLOAD: u32 = 1022;
++/// Lost the first time it arrives, as a middlebox can lose a request on a connection that stays up: it
++/// is neither run, acknowledged nor answered, and the server keeps no record of its msg_id
++/// (`Stats::swallowed`). A later copy runs as usual.
++pub const TAG_SWALLOW_ONCE: u32 = 1023;
++/// Runs, and the first time its answer does not go out on the connection the query came on: it stays
++/// unacknowledged at the server, which hands it to the session's other connections with their next
++/// packet, as any message a connection has not carried, and on this one only when asked, by a copy of
++/// the query under its msg_id or `msg_resend_req` (`Stats::answers_elsewhere`).
++pub const TAG_ANSWER_ELSEWHERE_ONCE: u32 = 1024;
+ pub const SERVER_PING_ID: i64 = 0x5e57_9149;
  pub const LARGE_SIZE: usize = 1024 * 1024;
  pub const SERVER_SALT: i64 = 0x5a17;
  const MAX_REMEMBERED_ANSWERS: usize = 16 * 1024;
@@ -12491,7 +14403,7 @@ index c5686c6..b426025 100644
  
  pub fn call(tag: u32, payload: &[u8]) -> Vec<u8> {
      let mut writer = Writer::new();
-@@ -128,6 +131,9 @@ pub struct ServerOptions {
+@@ -128,6 +140,9 @@ pub struct ServerOptions {
      /// `auth.bindTempAuthKey` for a temporary key bound before is refused with this error, as Telegram
      /// answers CONNECTION_NOT_INITED for a key another client bound and used without initConnection.
      pub refuse_rebinds: Option<&'static str>,
@@ -12501,7 +14413,7 @@ index c5686c6..b426025 100644
  }
  
  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-@@ -142,15 +148,27 @@ pub enum HttpProxyMode {
+@@ -142,15 +157,27 @@ pub enum HttpProxyMode {
  pub struct Stats {
      pub connections: usize,
      pub obfuscation_dc_ids: Vec<i16>,
@@ -12529,7 +14441,7 @@ index c5686c6..b426025 100644
      pub client_pongs: usize,
      pub retransmissions: usize,
      pub retransmissions_in_container: usize,
-@@ -204,6 +222,10 @@ pub struct Stats {
+@@ -204,6 +231,14 @@ pub struct Stats {
      pub executed_with_key: Vec<(u32, u64)>,
      /// Each executed call's tag and the client session it arrived in.
      pub executed_in_session: Vec<(u32, i64)>,
@@ -12537,10 +14449,14 @@ index c5686c6..b426025 100644
 +    pub tls_hello_times: Vec<i32>,
 +    /// Fake-TLS hellos refused for their time (`ServerOptions::tls_time_window`).
 +    pub tls_time_refusals: usize,
++    /// Queries lost on arrival (`TAG_SWALLOW_ONCE`).
++    pub swallowed: usize,
++    /// Answers kept off the connection their query came on (`TAG_ANSWER_ELSEWHERE_ONCE`).
++    pub answers_elsewhere: usize,
  }
  
  /// A key made by a `p_q_inner_data_temp_dc` handshake: it expires, and API calls under it are refused
-@@ -229,6 +251,36 @@ struct SessionState {
+@@ -229,6 +264,36 @@ struct SessionState {
      clock_offset: f64,
      awaiting_retransmission: HashSet<i64>,
      sent_packets: VecDeque<Vec<u8>>,
@@ -12577,7 +14493,7 @@ index c5686c6..b426025 100644
  }
  
  #[derive(Clone, Copy)]
-@@ -700,8 +752,19 @@ fn serve_connection(
+@@ -700,8 +765,19 @@ fn serve_connection(
          let record_length = ((record_header[3] as usize) << 8) | record_header[4] as usize;
          let mut hello = record_header;
          hello.extend(read_exact_raw(&mut stream, &mut raw, record_length, &stop)?);
@@ -12598,7 +14514,7 @@ index c5686c6..b426025 100644
          }
          let response = server_hello_for_tests(&hello, proxy_key.as_ref().unwrap(), &mut rng);
          stream.write_all(&response)?;
-@@ -784,7 +847,10 @@ fn serve_connection(
+@@ -784,7 +860,10 @@ fn serve_connection(
      let Some(obfuscation) = accept_obfuscated_header(&header, proxy_key.as_ref()) else {
          return Ok(());
      };
@@ -12610,7 +14526,7 @@ index c5686c6..b426025 100644
      let framing = obfuscation.framing;
      let mut wire = Wire {
          stream,
-@@ -826,6 +892,11 @@ fn serve_frames(
+@@ -826,6 +905,11 @@ fn serve_frames(
      let mut delayed: Vec<Delayed> = Vec::new();
      let result = serve_frames_inner(wire, shared.clone(), stop, options, &mut delayed);
      let mut guard = shared.lock().unwrap();
@@ -12622,7 +14538,7 @@ index c5686c6..b426025 100644
      for item in delayed {
          if let Some(session) = guard.sessions.get_mut(&item.session_id) {
              seal_tracked(session, &item.body, true);
-@@ -1126,6 +1197,7 @@ fn process_packet(
+@@ -1126,6 +1210,7 @@ fn process_packet(
                  clock_offset: options.clock_offset,
                  awaiting_retransmission: HashSet::new(),
                  sent_packets: VecDeque::new(),
@@ -12630,7 +14546,7 @@ index c5686c6..b426025 100644
              }
          });
          session.peer.server_time = server_now(session.clock_offset);
-@@ -1199,6 +1271,8 @@ fn process_packet(
+@@ -1199,6 +1284,8 @@ fn process_packet(
                      kill_now = true;
                  }
              }
@@ -12639,7 +14555,29 @@ index c5686c6..b426025 100644
              for message in decoded.messages.iter().filter(|_| !kill_now) {
                  if !session.received.insert(message.msg_id) {
                      stats.duplicate_msg_ids += 1;
-@@ -1313,11 +1387,20 @@ fn process_packet(
+@@ -1243,8 +1330,19 @@ fn process_packet(
+                     ids::MSGS_STATE_REQ => {
+                         stats.state_requests += 1;
+                         let asked = sp::read_vector_after_constructor(&message.body);
+-                        let info: Vec<u8> =
+-                            asked.iter().map(|id| if session.received.contains(id) { 4 } else { 2 }).collect();
++                        // As Telegram's servers: received (4), run or running (+32), its answer made (+64).
++                        let info: Vec<u8> = asked
++                            .iter()
++                            .map(|id| {
++                                let answered =
++                                    session.answer_ids.contains_key(id) || session.answered_queries.contains_key(id);
++                                match (session.received.contains(id), answered) {
++                                    (false, _) => 2,
++                                    (true, false) => 4 | 32,
++                                    (true, true) => 4 | 32 | 64,
++                                }
++                            })
++                            .collect();
+                         outgoing.push((sp::msgs_state_info(message.msg_id, &info), true));
+                     }
+                     ids::MSG_RESEND_REQ | ids::MSG_RESEND_ANS_REQ => {
+@@ -1313,11 +1411,20 @@ fn process_packet(
                      _ => {
                          let (call, flags) = unwrap_wrappers(&message.body);
                          stats.init_connections += usize::from(flags.init_connection);
@@ -12661,7 +14599,33 @@ index c5686c6..b426025 100644
                          let (tag, payload) = match call {
                              Some(Inner::Call(tag, payload)) => (tag, payload),
                              Some(Inner::Api(constructor, body)) => {
-@@ -1823,6 +1906,7 @@ fn process_packet(
+@@ -1363,6 +1470,11 @@ fn process_packet(
+                                 .push((sp::bad_server_salt(message.msg_id, message.seq_no, shared_ref.salt), false));
+                             continue;
+                         }
++                        if tag == TAG_SWALLOW_ONCE && stats.swallowed == 0 {
++                            stats.swallowed += 1;
++                            session.received.remove(&message.msg_id);
++                            continue;
++                        }
+                         let unique = (tag < TAG_FLOOD_ONCE && payload.len() >= 8)
+                             .then(|| (tag, u64::from_le_bytes(payload[..8].try_into().unwrap())));
+                         let doomed = unique.and_then(|key| shared_ref.doomed.get(&key).copied());
+@@ -1780,6 +1892,13 @@ fn process_packet(
+                                 outgoing.push((reply, true));
+                                 transport_error = Some(-404);
+                             }
++                            TAG_ANSWER_ELSEWHERE_ONCE if count == 1 => {
++                                session.peer.server_time = server_now(session.clock_offset);
++                                let msg_id = session.peer.next_msg_id(true);
++                                track_answer(session, msg_id, &reply);
++                                resent_for.answers.insert(msg_id);
++                                stats.answers_elsewhere += 1;
++                            }
+                             TAG_DROP_CONNECTION_ONCE if count == 1 => {
+                                 session.peer.server_time = server_now(session.clock_offset);
+                                 let msg_id = session.peer.next_msg_id(true);
+@@ -1823,6 +1942,7 @@ fn process_packet(
                      }
                  }
              }
@@ -12669,7 +14633,7 @@ index c5686c6..b426025 100644
          }
      }
      Reaction {
-@@ -2067,8 +2151,11 @@ fn future_salts_reply(req_msg_id: i64, salt: i64, clock_offset: f64) -> Vec<u8>
+@@ -2067,8 +2187,11 @@ fn future_salts_reply(req_msg_id: i64, salt: i64, clock_offset: f64) -> Vec<u8>
  #[derive(Default)]
  struct WrapperFlags {
      init_connection: bool,
@@ -12682,7 +14646,7 @@ index c5686c6..b426025 100644
  }
  
  enum Inner {
-@@ -2085,10 +2172,10 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+@@ -2085,10 +2208,10 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
          };
          match constructor {
              ids::INVOKE_AFTER_MSG => {
@@ -12696,7 +14660,7 @@ index c5686c6..b426025 100644
              }
              ids::INVOKE_WITHOUT_UPDATES => flags.without_updates = true,
              ids::INVOKE_WITH_LAYER => {
-@@ -2097,19 +2184,18 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+@@ -2097,19 +2220,18 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
                      return (None, flags);
                  }
                  flags.init_connection = true;
@@ -12723,7 +14687,7 @@ index c5686c6..b426025 100644
              }
              INVOKE_WITH_APNS_SECRET => {
                  let _ = reader.read_bytes();
-@@ -2133,9 +2219,10 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+@@ -2133,9 +2255,10 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
                      return (None, flags);
                  };
                  let (inner, inner_flags) = unwrap_wrappers(&unpacked);
@@ -12735,7 +14699,7 @@ index c5686c6..b426025 100644
                  return (inner, flags);
              }
              _ => return (None, flags),
-@@ -2143,6 +2230,14 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+@@ -2143,6 +2266,14 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
      }
  }
  
@@ -12750,7 +14714,7 @@ index c5686c6..b426025 100644
  /// Skips the JSONValue `initConnection` carries as `params`, which tdlib sends.
  fn skip_json_value(reader: &mut Reader<'_>, depth: usize) -> Option<()> {
      const JSON_NULL: u32 = 0x3f6d_7b68;
-@@ -2190,3 +2285,168 @@ pub fn random_key(seed: u64) -> AuthKey {
+@@ -2190,3 +2321,168 @@ pub fn random_key(seed: u64) -> AuthKey {
      let mut rng = XorShiftRandom::new(seed);
      AuthKey::new(rng.array())
  }
@@ -12919,6 +14883,45 @@ index c5686c6..b426025 100644
 +        assert!(session.failed(32) && session.failed((MAX_REMEMBERED_FAILURES as i64 + 1) * 16));
 +    }
 +}
+diff --git a/docs/protocol-coverage.md b/docs/protocol-coverage.md
+index 097c0c9..b840d78 100644
+--- a/docs/protocol-coverage.md
++++ b/docs/protocol-coverage.md
+@@ -102,7 +102,7 @@ Fault injection used by the engine tests (`crates/mtproto-testserver`): `TAG_TRA
+ | S18 | `new_session_created.server_salt` | P-204 | Ignored | Ignored (H2) | Adopted when it differs or the current salt is invalid | `new_session_created_salt_is_adopted` | new |
+ | S19 | `msg_detailed_info`: status 1..3 → resend; otherwise ack the query and ask for an unseen answer with `msg_resend_req`; `answer_msg_id = 0` → resend | P-185, P-186 | Same | Asks for the answer while the request is pending | Same as tdlib (a zero answer id used to produce `msg_resend_req [0]`) | `msg_detailed_info_requests_lost_answer`, `detailed_info_without_answer_resends_the_query` | fixed |
+ | S20 | `msg_new_detailed_info`: seen answer → ack; unseen → `msg_resend_req` | P-185, P-186 | Same | Always requests | Same as tdlib | `msg_new_detailed_info_for_received_message_is_only_acked`, `msg_new_detailed_info_requests_an_unseen_answer` | ok |
+-| S21 | Our `msg_resend_req`: answer arrives / server replies `msgs_state_info` / no reply | P-184 | Fire and forget | No timeout: "Updating" forever (M34) | Answer clears the request and the "updating" flag; the query is never re-sent under a new msg_id (the server ran it). A `msgs_state_info` reply means the answer is gone → the call fails with `PROTOCOL_ERROR_ANSWER_LOST` (the bridge keeps it waiting, as MtProtoKit and tdlib do); asked for on every announcement and every new connection, one request out per answer; production answers every `msg_resend_req` on the connection (re-sends the answer, or `msgs_state_info` for ids it has not), so over TCP a request stays out until that reply, the connection's end or 120 s (not repeated; a late "gone" still counts), and every request naming an answer is withdrawn when the answer arrives or is forgotten (call cancelled, given up, or re-sent in a new server session); `new_session_created` forgets every awaited answer older than it, and later announcements older than it are not awaited; a requested message is taken even when it is past the time window, and over HTTP it expires 20 s after it was sent (never while its response is still arriving) and is repeated at most 3 times per announcement; an answer re-sent on request after an outage counts as fresh; HTTP asks are split to ≤ 16 KB of announced answers each | `answer_resend_requests_resolve_or_fail_the_call_without_running_it_again`, `an_answer_the_server_keeps_announcing_is_asked_for_without_running_the_call_again`, `session::http::large_announced_answers_are_asked_for_in_requests_of_their_own`, `announced_answers::overlapping_http_asks_do_not_pile_up_or_give_the_call_up`, `announced_answers::an_ask_whose_response_is_still_arriving_is_not_repeated`, `announced_answers::a_large_answer_in_transit_over_tcp_is_asked_for_once`, `announced_answers::a_late_reply_to_a_tcp_ask_still_counts`, `announced_answers::only_the_last_of_two_expiring_asks_asks_again`, `announced_answers::a_cancelled_calls_answer_is_not_asked_for_again`, `a_requested_answer_past_the_duplicate_window_counts_as_fresh`, `announced_answers::a_requested_answer_past_the_time_window_counts_as_fresh`, `announced_answers::a_replayed_requested_answer_counts_as_fresh_once`, `announced_answers::a_cancelled_calls_ask_does_not_stay_out_once_its_answer_comes`, `announced_answers::an_ask_whose_reply_is_dropped_ends_after_the_backstop`, `answer_model::announced_answers_keep_their_invariants_over_tcp`, `answer_model::announced_answers_keep_their_invariants_over_http`, `announced_answer_cases::*`, `http_announced_answers` | fixed |
++| S21 | Our `msg_resend_req`: answer arrives / server replies `msgs_state_info` / no reply | P-184 | Fire and forget | No timeout: "Updating" forever (M34) | Answer clears the request and the "updating" flag; the query is never re-sent under a new msg_id (the server ran it). A `msgs_state_info` reply means the answer is gone → the call fails with `PROTOCOL_ERROR_ANSWER_LOST` (the call ran: Telegram Desktop's bridge fails it as possibly run and never sends it again; MtProtoKit and tdlib keep it waiting); asked for on every announcement and every new connection, one request out per answer; production answers every `msg_resend_req` on the connection (re-sends the answer, or `msgs_state_info` for ids it has not), so over TCP a request stays out until that reply, the connection's end or 120 s (not repeated as such: the call is then asked about again with `msgs_state_req`, whose reply comes behind anything the server still sends on the connection, and the server saying the answer exists (+64) asks for it again; a late "gone" still counts), and every request naming an answer is withdrawn when the answer arrives or is forgotten (call cancelled, given up, or re-sent in a new server session); `new_session_created` forgets every awaited answer older than it, and later announcements older than it are not awaited; a requested message is taken even when it is past the time window, and over HTTP it expires 20 s after it was sent (never while its response is still arriving) and is repeated at most 3 times per announcement; an answer re-sent on request after an outage counts as fresh; HTTP asks are split to ≤ 16 KB of announced answers each | `answer_resend_requests_resolve_or_fail_the_call_without_running_it_again`, `an_answer_the_server_keeps_announcing_is_asked_for_without_running_the_call_again`, `session::http::large_announced_answers_are_asked_for_in_requests_of_their_own`, `announced_answers::overlapping_http_asks_do_not_pile_up_or_give_the_call_up`, `announced_answers::an_ask_whose_response_is_still_arriving_is_not_repeated`, `announced_answers::a_large_answer_in_transit_over_tcp_is_asked_for_once`, `announced_answers::a_late_reply_to_a_tcp_ask_still_counts`, `announced_answers::only_the_last_of_two_expiring_asks_asks_again`, `announced_answers::a_cancelled_calls_answer_is_not_asked_for_again`, `a_requested_answer_past_the_duplicate_window_counts_as_fresh`, `announced_answers::a_requested_answer_past_the_time_window_counts_as_fresh`, `announced_answers::a_replayed_requested_answer_counts_as_fresh_once`, `announced_answers::a_cancelled_calls_ask_does_not_stay_out_once_its_answer_comes`, `announced_answers::an_ask_whose_reply_is_dropped_ends_after_the_backstop`, `answer_wait_tests::an_announced_answer_whose_reply_was_lost_is_asked_for_again_and_completes_once`, `answer_wait_tests::an_announced_answer_the_server_no_longer_has_fails_the_query_once_and_it_never_goes_again`, `answer_wait_tests::an_announced_answer_the_fetch_brought_completes_the_query_once`, `answer_model::announced_answers_keep_their_invariants_over_tcp`, `answer_model::announced_answers_keep_their_invariants_over_http`, `announced_answer_cases::*`, `http_announced_answers` | fixed |
+ | S22 | `msgs_state_info` for our `msgs_state_req` (status flags masked with `& 7`) | P-180, P-181 | 1..3 resend, 4 ack | — | Same | `reconnect_after_retransmit_window_asks_state_and_resends_only_unreceived` | ok |
+ | S23 | `msgs_state_info` whose `info` length differs from the request | — | Error | — | Ignored; the request is retried later | `state_info_with_mismatched_length_is_ignored` | ok |
+ | S24 | Our `msgs_state_req` never answered | — | Re-asked on the next connection | — | Re-asked after 20 s on the same connection (previously never, while the first request was outstanding) | `unanswered_state_request_is_retried` | fixed |
+@@ -240,7 +240,7 @@ always means a fresh `msg_id`.
+ | E17 | Invalid codes: 0, ≥ 10000, ≤ −10000 | §5.7 | Treated as 500 | Verbatim | Normalized to 500 (retried as E15) | `rpc_errors_are_sanitized_like_tdlib`, `tl::rpc_errors_are_sanitized`, `rpc::negative_and_normalized_codes_are_retried_as_server_errors` | fixed |
+ | E18 | Error text that is not valid UTF-8 | §5.7 | `INVALID_UTF8_ERROR_MESSAGE` | Lossy | `INVALID_UTF8_ERROR_MESSAGE` (previously lossy replacement characters) | `rpc::invalid_utf8_error_messages_are_replaced`, `rpc_errors_are_sanitized_like_tdlib` | fixed |
+ | E19 | Other unknown codes (418, 502, …) | B4 | Returned | Surfaced | Surfaced verbatim | `rpc::other_error_classes_surface_verbatim` | ok |
+-| E20 | Engine-made errors (`RESPONSE_UNPACK_FAILED`, `PROTOCOL_ERROR_BAD_MSG_x`, `PROTOCOL_ERROR_REJECTED`, `PROTOCOL_ERROR_ANSWER_LOST`) | H8 | — | `TL_PARSING_ERROR` retried forever | Terminal: never retried or delegated | `rpc::local_unpack_failures_are_terminal_and_never_retried`, `rpc::protocol_errors_after_repeated_rejections_are_terminal`, `rpc::a_query_rejected_too_often_fails_instead_of_starting_over`, `rpc::a_call_whose_announced_answer_never_comes_fails_instead_of_running_again` | fixed |
++| E20 | Engine-made errors (`RESPONSE_UNPACK_FAILED`, `PROTOCOL_ERROR_BAD_MSG_x`, `PROTOCOL_ERROR_REJECTED`, `PROTOCOL_ERROR_ANSWER_LOST`) | H8 | — | `TL_PARSING_ERROR` retried forever | Terminal: never retried or delegated | `rpc::local_unpack_failures_are_terminal_and_never_retried`, `rpc::protocol_errors_after_repeated_rejections_are_terminal`, `rpc::a_query_rejected_too_often_fails_instead_of_starting_over`, `rpc::a_call_whose_announced_answer_never_comes_fails_instead_of_running_again`, `rpc::a_call_whose_fetched_answer_the_server_no_longer_has_fails_once_and_never_runs_again` | fixed |
+ 
+ ## 12. Auth key handshake
+ 
+@@ -402,9 +402,13 @@ production.
+ 
+ ## Not covered (deliberately)
+ 
+-- **Answers lost after the server acknowledged a query** (the server says "received" but never answers):
+-  tdlib closes the connection after 60 s and asks again, which never resolves either; the engine relies on
+-  host request timeouts. Unacknowledged queries are fully covered (A01, A03).
++- **Answers lost after the server acknowledged a query, past `RETRANSMIT_WINDOW`** (the server says
++  "received" but the answer never comes): tdlib closes the connection after 60 s and asks again, which never
++  resolves either. Within the window the engine asks about every query unanswered for `ANSWER_WAIT`
++  (acknowledged or not, also after a reconnect) and fetches an answer the server made (+64) with a copy under
++  the query's msg_id (`session::tests::answer_wait_tests`); past it the query is asked about until its answer
++  comes or the server no longer knows it, and then fails as possibly run (`PROTOCOL_ERROR_QUERY_FORGOTTEN`,
++  code 0), never under a new msg_id. Unacknowledged queries are fully covered (A01, A03).
+ - **`destroy_session` for old sessions** after a local reset: not sent (tdlib and MtProtoKit do not either);
+   the responses are handled (S31).
+ - **Background temporary-key handshakes**: rotation makes the new key at a quiet moment (a pause of a
 diff --git a/docs/swift-integration.md b/docs/swift-integration.md
 index 8977917..2bd017d 100644
 --- a/docs/swift-integration.md
