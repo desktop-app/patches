@@ -1,0 +1,31 @@
+Backport Qt a2cd9d2a70575c37153d43e9c5396a9144af1923 (CVE-2026-105924).
+
+diff --git a/src/corelib/serialization/qjsoncbor.cpp b/src/corelib/serialization/qjsoncbor.cpp
+index 84e0036c..769d52b8 100644
+--- a/src/corelib/serialization/qjsoncbor.cpp
++++ b/src/corelib/serialization/qjsoncbor.cpp
+@@ -174,15 +174,21 @@ static QJsonValue convertExtendedTypeToJson(QCborContainerPrivate *d)
+     qint64 tag = d->elements.at(0).value;
+ 
+     switch (tag) {
+-    case qint64(QCborKnownTags::Url):
++    case qint64(QCborKnownTags::Url): {
+ #ifdef QT_BOOTSTRAPPED
+         break;
+ #else
+         // use the fully-encoded URL form
+-        if (d->elements.at(1).type == QCborValue::String)
+-            return QUrl::fromEncoded(d->byteData(1)->asByteArrayView()).toString(QUrl::FullyEncoded);
++        Element e = d->elements.at(1);
++        const ByteData *bd = d->byteData(e);
++        if (e.type == QCborValue::String) {
++            if (!bd)
++                return QString();
++            return QUrl::fromEncoded(bd->asByteArrayView()).toString(QUrl::FullyEncoded);
++        }
+         Q_FALLTHROUGH();
+ #endif
++    }
+ 
+     case qint64(QCborKnownTags::DateTimeString):
+     case qint64(QCborKnownTags::ExpectedBase64url):
