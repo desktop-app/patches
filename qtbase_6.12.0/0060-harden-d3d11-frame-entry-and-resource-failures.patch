@@ -1,14 +1,5 @@
-Subject: [PATCH] Detect D3D11 loss before frames and guard failed resources
-
-Query native removal before onscreen and offscreen frames, classify resource
-failures without treating ordinary allocation errors as device loss, and keep
-failed dynamic buffers and native resources out of upload/copy operations.
-Complete failed readbacks and release their update batches.
-
-Based on Qt 6.11.2 with upstream backports 0064 through 0066.
-
 diff --git a/src/gui/rhi/qrhid3d11.cpp b/src/gui/rhi/qrhid3d11.cpp
-index 45f722a0..9bcf9344 100644
+index 45f722a..beda186 100644
 --- a/src/gui/rhi/qrhid3d11.cpp
 +++ b/src/gui/rhi/qrhid3d11.cpp
 @@ -13,6 +13,8 @@
@@ -856,9 +847,30 @@ index 45f722a0..9bcf9344 100644
      // Every call to Present implicitly changed the resource identity of the
      // returned interface. Direct3D 12 no longer supports that implicit
      // resource identity change, due to the CPU overhead required and the
-@@ -5714,3 +6047,5 @@ bool QD3D11RenderTargetUavUpdateState::update(const QD3D11RenderTargetData::View
+@@ -5713,4 +6046,4 @@ bool QD3D11RenderTargetUavUpdateState::update(const QD3D11RenderTargetData::View
+ }
  
  
- QT_END_NAMESPACE
+-QT_END_NAMESPACE
++QT_END_NAMESPACE
+\ No newline at end of file
+diff --git a/src/gui/rhi/qrhid3d11_p.h b/src/gui/rhi/qrhid3d11_p.h
+index 851e39e..30a8e0f 100644
+--- a/src/gui/rhi/qrhid3d11_p.h
 +++ b/src/gui/rhi/qrhid3d11_p.h
+@@ -686,6 +686,7 @@ struct QD3D11SwapChain : public QRhiSwapChain
+ 
+     QRhiRenderPassDescriptor *newCompatibleRenderPassDescriptor() override;
+     bool createOrResize() override;
++    bool createOrResizeWin7();
+ 
+     void releaseBuffers();
+     bool newColorBuffer(const QSize &size, DXGI_FORMAT format, DXGI_SAMPLE_DESC sampleDesc,
+@@ -848,6 +849,7 @@ public:
+     void setQueueSubmitParams(QRhiNativeHandles *params) override;
+     void releaseCachedResources() override;
+     bool isDeviceLost() const override;
 +    bool checkDeviceLost(HRESULT result = S_OK);
+ 
+     QByteArray pipelineCacheData() override;
+     void setPipelineCacheData(const QByteArray &data) override;
