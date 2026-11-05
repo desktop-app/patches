@@ -1,0 +1,562 @@
+Backport widget set-position attributes and the menu attribute consistency fix.
+
+Upstream: qt/qtbase 31b52ce48854f083eed6b733d8b6bd7b88b5008c
+          qt/qtbase d2d1126802637e49eab8c6a29836511108d87714
+Reviews: https://codereview.qt-project.org/c/qt/qtbase/+/765926
+         https://codereview.qt-project.org/c/qt/qtbase/+/783597
+
+Includes the upstream widget provider tests and Windows UIA regression test.
+
+diff --git a/src/gui/accessible/qaccessible.cpp b/src/gui/accessible/qaccessible.cpp
+index 33ef394eeb70d0dcd3d092bafd0e4cdcbf4c1a2b..ae0f0d1d22f3005a1b79dc9e2b6847963b61bae2 100644
+--- a/src/gui/accessible/qaccessible.cpp
++++ b/src/gui/accessible/qaccessible.cpp
+@@ -3277,7 +3277,8 @@ QAccessibleAttributesInterface::~QAccessibleAttributesInterface()
+ /*!
+     \fn QList<QAccessible::Attribute> QAccessibleAttributesInterface::attributeKeys() const
+ 
+- Returns the keys of all attributes the object supports. The \l QAccessible::Attribute
++ Returns the keys of all attributes currently set for the object. For each returned
++ key, attributeValue() returns a valid QVariant. The \l QAccessible::Attribute
+  enumeration describes available keys.
+ */
+ 
+diff --git a/src/widgets/accessible/complexwidgets.cpp b/src/widgets/accessible/complexwidgets.cpp
+index e8f630148dc7a141d493adb11773734677a92c02..405ca90ce1411898fdb57a158b3206282239b8c0 100644
+--- a/src/widgets/accessible/complexwidgets.cpp
++++ b/src/widgets/accessible/complexwidgets.cpp
+@@ -56,7 +56,8 @@ QString qt_accHotKey(const QString &text);
+   \ingroup accessibility
+ */
+ 
+-class QAccessibleTabButton: public QAccessibleInterface, public QAccessibleActionInterface
++class QAccessibleTabButton: public QAccessibleInterface, public QAccessibleActionInterface,
++                            public QAccessibleAttributesInterface
+ {
+ public:
+     QAccessibleTabButton(QTabBar *parent, int index)
+@@ -67,6 +68,8 @@ public:
+         if (t == QAccessible::ActionInterface) {
+             return static_cast<QAccessibleActionInterface*>(this);
+         }
++        if (t == QAccessible::AttributesInterface)
++            return static_cast<QAccessibleAttributesInterface *>(this);
+         return nullptr;
+     }
+ 
+@@ -162,6 +165,21 @@ public:
+         return QStringList();
+     }
+ 
++    // attributes interface
++    QList<QAccessible::Attribute> attributeKeys() const override
++    {
++        return { QAccessible::Attribute::PositionInSet, QAccessible::Attribute::SizeOfSet };
++    }
++
++    QVariant attributeValue(QAccessible::Attribute key) const override
++    {
++        if (key == QAccessible::Attribute::PositionInSet)
++            return m_index + 1;
++        if (key == QAccessible::Attribute::SizeOfSet)
++            return m_parent->count();
++        return QVariant();
++    }
++
+     int index() const { return m_index; }
+ 
+ private:
+diff --git a/src/widgets/accessible/itemviews.cpp b/src/widgets/accessible/itemviews.cpp
+index 3366a610edd7a386345096d581feed83c50c32bf..e1a756b585d3334ad71a8a0b76882fcdfa1698aa 100644
+--- a/src/widgets/accessible/itemviews.cpp
++++ b/src/widgets/accessible/itemviews.cpp
+@@ -1057,9 +1057,48 @@ void *QAccessibleTableCell::interface_cast(QAccessible::InterfaceType t)
+         return static_cast<QAccessibleTableCellInterface*>(this);
+     if (t == QAccessible::ActionInterface)
+         return static_cast<QAccessibleActionInterface*>(this);
++    // Only the items of a list or a tree form a set of siblings; a table
++    // cell is located by its row and column through the cell interface.
++    if (t == QAccessible::AttributesInterface
++        && (m_role == QAccessible::ListItem || m_role == QAccessible::TreeItem)) {
++        return static_cast<QAccessibleAttributesInterface *>(this);
++    }
+     return nullptr;
+ }
+ 
++QList<QAccessible::Attribute> QAccessibleTableCell::attributeKeys() const
++{
++    QList<QAccessible::Attribute> keys = { QAccessible::Attribute::PositionInSet,
++                                           QAccessible::Attribute::SizeOfSet };
++    if (m_role == QAccessible::TreeItem)
++        keys.append(QAccessible::Attribute::Level);
++    return keys;
++}
++
++QVariant QAccessibleTableCell::attributeValue(QAccessible::Attribute key) const
++{
++    switch (key) {
++    case QAccessible::Attribute::PositionInSet:
++        return m_index.row() + 1;
++    case QAccessible::Attribute::SizeOfSet:
++        return m_index.model()->rowCount(m_index.parent());
++    case QAccessible::Attribute::Level: {
++        if (m_role != QAccessible::TreeItem)
++            return QVariant();
++        // The depth below the root of the view, top level items being at level 1.
++        int level = 1;
++        const QModelIndex root = view->rootIndex();
++        for (QModelIndex parent = m_index.parent(); parent.isValid() && parent != root;
++             parent = parent.parent()) {
++            ++level;
++        }
++        return level;
++    }
++    default:
++        return QVariant();
++    }
++}
++
+ int QAccessibleTableCell::columnExtent() const { return 1; }
+ int QAccessibleTableCell::rowExtent() const { return 1; }
+ 
+diff --git a/src/widgets/accessible/itemviews_p.h b/src/widgets/accessible/itemviews_p.h
+index 9f45a40f27c70cf80977a8d3f5a99c1d2c43c816..eb4cca0768665c14a14f157ff6566c53b4e252b9 100644
+--- a/src/widgets/accessible/itemviews_p.h
++++ b/src/widgets/accessible/itemviews_p.h
+@@ -162,7 +162,10 @@ public:
+ };
+ #endif
+ 
+-class QAccessibleTableCell: public QAccessibleInterface, public QAccessibleTableCellInterface, public QAccessibleActionInterface
++class QAccessibleTableCell : public QAccessibleInterface,
++                             public QAccessibleTableCellInterface,
++                             public QAccessibleActionInterface,
++                             public QAccessibleAttributesInterface
+ {
+ public:
+     QAccessibleTableCell(QAbstractItemView *view, const QModelIndex &m_index, QAccessible::Role role);
+@@ -199,6 +202,10 @@ public:
+     virtual void doAction(const QString &actionName) override;
+     virtual QStringList keyBindingsForAction(const QString &actionName) const override;
+ 
++    // attributes interface
++    QList<QAccessible::Attribute> attributeKeys() const override;
++    QVariant attributeValue(QAccessible::Attribute key) const override;
++
+ private:
+     QHeaderView *verticalHeader() const;
+     QHeaderView *horizontalHeader() const;
+diff --git a/src/widgets/accessible/qaccessiblemenu.cpp b/src/widgets/accessible/qaccessiblemenu.cpp
+index 73333fd0059655f08db3af211aa5d52a8ed3d5f5..d54c4fc96287f27a75672173b67ee2fe4ee8599a 100644
+--- a/src/widgets/accessible/qaccessiblemenu.cpp
++++ b/src/widgets/accessible/qaccessiblemenu.cpp
+@@ -204,9 +204,42 @@ void *QAccessibleMenuItem::interface_cast(QAccessible::InterfaceType t)
+ {
+     if (t == QAccessible::ActionInterface)
+         return static_cast<QAccessibleActionInterface*>(this);
++    // A separator is not one of the items of the menu.
++    if (t == QAccessible::AttributesInterface && m_action && !m_action->isSeparator())
++        return static_cast<QAccessibleAttributesInterface *>(this);
+     return nullptr;
+ }
+ 
++QList<QAccessible::Attribute> QAccessibleMenuItem::attributeKeys() const
++{
++    if (!attributeValue(QAccessible::Attribute::PositionInSet).isValid())
++        return {};
++    return { QAccessible::Attribute::PositionInSet, QAccessible::Attribute::SizeOfSet };
++}
++
++QVariant QAccessibleMenuItem::attributeValue(QAccessible::Attribute key) const
++{
++    if (key != QAccessible::Attribute::PositionInSet && key != QAccessible::Attribute::SizeOfSet)
++        return QVariant();
++
++    // The set is what the user sees: the visible items of the menu, without
++    // its separators.
++    int size = 0;
++    bool inSet = false;
++    const auto actions = owner()->actions();
++    for (QAction *action : actions) {
++        if (action->isSeparator() || !action->isVisible())
++            continue;
++        ++size;
++        if (action == m_action) {
++            if (key == QAccessible::Attribute::PositionInSet)
++                return size;
++            inSet = true;
++        }
++    }
++    return inSet ? QVariant(size) : QVariant();
++}
++
+ QObject *QAccessibleMenuItem::object() const
+ {
+     return m_action;
+diff --git a/src/widgets/accessible/qaccessiblemenu_p.h b/src/widgets/accessible/qaccessiblemenu_p.h
+index fc7c4a91b735224fd234353fcfd502125b7509a2..b8420e767d09e4239744bbf9e634cf1ba7d889ec 100644
+--- a/src/widgets/accessible/qaccessiblemenu_p.h
++++ b/src/widgets/accessible/qaccessiblemenu_p.h
+@@ -64,7 +64,8 @@ protected:
+ #endif // QT_CONFIG(menubar)
+ 
+ 
+-class QAccessibleMenuItem : public QAccessibleInterface, public QAccessibleActionInterface
++class QAccessibleMenuItem : public QAccessibleInterface, public QAccessibleActionInterface,
++                            public QAccessibleAttributesInterface
+ {
+ public:
+     explicit QAccessibleMenuItem(QWidget *owner, QAction *w);
+@@ -93,6 +94,10 @@ public:
+     void doAction(const QString &actionName) override;
+     QStringList keyBindingsForAction(const QString &actionName) const override;
+ 
++    // QAccessibleAttributesInterface
++    QList<QAccessible::Attribute> attributeKeys() const override;
++    QVariant attributeValue(QAccessible::Attribute key) const override;
++
+     QWidget *owner() const;
+ protected:
+     QAction *action() const;
+diff --git a/tests/auto/other/CMakeLists.txt b/tests/auto/other/CMakeLists.txt
+index 9db0c1b3596333f9871dce0c81208366968d52b7..e847ed9d6fdf29655e179839c2a555aa80c4a846 100644
+--- a/tests/auto/other/CMakeLists.txt
++++ b/tests/auto/other/CMakeLists.txt
+@@ -21,6 +21,9 @@ if(TARGET Qt::Network)
+ endif()
+ if(QT_FEATURE_accessibility AND TARGET Qt::Gui AND TARGET Qt::Widgets)
+     add_subdirectory(qaccessibility)
++    if(WIN32)
++        add_subdirectory(qaccessibilitywin)
++    endif()
+ endif()
+ if(TARGET Qt::Gui)
+     add_subdirectory(qcomplextext)
+diff --git a/tests/auto/other/qaccessibility/tst_qaccessibility.cpp b/tests/auto/other/qaccessibility/tst_qaccessibility.cpp
+index 78f8f6c9ca437b57405d1d5172408426446ee31b..4c588d5299bfff0378f67b5eb629cdf8790bbc83 100644
+--- a/tests/auto/other/qaccessibility/tst_qaccessibility.cpp
++++ b/tests/auto/other/qaccessibility/tst_qaccessibility.cpp
+@@ -195,6 +195,8 @@ private slots:
+ #if QT_CONFIG(shortcut)
+     void menuTest();
+ #endif
++    void menuItemAttributes_data();
++    void menuItemAttributes();
+     void spinBoxTest();
+     void doubleSpinBoxTest();
+     void textEditTest();
+@@ -214,6 +216,7 @@ private slots:
+     void scrollAreaTest();
+ 
+     void listTest();
++    void listPositionTest();
+     void treeTest();
+     void tableTest();
+     void rootIndexView();
+@@ -1414,6 +1417,15 @@ void tst_QAccessibility::tabTest()
+     QVERIFY(child2);
+     QCOMPARE(child2->role(), QAccessible::PageTab);
+ 
++    // the tabs report their position within the tab bar
++    QVERIFY(child1->attributesInterface());
++    QVERIFY(child1->attributesInterface()->attributeKeys().contains(QAccessible::Attribute::PositionInSet));
++    QCOMPARE(child1->attributesInterface()->attributeValue(QAccessible::Attribute::PositionInSet).toInt(), 1);
++    QCOMPARE(child1->attributesInterface()->attributeValue(QAccessible::Attribute::SizeOfSet).toInt(), tabBar->count());
++    QVERIFY(child2->attributesInterface());
++    QCOMPARE(child2->attributesInterface()->attributeValue(QAccessible::Attribute::PositionInSet).toInt(), 2);
++    QCOMPARE(child2->attributesInterface()->attributeValue(QAccessible::Attribute::SizeOfSet).toInt(), tabBar->count());
++
+     QCOMPARE(child1->text(QAccessible::Name), QLatin1String("Foo"));
+     QCOMPARE(child1->text(QAccessible::Description), QLatin1String("Cool tool tip"));
+     QCOMPARE(child1->text(QAccessible::Help), QLatin1String("I don't know"));
+@@ -1605,6 +1617,17 @@ void tst_QAccessibility::menuTest()
+     QCOMPARE(iSeparator->role(), QAccessible::Separator);
+     QCOMPARE(iHelp->role(), QAccessible::MenuItem);
+     QCOMPARE(iAction->role(), QAccessible::MenuItem);
++
++    // the items report their position among the items of the menu bar,
++    // the separator is not one of them
++    QVERIFY(!iSeparator->attributesInterface());
++    QVERIFY(iFile->attributesInterface());
++    QVERIFY(iFile->attributesInterface()->attributeKeys().contains(QAccessible::Attribute::PositionInSet));
++    QCOMPARE(iFile->attributesInterface()->attributeValue(QAccessible::Attribute::PositionInSet).toInt(), 1);
++    QCOMPARE(iEdit->attributesInterface()->attributeValue(QAccessible::Attribute::PositionInSet).toInt(), 2);
++    QCOMPARE(iHelp->attributesInterface()->attributeValue(QAccessible::Attribute::PositionInSet).toInt(), 3);
++    QCOMPARE(iAction->attributesInterface()->attributeValue(QAccessible::Attribute::PositionInSet).toInt(), 4);
++    QCOMPARE(iAction->attributesInterface()->attributeValue(QAccessible::Attribute::SizeOfSet).toInt(), 5);
+ #ifndef Q_OS_MAC
+     QCOMPARE(mw.mapFromGlobal(interface->rect().topLeft()), mw.menuBar()->geometry().topLeft());
+     QCOMPARE(interface->rect().size(), mw.menuBar()->size());
+@@ -1674,6 +1697,10 @@ void tst_QAccessibility::menuTest()
+     QCOMPARE(iFileSave->role(), QAccessible::MenuItem);
+     QCOMPARE(iFileSeparator->role(), QAccessible::Separator);
+     QCOMPARE(iFileExit->role(), QAccessible::MenuItem);
++    QVERIFY(!iFileSeparator->attributesInterface());
++    QVERIFY(iFileExit->attributesInterface());
++    QCOMPARE(iFileExit->attributesInterface()->attributeValue(QAccessible::Attribute::PositionInSet).toInt(), 4);
++    QCOMPARE(iFileExit->attributesInterface()->attributeValue(QAccessible::Attribute::SizeOfSet).toInt(), 4);
+     QCOMPARE(iFileNew->actionInterface()->actionNames(), QStringList() << QAccessibleActionInterface::showMenuAction());
+     QCOMPARE(iFileOpen->actionInterface()->actionNames(), QStringList() << QAccessibleActionInterface::pressAction());
+     QCOMPARE(iFileSave->actionInterface()->actionNames(), QStringList() << QAccessibleActionInterface::pressAction());
+@@ -3254,6 +3281,13 @@ void tst_QAccessibility::treeTest()
+     QCOMPARE(iface->indexOfChild(child2), 4);
+     QCOMPARE(child2->text(QAccessible::Name), QString("Austria"));
+ 
++    // tree items report their position among their siblings and their level
++    QVERIFY(child2->attributesInterface());
++    QVERIFY(child2->attributesInterface()->attributeKeys().contains(QAccessible::Attribute::Level));
++    QCOMPARE(child2->attributesInterface()->attributeValue(QAccessible::Attribute::PositionInSet).toInt(), 2);
++    QCOMPARE(child2->attributesInterface()->attributeValue(QAccessible::Attribute::SizeOfSet).toInt(), 2);
++    QCOMPARE(child2->attributesInterface()->attributeValue(QAccessible::Attribute::Level).toInt(), 1);
++
+     bool headerHidden = true;
+     do {
+         treeView->setHeaderHidden(headerHidden);
+@@ -3313,6 +3347,14 @@ void tst_QAccessibility::treeTest()
+     QVERIFY(!(cell2->state().expandable));
+     QCOMPARE(iface->indexOfChild(cell2), 10);
+ 
++    // Picasso is the first of the two children of Spain, Klimt the only child of Austria
++    QCOMPARE(cell1->attributesInterface()->attributeValue(QAccessible::Attribute::PositionInSet).toInt(), 1);
++    QCOMPARE(cell1->attributesInterface()->attributeValue(QAccessible::Attribute::SizeOfSet).toInt(), 2);
++    QCOMPARE(cell1->attributesInterface()->attributeValue(QAccessible::Attribute::Level).toInt(), 2);
++    QCOMPARE(cell2->attributesInterface()->attributeValue(QAccessible::Attribute::PositionInSet).toInt(), 1);
++    QCOMPARE(cell2->attributesInterface()->attributeValue(QAccessible::Attribute::SizeOfSet).toInt(), 1);
++    QCOMPARE(cell2->attributesInterface()->attributeValue(QAccessible::Attribute::Level).toInt(), 2);
++
+     QPoint pos = treeView->mapToGlobal(QPoint(0,0));
+     QModelIndex index = treeView->model()->index(0, 0, treeView->model()->index(1, 0));
+     pos += treeView->visualRect(index).center();
+@@ -3424,6 +3466,11 @@ void tst_QAccessibility::tableTest()
+     QAccessibleTableCellInterface *cell10Iface = child10->tableCellInterface();
+     QCOMPARE(cell10Iface->rowIndex(), 1);
+     QCOMPARE(cell10Iface->columnIndex(), 1);
++    // a table cell is located by row and column, it is not one of a set
++    if (QAccessibleAttributesInterface *attributes = child10->attributesInterface()) {
++        QVERIFY(!attributes->attributeKeys().contains(QAccessible::Attribute::PositionInSet));
++        QVERIFY(!attributes->attributeKeys().contains(QAccessible::Attribute::SizeOfSet));
++    }
+     QPoint pos = tableView->mapToGlobal(QPoint(0,0));
+     pos += tableView->visualRect(tableView->model()->index(1, 1)).center();
+     pos += QPoint(tableView->verticalHeader()->width(), tableView->horizontalHeader()->height());
+@@ -3705,6 +3752,34 @@ void tst_QAccessibility::tableTest()
+     QTestAccessibility::clearEvents();
+ }
+ 
++void tst_QAccessibility::listPositionTest()
++{
++    QStandardItemModel model;
++    model.appendRow(new QStandardItem("Oslo"));
++    model.appendRow(new QStandardItem("Berlin"));
++    model.appendRow(new QStandardItem("Brisbane"));
++    QListView listView;
++    listView.setModel(&model);
++    listView.resize(400, 400);
++    listView.show();
++    QVERIFY(QTest::qWaitForWindowExposed(&listView));
++
++    QAccessibleInterface *iface = QAccessible::queryAccessibleInterface(&listView);
++    QVERIFY(iface);
++    QAccessibleInterface *child2 = iface->child(1);
++    QVERIFY(child2);
++    QCOMPARE(child2->text(QAccessible::Name), QString("Berlin"));
++
++    // list items report their position within the list, but no level
++    QVERIFY(child2->attributesInterface());
++    QVERIFY(child2->attributesInterface()->attributeKeys().contains(QAccessible::Attribute::PositionInSet));
++    QVERIFY(!child2->attributesInterface()->attributeKeys().contains(QAccessible::Attribute::Level));
++    QCOMPARE(child2->attributesInterface()->attributeValue(QAccessible::Attribute::PositionInSet).toInt(), 2);
++    QCOMPARE(child2->attributesInterface()->attributeValue(QAccessible::Attribute::SizeOfSet).toInt(), 3);
++
++    QTestAccessibility::clearEvents();
++}
++
+ void tst_QAccessibility::rootIndexView()
+ {
+     QStandardItemModel model;
+@@ -4280,6 +4355,64 @@ static IUnknown *queryIA2(IAccessible *acc, const IID &iid)
+ }
+ #endif
+ 
++void tst_QAccessibility::menuItemAttributes_data()
++{
++    QTest::addColumn<bool>("initiallyHidden");
++    QTest::newRow("initially-visible") << false;
++    QTest::newRow("initially-hidden") << true;
++}
++
++void tst_QAccessibility::menuItemAttributes()
++{
++    QFETCH(bool, initiallyHidden);
++    const auto guard = qScopeGuard([] { QTestAccessibility::clearEvents(); });
++
++    QMenu menu;
++    auto *action = menu.addAction("First"_L1);
++    menu.addSeparator();
++    menu.addAction("Second"_L1);
++    action->setVisible(!initiallyHidden);
++
++    auto *menuIface = QAccessible::queryAccessibleInterface(&menu);
++    QVERIFY(menuIface);
++    QCOMPARE(menuIface->childCount(), 3);
++    auto *itemIface = menuIface->child(0);
++    QVERIFY(itemIface);
++    auto *attributes = itemIface->attributesInterface();
++    QVERIFY(attributes);
++
++    for (const bool hidden : { initiallyHidden, !initiallyHidden, initiallyHidden }) {
++        action->setVisible(!hidden);
++        QVERIFY(itemIface->isValid());
++        const auto keys = attributes->attributeKeys();
++        QCOMPARE(keys.contains(QAccessible::Attribute::PositionInSet), !hidden);
++        QCOMPARE(keys.contains(QAccessible::Attribute::SizeOfSet), !hidden);
++        const auto position = attributes->attributeValue(QAccessible::Attribute::PositionInSet);
++        QCOMPARE(position.isValid(), !hidden);
++        if (!hidden)
++            QCOMPARE(position.toInt(), 1);
++        const auto size = attributes->attributeValue(QAccessible::Attribute::SizeOfSet);
++        QCOMPARE(size.isValid(), !hidden);
++        if (!hidden)
++            QCOMPARE(size.toInt(), 2);
++    }
++
++    action->setVisible(true);
++    menu.removeAction(action);
++    QVERIFY(itemIface->isValid());
++    QVERIFY(!attributes->attributeKeys().contains(QAccessible::Attribute::PositionInSet));
++    QVERIFY(!attributes->attributeKeys().contains(QAccessible::Attribute::SizeOfSet));
++    QVERIFY(!attributes->attributeValue(QAccessible::Attribute::PositionInSet).isValid());
++    QVERIFY(!attributes->attributeValue(QAccessible::Attribute::SizeOfSet).isValid());
++
++    menu.insertAction(menu.actions().first(), action);
++    QVERIFY(itemIface->isValid());
++    QVERIFY(attributes->attributeKeys().contains(QAccessible::Attribute::PositionInSet));
++    QVERIFY(attributes->attributeKeys().contains(QAccessible::Attribute::SizeOfSet));
++    QCOMPARE(attributes->attributeValue(QAccessible::Attribute::PositionInSet).toInt(), 1);
++    QCOMPARE(attributes->attributeValue(QAccessible::Attribute::SizeOfSet).toInt(), 2);
++}
++
+ void tst_QAccessibility::bridgeTest()
+ {
+     // For now this is a simple test to see if the bridge is working at all.
+diff --git a/tests/auto/other/qaccessibilitywin/CMakeLists.txt b/tests/auto/other/qaccessibilitywin/CMakeLists.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..080b599397d24d32929619f0c67484944f77621d
+--- /dev/null
++++ b/tests/auto/other/qaccessibilitywin/CMakeLists.txt
+@@ -0,0 +1,24 @@
++# Copyright (C) 2026 Reza Bakhshi Laktasaraei
++# SPDX-License-Identifier: BSD-3-Clause
++
++if(NOT QT_BUILD_STANDALONE_TESTS AND NOT QT_BUILDING_QT)
++    cmake_minimum_required(VERSION 3.16)
++    project(tst_qaccessibilitywin LANGUAGES CXX)
++    find_package(Qt6BuildInternals REQUIRED COMPONENTS STANDALONE_TEST)
++endif()
++
++if(NOT WIN32 OR NOT QT_FEATURE_accessibility)
++    return()
++endif()
++
++qt_internal_add_test(tst_qaccessibilitywin
++    SOURCES
++        tst_qaccessibilitywin.cpp
++    LIBRARIES
++        Qt::CorePrivate
++        Qt::Gui
++        Qt::Widgets
++        ole32
++        oleaut32
++        uuid
++)
+diff --git a/tests/auto/other/qaccessibilitywin/tst_qaccessibilitywin.cpp b/tests/auto/other/qaccessibilitywin/tst_qaccessibilitywin.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..a031e4a14dd2894b6a21681b328a5f12bb43354d
+--- /dev/null
++++ b/tests/auto/other/qaccessibilitywin/tst_qaccessibilitywin.cpp
+@@ -0,0 +1,85 @@
++// Copyright (C) 2026 Reza Bakhshi Laktasaraei
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR GPL-3.0-only
++
++#include <QtCore/qglobal.h>
++#include <QtCore/private/qcomvariant_p.h>
++#include <QtCore/private/qfunctions_win_p.h>
++#include <QtGui/QAccessible>
++#include <QtTest/QTest>
++#include <QtWidgets/QMenu>
++
++#include <uiautomation.h>
++
++using namespace Qt::StringLiterals;
++
++class tst_QAccessibilityWin : public QObject
++{
++    Q_OBJECT
++
++private slots:
++    void initTestCase();
++    void menuItemAttributes();
++};
++
++void tst_QAccessibilityWin::initTestCase()
++{
++    if (QGuiApplication::platformName() != "windows"_L1)
++        QSKIP("This test requires the Windows platform plugin");
++    QAccessible::setActive(true);
++    QVERIFY(QAccessible::isActive());
++}
++
++void tst_QAccessibilityWin::menuItemAttributes()
++{
++    QMenu menu;
++    auto *action = menu.addAction("First"_L1);
++    menu.addSeparator();
++    menu.addAction("Second"_L1);
++    menu.show();
++    QVERIFY(QTest::qWaitForWindowExposed(&menu));
++
++    QComHelper comHelper;
++    QVERIFY(comHelper.isValid());
++    const GUID automationClsid{0xff48dba4, 0x60ef, 0x4201,
++                               {0xaa, 0x87, 0x54, 0x10, 0x3e, 0xef, 0x59, 0x4e}};
++    ComPtr<IUIAutomation> automation;
++    QVERIFY(SUCCEEDED(CoCreateInstance(automationClsid, nullptr, CLSCTX_INPROC_SERVER,
++                                       IID_PPV_ARGS(&automation))));
++    ComPtr<IUIAutomationElement> menuElement;
++    QVERIFY(SUCCEEDED(automation->ElementFromHandle(reinterpret_cast<HWND>(menu.winId()),
++                                                  &menuElement)));
++    QVERIFY(menuElement);
++    ComPtr<IUIAutomationTreeWalker> walker;
++    QVERIFY(SUCCEEDED(automation->get_RawViewWalker(&walker)));
++    QVERIFY(walker);
++    ComPtr<IUIAutomationElement> itemElement;
++    QVERIFY(SUCCEEDED(walker->GetFirstChildElement(menuElement.Get(), &itemElement)));
++    QVERIFY(itemElement);
++
++    QComVariant name;
++    QVERIFY(SUCCEEDED(itemElement->GetCurrentPropertyValue(UIA_NamePropertyId, &name)));
++    QCOMPARE(name.get().vt, VT_BSTR);
++    QCOMPARE(QString::fromWCharArray(name.get().bstrVal), "First"_L1);
++
++    for (const bool hidden : { false, true, false }) {
++        action->setVisible(!hidden);
++        QComVariant attributes;
++        QVERIFY(SUCCEEDED(itemElement->GetCurrentPropertyValue(UIA_AriaPropertiesPropertyId,
++                                                               &attributes)));
++        QCOMPARE(attributes.get().vt, VT_BSTR);
++        const auto entries = QString::fromWCharArray(attributes.get().bstrVal).split(u';');
++        QStringList positions;
++        QStringList sizes;
++        for (const auto &entry : entries) {
++            if (entry.startsWith("posinset="_L1))
++                positions.append(entry);
++            if (entry.startsWith("setsize="_L1))
++                sizes.append(entry);
++        }
++        QCOMPARE(positions, hidden ? QStringList{} : QStringList{"posinset=1"_L1});
++        QCOMPARE(sizes, hidden ? QStringList{} : QStringList{"setsize=2"_L1});
++    }
++}
++
++QTEST_MAIN(tst_QAccessibilityWin)
++#include "tst_qaccessibilitywin.moc"
