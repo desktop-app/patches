@@ -64,7 +64,7 @@ index 26b26f4..a03aada 100644
 +    }
  }
 diff --git a/src/domain/send.rs b/src/domain/send.rs
-index 5fd95f5..83a9344 100644
+index 5fd95f5..d0720fc 100644
 --- a/src/domain/send.rs
 +++ b/src/domain/send.rs
 @@ -2,6 +2,11 @@
@@ -231,20 +231,61 @@ index 5fd95f5..83a9344 100644
  }
  
  /// Requests one signed wallet transfer.
-@@ -454,9 +577,10 @@ pub struct SendResult {
+@@ -165,21 +288,36 @@ pub struct SendRequest {
+ ///
+ /// The engine resolves one fresh wallet sequence number and one expiration
+ /// timestamp, then signs the transfer as both an incoming external message and
+-/// an owner-signed internal message. It does not submit or persist either BOC.
++/// an owner-signed internal message, the latter with [`Self::gasless_messages`]
++/// when given. It does not submit or persist either BOC.
+ #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record)]
+ #[serde(rename_all = "camelCase")]
+ pub struct PrepareTransferRequest {
+     /// A unique identifier chosen by the application for the prepared transfer.
+     pub operation_id: NonEmptyString,
+-    /// The immutable messages and expiration policy covered by both signatures.
++    /// The immutable external-form messages and the expiration policy of both
++    /// forms. The internal form signs these messages too unless
++    /// [`Self::gasless_messages`] is given.
+     pub intent: SendIntent,
++    /// Optional messages for the internal form instead of the intent's.
++    ///
++    /// `None` signs the intent's messages in both forms. Given messages are
++    /// signed exactly, in the internal form only, under the same `seqno` and
++    /// `valid_until` as the external form. Their explicit send modes need not
++    /// include +2, and an empty list is refused. The exact total of each form
++    /// must fit the fresh balance, fees excluded; a whole-balance form has no
++    /// exact total to check.
++    #[serde(default)]
++    #[uniffi(default = None)]
++    pub gasless_messages: Option<Vec<SendMessage>>,
+ }
+ 
+ /// Two signed delivery forms prepared from the same wallet state.
+ ///
+ /// Both BOCs cover the same `seqno` and `valid_until`, so they are alternative
+-/// representations of one transfer. The caller must hand off only the delivery
+-/// form selected by its server. This result is not written to the send journal.
++/// forms of one operation, possibly with different messages. The caller may
++/// send both to its server to select one for on-chain execution. This result
++/// is not written to the send journal.
+ #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, uniffi::Record)]
+ #[serde(rename_all = "camelCase")]
+ pub struct PreparedTransfer {
+@@ -454,9 +592,10 @@ pub struct SendResult {
  #[cfg(test)]
  mod tests {
      use super::{
 -        SendAmount, SendExpiration, SendIntent, SendMessage, SendMessageBody, SendRequest,
-+        SendAmount, SendExpiration, SendIntent, SendIntentError, SendMessage, SendMessageBody,
-+        SendModeRefusal, SendRequest,
++        PrepareTransferRequest, SendAmount, SendExpiration, SendIntent, SendIntentError,
++        SendMessage, SendMessageBody, SendModeRefusal, SendRequest,
      };
 -    use crate::{Boc, NonEmptyString, TonAddressString};
 +    use crate::{Boc, NonEmptyString, TonAddressString, UnsignedDecimalString, WalletClientError};
      use ton::ton_core::cell::TonCell;
  
      #[test]
-@@ -548,6 +672,291 @@ mod tests {
+@@ -548,6 +687,355 @@ mod tests {
          assert!(!decoded.intent.messages[0].bounce);
      }
  
@@ -279,6 +320,70 @@ index 5fd95f5..83a9344 100644
 +            serde_json::to_string(&message).expect("message serializes"),
 +            legacy
 +        );
++    }
++
++    /// Reads a preparation request without a gasless list as `None` and keeps
++    /// a supplied list, including an explicit empty one, exactly.
++    #[test]
++    fn prepare_transfer_json_keeps_an_absent_empty_or_distinct_gasless_list() {
++        let legacy = r#"{"operationId":"operation","intent":{"expiration":{"kind":"engineDefault"},"messages":[{"destination":"0:2222222222222222222222222222222222222222222222222222222222222222","amount":{"kind":"exact","nanograms":"1"},"body":{"kind":"empty"},"bounce":false,"stateInit":null}]}}"#;
++        let request = PrepareTransferRequest {
++            operation_id: NonEmptyString::try_from("operation").expect("valid operation id"),
++            intent: send_request(SendExpiration::EngineDefault, SendMessageBody::Empty).intent,
++            gasless_messages: None,
++        };
++
++        let decoded: PrepareTransferRequest =
++            serde_json::from_str(legacy).expect("request without a gasless list decodes");
++        assert_eq!(decoded, request);
++
++        let payload = Boc::try_from(TonCell::EMPTY_BOC.to_vec()).expect("valid payload BOC");
++        let distinct = PrepareTransferRequest {
++            gasless_messages: Some(vec![
++                SendMessage {
++                    destination: TonAddressString::try_from(
++                        "0:3333333333333333333333333333333333333333333333333333333333333333",
++                    )
++                    .expect("valid destination"),
++                    amount: SendAmount::exact("700").expect("valid amount"),
++                    body: SendMessageBody::RawPayload {
++                        boc: payload.clone(),
++                    },
++                    bounce: true,
++                    state_init: Some(payload),
++                    send_mode: Some(0),
++                },
++                SendMessage {
++                    destination: TonAddressString::try_from(
++                        "0:4444444444444444444444444444444444444444444444444444444444444444",
++                    )
++                    .expect("valid destination"),
++                    amount: SendAmount::exact("300").expect("valid amount"),
++                    body: SendMessageBody::Comment {
++                        text: "gasless".to_owned(),
++                    },
++                    bounce: false,
++                    state_init: None,
++                    send_mode: Some(18),
++                },
++            ]),
++            ..request.clone()
++        };
++        let json = serde_json::to_value(&distinct).expect("request serializes");
++        assert_eq!(
++            json["gaslessMessages"].as_array().map(Vec::len),
++            Some(2),
++            "{json}"
++        );
++        let decoded: PrepareTransferRequest =
++            serde_json::from_value(json).expect("request deserializes");
++        assert_eq!(decoded, distinct);
++
++        let mut empty = serde_json::to_value(&request).expect("request serializes");
++        empty["gaslessMessages"] = serde_json::json!([]);
++        let decoded: PrepareTransferRequest =
++            serde_json::from_value(empty).expect("request with an empty list deserializes");
++        assert_eq!(decoded.gasless_messages, Some(Vec::new()));
 +    }
 +
 +    /// Lists the explicit modes one exact-value message accepts under `validate`.
@@ -536,7 +641,7 @@ index 5fd95f5..83a9344 100644
      /// Builds one public send request for serialization tests.
      fn send_request(expiration: SendExpiration, body: SendMessageBody) -> SendRequest {
          SendRequest {
-@@ -564,6 +973,7 @@ mod tests {
+@@ -564,6 +1052,7 @@ mod tests {
                      body,
                      bounce: false,
                      state_init: None,
@@ -545,39 +650,99 @@ index 5fd95f5..83a9344 100644
              },
          }
 diff --git a/src/engine/prepare_transfer.rs b/src/engine/prepare_transfer.rs
-index 50d5caf..fe583f2 100644
+index 50d5caf..192f878 100644
 --- a/src/engine/prepare_transfer.rs
 +++ b/src/engine/prepare_transfer.rs
-@@ -30,8 +30,8 @@ impl WalletClient {
+@@ -5,7 +5,8 @@ use crate::transport::build_toncenter_v2_request;
+ use crate::wallet::send::FreshSendAccount;
+ use crate::wallet::transfer::{derive_source, prepare_transfer_pair};
+ use crate::{
+-    AccountStatus, PrepareTransferRequest, PreparedTransfer, SendRequest, WalletClientError,
++    AccountStatus, PrepareTransferRequest, PreparedTransfer, SendIntent, SendRequest,
++    WalletClientError,
+ };
+ 
+ use super::WalletClient;
+@@ -21,18 +22,39 @@ impl WalletClient {
+     ///
+     /// The client fetches account state and `seqno` once, resolves one
+     /// `valid_until`, and unlocks the protected phrase once. Both returned BOCs
+-    /// therefore authorize the same transfer and are mutually exclusive
++    /// therefore share one `seqno` and are mutually exclusive
+     /// delivery alternatives. This method does not read or write the send
+     /// journal and does not submit either message.
++    ///
++    /// The external BOC signs the request's intent. The internal BOC signs
++    /// [`PrepareTransferRequest::gasless_messages`] when given, otherwise the
++    /// same intent.
+     pub async fn prepare_transfer(
+         &self,
+         request: PrepareTransferRequest,
      ) -> Result<PreparedTransfer, WalletClientError> {
-         let requested = request
+-        let requested = request
++        let normal_requested = request
              .intent
 -            .exact_value_total()
 -            .map_err(|_| WalletClientError::InvalidSendRequest)?;
 +            .exact_value_total_for_external()
 +            .map_err(WalletClientError::from)?;
++        let gasless_intent = request.gasless_messages.map(|messages| SendIntent {
++            expiration: request.intent.expiration.clone(),
++            messages,
++        });
++        let gasless_requested = gasless_intent
++            .as_ref()
++            .map(SendIntent::exact_value_total)
++            .transpose()
++            .map_err(WalletClientError::from)?
++            .flatten();
++        // The server executes at most one form, so the largest exact total must fit.
++        let requested = normal_requested.into_iter().chain(gasless_requested).max();
          let operation_id = request.operation_id.clone();
++        let gasless_request = gasless_intent.map(|intent| SendRequest {
++            operation_id: request.operation_id.clone(),
++            force: false,
++            intent,
++        });
          let send_request = SendRequest {
              operation_id: request.operation_id,
-@@ -226,3 +226,185 @@ impl WalletClient {
+             force: false,
+@@ -164,6 +186,7 @@ impl WalletClient {
+             &expected_source,
+             config.network,
+             &send_request,
++            gasless_request.as_ref(),
+             &fresh,
+             valid_until,
+         )
+@@ -226,3 +249,1039 @@ impl WalletClient {
          }
      }
  }
 +
 +#[cfg(test)]
 +mod tests {
++    use std::str::FromStr;
 +    use std::sync::{Arc, Mutex};
 +
++    use ed25519_dalek::{Signature, VerifyingKey};
 +    use futures::executor::block_on;
++    use ton::block_tlb::{CommonMsgInfo, Msg, StateInit};
++    use ton::ton_core::cell::TonCell;
++    use ton::ton_core::traits::tlb::TLB;
++    use ton::ton_core::types::TonAddress;
++    use ton::ton_core::types::tlb_core::TLBCoins;
++    use ton::ton_wallet::{WalletExtMsgBody, WalletInternalSignedBody};
 +
 +    use super::*;
 +    use crate::wallet::crypto::derive_wallet;
 +    use crate::{
-+        HttpHostError, HttpHostErrorKind, HttpRequest, HttpRequestId, HttpResponse,
-+        JournalCompareExchange, JournalCompareExchangeResult, JournalHostError, JournalKey,
-+        JournalRecord, Network, NonEmptyString, ProtectedSecretHostError, ProtectedSecretRef,
-+        ProtectedSecretStore, ProviderConfig, SendAmount, SendExpiration, SendIntent, SendMessage,
-+        SendMessageBody, TonAddressString, WalletClientConfig, WalletHttpHost, WalletPlatformHost,
++        Boc, HttpHostError, HttpHostErrorKind, HttpMethod, HttpRequest, HttpRequestId,
++        HttpResponse, JournalCompareExchange, JournalCompareExchangeResult, JournalHostError,
++        JournalKey, JournalRecord, Network, NonEmptyString, ProtectedSecretHostError,
++        ProtectedSecretRef, ProtectedSecretStore, ProviderConfig, SendAmount, SendExpiration,
++        SendIntent, SendMessage, SendMessageBody, TonAddressString, UnsignedDecimalString,
++        WalletClientConfig, WalletHttpHost, WalletPlatformHost,
 +    };
 +
 +    const MNEMONIC: &str =
@@ -616,6 +781,10 @@ index 50d5caf..fe583f2 100644
 +    impl SecretHost {
 +        fn read_count(&self) -> usize {
 +            self.reasons.lock().expect("reason lock").len()
++        }
++
++        fn reasons(&self) -> Vec<SecretAccessReason> {
++            self.reasons.lock().expect("reason lock").clone()
 +        }
 +    }
 +
@@ -696,6 +865,7 @@ index 50d5caf..fe583f2 100644
 +                    send_mode,
 +                }],
 +            },
++            gasless_messages: None,
 +        }
 +    }
 +
@@ -743,6 +913,846 @@ index 50d5caf..fe583f2 100644
 +        );
 +        assert_eq!(http.request_count(), 1);
 +        assert_eq!(platform.read_count(), 0);
++    }
++
++    const DESTINATION_B: &str =
++        "0:3333333333333333333333333333333333333333333333333333333333333333";
++    const DESTINATION_C: &str =
++        "0:4444444444444444444444444444444444444444444444444444444444444444";
++    const OPERATION: &str = "prepare-distinct";
++    /// Fixed expiry of the explicit-expiration preparations.
++    const VALID_UNTIL: u64 = 1_900_000_000;
++    const MISSING_IGNORE_ERRORS: &str = "an external wallet message needs flag 2 (ignore errors)";
++
++    /// A provider call that transfer preparation is expected to make.
++    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++    enum ProviderCall {
++        /// `getAddressInformation` for the configured wallet.
++        Account,
++        /// The JSON-RPC `runGetMethod` read of the configured wallet's `seqno`.
++        Seqno,
++    }
++
++    /// Answers the configured wallet's account read as an active account with
++    /// `balance` at provider time 1 and its `seqno` read as 42. Every other
++    /// request fails; all requests are recorded exactly.
++    struct PreparationHost {
++        address: String,
++        balance: u64,
++        requests: Mutex<Vec<HttpRequest>>,
++    }
++
++    impl PreparationHost {
++        fn new(config: &WalletClientConfig, balance: u64) -> Self {
++            Self {
++                address: config.address.as_str().to_owned(),
++                balance,
++                requests: Mutex::new(Vec::new()),
++            }
++        }
++
++        /// Classifies each recorded request in order; `None` is unexpected.
++        fn calls(&self) -> Vec<Option<ProviderCall>> {
++            self.requests
++                .lock()
++                .expect("request lock")
++                .iter()
++                .map(|request| self.classify(request))
++                .collect()
++        }
++
++        fn classify(&self, request: &HttpRequest) -> Option<ProviderCall> {
++            let url = url::Url::parse(&request.url).ok()?;
++            if url.host_str() != Some("provider.example") {
++                return None;
++            }
++            match (request.method, url.path()) {
++                (HttpMethod::Get, "/api/v2/getAddressInformation") => {
++                    let query = url.query_pairs().into_owned().collect::<Vec<_>>();
++                    (query == [("address".to_owned(), self.address.clone())])
++                        .then_some(ProviderCall::Account)
++                }
++                (HttpMethod::Post, "/api/v2/jsonRPC") => {
++                    let body: serde_json::Value = serde_json::from_slice(&request.body).ok()?;
++                    (body["method"] == "runGetMethod"
++                        && body["params"]["method"] == "seqno"
++                        && body["params"]["address"] == self.address.as_str())
++                    .then_some(ProviderCall::Seqno)
++                }
++                _ => None,
++            }
++        }
++    }
++
++    #[async_trait::async_trait]
++    impl WalletHttpHost for PreparationHost {
++        async fn execute_http(&self, request: HttpRequest) -> Result<HttpResponse, HttpHostError> {
++            self.requests
++                .lock()
++                .expect("request lock")
++                .push(request.clone());
++            let body = match self.classify(&request) {
++                Some(ProviderCall::Account) => serde_json::json!({
++                    "ok": true,
++                    "result": {
++                        "balance": self.balance.to_string(),
++                        "state": "active",
++                        "sync_utime": 1
++                    }
++                }),
++                Some(ProviderCall::Seqno) => serde_json::json!({
++                    "ok": true,
++                    "result": { "exit_code": 0, "stack": [["num", "0x2a"]] }
++                }),
++                None => {
++                    return Err(HttpHostError::Failed {
++                        kind: HttpHostErrorKind::Other,
++                        diagnostic: "unexpected scripted request".to_owned(),
++                    });
++                }
++            };
++            Ok(HttpResponse {
++                status: 200,
++                headers: Vec::new(),
++                body: serde_json::to_vec(&body).expect("response JSON"),
++                final_url: request.url,
++            })
++        }
++
++        async fn cancel_http(&self, _request_id: HttpRequestId) {}
++    }
++
++    /// A client over a fresh `PreparationHost` and recording `SecretHost`.
++    struct ScriptedClient {
++        client: Arc<WalletClient>,
++        http: Arc<PreparationHost>,
++        platform: Arc<SecretHost>,
++    }
++
++    impl ScriptedClient {
++        fn new(balance: u64) -> Self {
++            let config = client_config();
++            let http = Arc::new(PreparationHost::new(&config, balance));
++            let platform = Arc::new(SecretHost {
++                reasons: Mutex::new(Vec::new()),
++            });
++            let client =
++                WalletClient::new(config, http.clone(), platform.clone()).expect("client builds");
++            Self {
++                client,
++                http,
++                platform,
++            }
++        }
++
++        fn prepare(
++            &self,
++            request: PrepareTransferRequest,
++        ) -> Result<PreparedTransfer, WalletClientError> {
++            block_on(self.client.prepare_transfer(request))
++        }
++    }
++
++    /// Builds a preparation request with an optional gasless list.
++    fn prepare_request(
++        expiration: SendExpiration,
++        messages: Vec<SendMessage>,
++        gasless_messages: Option<Vec<SendMessage>>,
++    ) -> PrepareTransferRequest {
++        PrepareTransferRequest {
++            operation_id: NonEmptyString::try_from(OPERATION).expect("operation ID"),
++            intent: SendIntent {
++                expiration,
++                messages,
++            },
++            gasless_messages,
++        }
++    }
++
++    /// A value-only message to `DESTINATION`: an exact value, or the whole
++    /// balance for `None`, with an optional explicit mode.
++    fn message(nanograms: Option<u64>, send_mode: Option<i32>) -> SendMessage {
++        SendMessage {
++            destination: TonAddressString::try_from(DESTINATION).expect("destination"),
++            amount: nanograms.map_or(SendAmount::All, |nanograms| {
++                SendAmount::exact(nanograms.to_string()).expect("amount")
++            }),
++            body: SendMessageBody::Empty,
++            bounce: false,
++            state_init: None,
++            send_mode,
++        }
++    }
++
++    /// One mode-less message per value; `None` is a whole-balance message.
++    fn messages(nanograms: &[Option<u64>]) -> Vec<SendMessage> {
++        nanograms
++            .iter()
++            .map(|nanograms| message(*nanograms, None))
++            .collect()
++    }
++
++    /// A cell holding the 32-bit `bits` and references to `children`.
++    fn cell(bits: u32, children: &[TonCell]) -> TonCell {
++        let mut cell = TonCell::builder();
++        cell.write_num(&bits, 32).expect("bits fit one cell");
++        for child in children {
++            cell.write_ref(child.clone()).expect("child reference fits");
++        }
++        cell.build().expect("cell builds")
++    }
++
++    /// One served message described by literals, independent of the signer.
++    struct Literal {
++        destination: &'static str,
++        nanograms: u64,
++        bounce: bool,
++        /// The raw body cell's 32-bit opcode.
++        opcode: u32,
++        /// The code and data cells of an attached contract `StateInit`.
++        init: Option<(TonCell, TonCell)>,
++        mode: i32,
++    }
++
++    impl Literal {
++        /// The engine message a caller builds from these literal fields.
++        fn message(&self) -> SendMessage {
++            SendMessage {
++                destination: TonAddressString::try_from(self.destination)
++                    .expect("literal destination"),
++                amount: SendAmount::exact(self.nanograms.to_string()).expect("literal value"),
++                body: SendMessageBody::RawPayload {
++                    boc: Boc::try_from(cell(self.opcode, &[]).to_boc().expect("body encodes"))
++                        .expect("body BOC"),
++                },
++                bounce: self.bounce,
++                state_init: self.init.as_ref().map(|(code, data)| {
++                    let state_init = StateInit::new(code.clone(), data.clone());
++                    Boc::try_from(state_init.to_boc().expect("StateInit encodes"))
++                        .expect("StateInit BOC")
++                }),
++                send_mode: Some(self.mode),
++            }
++        }
++
++        /// Asserts that one decoded wallet action carries exactly these fields.
++        fn assert_carried_by(&self, mode: u8, action: &Msg<TonCell>, label: &str) {
++            assert_eq!(i32::from(mode), self.mode, "{label}: mode");
++            let CommonMsgInfo::Int(info) = &action.info else {
++                panic!("{label}: a wallet action must be an internal message");
++            };
++            let destination = TonAddress::from_str(self.destination).expect("literal address");
++            assert_eq!(
++                info.dst,
++                destination.to_msg_address(),
++                "{label}: destination"
++            );
++            assert_eq!(
++                info.value.coins,
++                TLBCoins::new(u128::from(self.nanograms)),
++                "{label}: value"
++            );
++            assert_eq!(info.bounce, self.bounce, "{label}: bounce");
++            assert_eq!(action.body.value, cell(self.opcode, &[]), "{label}: body");
++            let Some((code, data)) = &self.init else {
++                assert!(action.init.is_none(), "{label}: no StateInit was served");
++                return;
++            };
++            let init = &action
++                .init
++                .as_ref()
++                .unwrap_or_else(|| panic!("{label}: the action carries no StateInit"))
++                .value;
++            assert_eq!(init.split_depth, None, "{label}: split depth");
++            assert_eq!(init.tick_tock, None, "{label}: tick-tock");
++            assert_eq!(init.code.as_deref(), Some(code), "{label}: code");
++            assert_eq!(init.data.as_deref(), Some(data), "{label}: data");
++            assert!(init.library.is_empty(), "{label}: library");
++        }
++    }
++
++    /// Delivery form of a signed wallet request.
++    #[derive(Debug, Clone, Copy)]
++    enum Delivery {
++        External,
++        Internal,
++    }
++
++    /// The wallet request decoded from one returned signed BOC.
++    struct SignedRequest {
++        seqno: u32,
++        valid_until: u32,
++        actions: Vec<(u8, Msg<TonCell>)>,
++    }
++
++    /// Decodes a returned BOC with the vendored readers alone.
++    ///
++    /// The envelope must be `delivery`'s kind, address the configured wallet
++    /// and deploy nothing; the configured key must verify the request; each
++    /// action message must be consumed completely.
++    fn decode_signed_request(
++        boc: &Boc,
++        config: &WalletClientConfig,
++        delivery: Delivery,
++    ) -> SignedRequest {
++        let root = TonCell::from_boc(boc.as_bytes().to_vec()).expect("signed BOC parses");
++        let envelope = read_whole_message(&root);
++        assert!(envelope.init.is_none(), "an active wallet is not deployed");
++        let source = config.address.as_address();
++        let mut parser = envelope.body.value.parser();
++        let (body, signature, seqno, valid_until, modes, messages) = match delivery {
++            Delivery::External => {
++                let CommonMsgInfo::ExtIn(info) = &envelope.info else {
++                    panic!("an external request must use an external envelope");
++                };
++                assert_eq!(info.dst, source.to_msg_address_int());
++                let (request, signature) =
++                    WalletExtMsgBody::read_signed(&mut parser).expect("external request decodes");
++                let body = request.to_cell().expect("external request serializes");
++                let WalletExtMsgBody {
++                    valid_until,
++                    msg_seqno,
++                    msgs_modes,
++                    msgs,
++                    ..
++                } = request;
++                (body, signature, msg_seqno, valid_until, msgs_modes, msgs)
++            }
++            Delivery::Internal => {
++                let CommonMsgInfo::Int(info) = &envelope.info else {
++                    panic!("an internal request must use an internal envelope");
++                };
++                assert_eq!(info.dst, source.to_msg_address());
++                let (request, signature) = WalletInternalSignedBody::read_signed(&mut parser)
++                    .expect("internal request decodes");
++                let body = request.to_cell().expect("internal request serializes");
++                let WalletInternalSignedBody {
++                    valid_until,
++                    msg_seqno,
++                    msgs_modes,
++                    msgs,
++                    ..
++                } = request;
++                (body, signature, msg_seqno, valid_until, msgs_modes, msgs)
++            }
++        };
++        let public_key =
++            <[u8; 32]>::try_from(config.public_key.as_slice()).expect("32-byte public key");
++        VerifyingKey::from_bytes(&public_key)
++            .expect("public key is valid")
++            .verify_strict(
++                body.cell_hash().expect("request hashes").as_slice(),
++                &Signature::from_slice(&signature).expect("64-byte signature"),
++            )
++            .expect("the configured wallet key signs the request");
++        assert_eq!(modes.len(), messages.len());
++        SignedRequest {
++            seqno,
++            valid_until,
++            actions: modes
++                .into_iter()
++                .zip(messages.iter().map(read_whole_message))
++                .collect(),
++        }
++    }
++
++    /// Reads one message cell and requires that nothing follows the message.
++    fn read_whole_message(cell: &TonCell) -> Msg<TonCell> {
++        let mut parser = cell.parser();
++        let message = Msg::<TonCell>::read(&mut parser).expect("message decodes");
++        parser
++            .ensure_empty()
++            .expect("message has no trailing bits or references");
++        message
++    }
++
++    /// Asserts that a decoded request carries exactly `expected`, in order.
++    fn assert_carries(request: &SignedRequest, expected: &[Literal], label: &str) {
++        assert_eq!(
++            request.actions.len(),
++            expected.len(),
++            "{label}: action count"
++        );
++        for (index, ((mode, action), literal)) in request.actions.iter().zip(expected).enumerate() {
++            literal.assert_carried_by(*mode, action, &format!("{label}, action {index}"));
++        }
++    }
++
++    /// Signs a gasless list that differs from the intent in every field.
++    ///
++    /// Each internal-only gasless mode is signed exactly beside a normal mode
++    /// 2 or 3. The external form carries only the intent, the internal form
++    /// only the list, and both come from one account and `seqno` resolution,
++    /// one expiry and one secret read, without a journal call or submission.
++    #[test]
++    fn distinct_gasless_messages_are_signed_under_one_resolution_and_one_secret_read() {
++        let config = client_config();
++        let code = cell(0xc0de_c0de, &[cell(0x0000_0001, &[])]);
++        let data = cell(0xda7a_da7a, &[cell(0x0000_0002, &[])]);
++        let runs = [(0, 2), (1, 3), (16, 2), (17, 3)].map(|(gasless_mode, normal_mode)| {
++            let normal = vec![Literal {
++                destination: DESTINATION,
++                nanograms: 1_000,
++                bounce: false,
++                opcode: 0x0a0a_0a0a,
++                init: None,
++                mode: normal_mode,
++            }];
++            let gasless = vec![
++                Literal {
++                    destination: DESTINATION_B,
++                    nanograms: 700,
++                    bounce: true,
++                    opcode: 0x0b0b_0b0b,
++                    init: Some((code.clone(), data.clone())),
++                    mode: gasless_mode,
++                },
++                Literal {
++                    destination: DESTINATION_C,
++                    nanograms: 300,
++                    bounce: false,
++                    opcode: 0x0c0c_0c0c,
++                    init: None,
++                    mode: 18,
++                },
++            ];
++            let scripted = ScriptedClient::new(1_000_000);
++            let result = scripted.prepare(prepare_request(
++                SendExpiration::Exact {
++                    unix_timestamp: VALID_UNTIL,
++                },
++                normal.iter().map(Literal::message).collect(),
++                Some(gasless.iter().map(Literal::message).collect()),
++            ));
++            let label = format!("gasless mode {gasless_mode} beside normal mode {normal_mode}");
++            (label, normal, gasless, scripted, result)
++        });
++        let refused = runs
++            .iter()
++            .filter_map(|(label, _, _, _, result)| {
++                result
++                    .as_ref()
++                    .err()
++                    .map(|error| format!("{label}: {error}"))
++            })
++            .collect::<Vec<_>>();
++        assert!(
++            refused.is_empty(),
++            "accepted modes were refused: {refused:#?}"
++        );
++
++        for (label, normal, gasless, scripted, result) in runs {
++            let prepared = result.expect("both forms are signed");
++            assert_eq!(prepared.operation_id.as_str(), OPERATION, "{label}");
++            assert_eq!(prepared.seqno, 42, "{label}");
++            assert_eq!(prepared.valid_until, 1_900_000_000, "{label}");
++            for (boc, delivery, expected) in [
++                (&prepared.external_boc, Delivery::External, &normal),
++                (&prepared.internal_boc, Delivery::Internal, &gasless),
++            ] {
++                let label = format!("{label}, {delivery:?} form");
++                let request = decode_signed_request(boc, &config, delivery);
++                assert_eq!(request.seqno, 42, "{label}: seqno");
++                assert_eq!(request.valid_until, 1_900_000_000, "{label}: expiry");
++                assert_carries(&request, expected, &label);
++            }
++            assert_eq!(
++                scripted.http.calls(),
++                [Some(ProviderCall::Account), Some(ProviderCall::Seqno)],
++                "{label}"
++            );
++            assert_eq!(
++                scripted.platform.reasons(),
++                [SecretAccessReason::SignTransfer],
++                "{label}"
++            );
++        }
++    }
++
++    /// Without a list, and with a list equal to the intent, the public engine
++    /// returns exactly the standalone external and internal signers' BOCs.
++    #[test]
++    fn omitted_and_equal_gasless_lists_keep_the_existing_pair() {
++        let config = client_config();
++        let account = FreshSendAccount {
++            status: AccountStatus::Active,
++            seqno: 42,
++        };
++        let exact = SendExpiration::Exact {
++            unix_timestamp: VALID_UNTIL,
++        };
++        let cases = [
++            (
++                "mode-less exact values, engine expiry",
++                SendExpiration::EngineDefault,
++                301,
++                messages(&[Some(1_000), Some(2_000)]),
++            ),
++            (
++                "an exact value with mode 3",
++                exact.clone(),
++                1_900_000_000,
++                vec![message(Some(1_000), Some(3))],
++            ),
++            (
++                "a mode-less whole balance",
++                exact,
++                1_900_000_000,
++                messages(&[None]),
++            ),
++        ];
++
++        for (name, expiration, valid_until, messages) in cases {
++            let request = SendRequest {
++                operation_id: NonEmptyString::try_from(OPERATION).expect("operation ID"),
++                force: false,
++                intent: SendIntent {
++                    expiration,
++                    messages,
++                },
++            };
++            let sign = |internal: bool| {
++                let signer = if internal {
++                    crate::wallet::transfer::prepare_internal_signed_transfer
++                } else {
++                    crate::wallet::transfer::prepare_transfer
++                };
++                signer(
++                    MNEMONIC.as_bytes(),
++                    &config.record_id,
++                    &config.address,
++                    config.network,
++                    &request,
++                    &account,
++                    valid_until,
++                )
++                .expect("the standalone signer builds")
++                .signed_boc
++            };
++            let (external, internal) = (sign(false), sign(true));
++
++            for (list, gasless_messages) in [
++                ("without a list", None),
++                ("with an equal list", Some(request.intent.messages.clone())),
++            ] {
++                let label = format!("{name}, {list}");
++                let scripted = ScriptedClient::new(1_000_000);
++                let prepared = scripted
++                    .prepare(PrepareTransferRequest {
++                        operation_id: request.operation_id.clone(),
++                        intent: request.intent.clone(),
++                        gasless_messages,
++                    })
++                    .expect("both forms are signed");
++                assert_eq!(prepared.external_boc, external, "{label}: external form");
++                assert_eq!(prepared.internal_boc, internal, "{label}: internal form");
++                assert_eq!(prepared.seqno, 42, "{label}");
++                assert_eq!(prepared.valid_until, valid_until, "{label}");
++                for (boc, delivery) in [
++                    (&prepared.external_boc, Delivery::External),
++                    (&prepared.internal_boc, Delivery::Internal),
++                ] {
++                    let signed = decode_signed_request(boc, &config, delivery);
++                    assert_eq!(signed.seqno, 42, "{label}, {delivery:?}");
++                    assert_eq!(
++                        u64::from(signed.valid_until),
++                        valid_until,
++                        "{label}, {delivery:?}"
++                    );
++                }
++                assert_eq!(
++                    scripted.http.calls(),
++                    [Some(ProviderCall::Account), Some(ProviderCall::Seqno)],
++                    "{label}"
++                );
++                assert_eq!(
++                    scripted.platform.reasons(),
++                    [SecretAccessReason::SignTransfer],
++                    "{label}"
++                );
++            }
++        }
++    }
++
++    /// Refuses an invalid gasless list, or an invalid intent beside any list,
++    /// by name before any provider request or secret read.
++    #[test]
++    fn gasless_lists_are_refused_before_provider_or_secret_access() {
++        let http = Arc::new(OfflineHost {
++            requests: Mutex::new(Vec::new()),
++        });
++        let platform = Arc::new(SecretHost {
++            reasons: Mutex::new(Vec::new()),
++        });
++        let client = WalletClient::new(client_config(), http.clone(), platform.clone())
++            .expect("client builds");
++        let exact = |mode| message(Some(1), mode);
++        let refused_mode = |mode, diagnostic: &str| WalletClientError::UnsupportedSendMode {
++            mode,
++            diagnostic: diagnostic.to_owned(),
++        };
++        let cases = [
++            (
++                "normal mode 1 beside a valid list",
++                exact(Some(1)),
++                vec![exact(Some(1))],
++                refused_mode(1, MISSING_IGNORE_ERRORS),
++            ),
++            (
++                "gasless mode 128",
++                exact(Some(3)),
++                vec![exact(Some(128))],
++                refused_mode(
++                    128,
++                    "flag 128 would send the whole balance instead of the message value",
++                ),
++            ),
++            (
++                "gasless mode 256",
++                exact(Some(3)),
++                vec![exact(Some(256))],
++                refused_mode(256, "the mode does not fit the wallet action's 8-bit field"),
++            ),
++            (
++                "an empty gasless list",
++                exact(None),
++                Vec::new(),
++                WalletClientError::InvalidSendRequest,
++            ),
++            (
++                "256 gasless messages",
++                exact(None),
++                vec![exact(None); 256],
++                WalletClientError::InvalidSendRequest,
++            ),
++            (
++                "a whole-balance gasless message beside an exact one",
++                exact(None),
++                vec![message(None, None), exact(None)],
++                WalletClientError::InvalidSendRequest,
++            ),
++            (
++                "a whole-balance gasless message with mode 2",
++                exact(None),
++                vec![message(None, Some(2))],
++                refused_mode(2, "a whole-balance transfer keeps its own send mode"),
++            ),
++            (
++                "a refused third gasless message",
++                exact(None),
++                vec![exact(Some(0)), exact(Some(17)), exact(Some(64))],
++                refused_mode(
++                    64,
++                    "flag 64 would add the remaining inbound value to the message value",
++                ),
++            ),
++            (
++                "both lists refused",
++                exact(Some(17)),
++                vec![exact(Some(128))],
++                refused_mode(17, MISSING_IGNORE_ERRORS),
++            ),
++        ];
++
++        for (name, normal, gasless, expected) in cases {
++            let request =
++                prepare_request(SendExpiration::EngineDefault, vec![normal], Some(gasless));
++            let error = block_on(client.prepare_transfer(request)).expect_err(name);
++            assert_eq!(error, expected, "{name}");
++            assert_eq!(http.request_count(), 0, "{name}");
++            assert_eq!(platform.read_count(), 0, "{name}");
++        }
++
++        // Control: valid lists with internal-only gasless modes reach the
++        // offline provider once, and no refusal left a preparation in progress.
++        let request = prepare_request(
++            SendExpiration::EngineDefault,
++            vec![exact(Some(3))],
++            Some(vec![exact(Some(0)), exact(Some(17))]),
++        );
++        let error = block_on(client.prepare_transfer(request))
++            .expect_err("the offline provider fails the preparation");
++        assert!(
++            !matches!(
++                error,
++                WalletClientError::UnsupportedSendMode { .. }
++                    | WalletClientError::InvalidSendRequest
++            ),
++            "{error:?}"
++        );
++        assert_eq!(http.request_count(), 1);
++        assert_eq!(platform.read_count(), 0);
++    }
++
++    /// One balance-table preparation; `None` values are whole-balance messages.
++    struct BalanceRow {
++        name: &'static str,
++        normal: &'static [Option<u64>],
++        gasless: &'static [Option<u64>],
++        balance: u64,
++        /// The total the refusal names, or `None` when both forms are signed.
++        refused: Option<u64>,
++    }
++
++    const fn row(
++        name: &'static str,
++        normal: &'static [Option<u64>],
++        gasless: &'static [Option<u64>],
++        balance: u64,
++        refused: Option<u64>,
++    ) -> BalanceRow {
++        BalanceRow {
++            name,
++            normal,
++            gasless,
++            balance,
++            refused,
++        }
++    }
++
++    /// What a preparation returned, the provider calls and the secret reads.
++    type Observed = (
++        Result<(), WalletClientError>,
++        Vec<Option<ProviderCall>>,
++        Vec<SecretAccessReason>,
++    );
++
++    /// Every exact alternative must fit the fresh balance on its own; the
++    /// alternatives are never added, and a whole-balance form has no total.
++    #[test]
++    fn the_balance_rule_checks_every_exact_alternative() {
++        let rows = [
++            row(
++                "gasless larger, at its total",
++                &[Some(1_000)],
++                &[Some(1_200), Some(800)],
++                2_000,
++                None,
++            ),
++            row(
++                "gasless larger, one below",
++                &[Some(1_000)],
++                &[Some(1_200), Some(800)],
++                1_999,
++                Some(2_000),
++            ),
++            row(
++                "normal larger, at its total",
++                &[Some(1_500), Some(500)],
++                &[Some(1_000)],
++                2_000,
++                None,
++            ),
++            row(
++                "normal larger, one below",
++                &[Some(1_500), Some(500)],
++                &[Some(1_000)],
++                1_999,
++                Some(2_000),
++            ),
++            row(
++                "exact normal, whole-balance gasless, at the total",
++                &[Some(1_000)],
++                &[None],
++                1_000,
++                None,
++            ),
++            row(
++                "exact normal, whole-balance gasless, one below",
++                &[Some(1_000)],
++                &[None],
++                999,
++                Some(1_000),
++            ),
++            row(
++                "whole-balance normal, exact gasless, at the total",
++                &[None],
++                &[Some(1_000)],
++                1_000,
++                None,
++            ),
++            row(
++                "whole-balance normal, exact gasless, one below",
++                &[None],
++                &[Some(1_000)],
++                999,
++                Some(1_000),
++            ),
++            row(
++                "whole balance in both forms at zero",
++                &[None],
++                &[None],
++                0,
++                None,
++            ),
++        ];
++        let account = Some(ProviderCall::Account);
++        let seqno = Some(ProviderCall::Seqno);
++        let observe = |scripted: &ScriptedClient, result: Result<PreparedTransfer, _>| {
++            (
++                result.map(drop),
++                scripted.http.calls(),
++                scripted.platform.reasons(),
++            )
++        };
++        let mut failures = Vec::new();
++
++        for row in rows {
++            let scripted = ScriptedClient::new(row.balance);
++            let result = scripted.prepare(prepare_request(
++                SendExpiration::EngineDefault,
++                messages(row.normal),
++                Some(messages(row.gasless)),
++            ));
++            let observed: Observed = observe(&scripted, result);
++            let expected: Observed = row.refused.map_or_else(
++                || {
++                    (
++                        Ok(()),
++                        vec![account, seqno],
++                        vec![SecretAccessReason::SignTransfer],
++                    )
++                },
++                |requested| {
++                    let error = WalletClientError::InsufficientBalance {
++                        available_nanograms: UnsignedDecimalString::from(row.balance),
++                        requested_nanograms: UnsignedDecimalString::from(requested),
++                    };
++                    (Err(error), vec![account], Vec::new())
++                },
++            );
++            if observed != expected {
++                failures.push(format!(
++                    "{}: expected {expected:?}, observed {observed:?}",
++                    row.name
++                ));
++                continue;
++            }
++            if row.refused.is_none() {
++                continue;
++            }
++
++            // The refusal released the preparation: smaller values that fit
++            // are signed on the same client.
++            let retry = scripted.prepare(prepare_request(
++                SendExpiration::EngineDefault,
++                messages(&[Some(1)]),
++                Some(messages(&[Some(1)])),
++            ));
++            let observed = observe(&scripted, retry);
++            let expected: Observed = (
++                Ok(()),
++                vec![account, account, seqno],
++                vec![SecretAccessReason::SignTransfer],
++            );
++            if observed != expected {
++                failures.push(format!(
++                    "{} retry: expected {expected:?}, observed {observed:?}",
++                    row.name
++                ));
++            }
++        }
++        assert!(failures.is_empty(), "balance rows failed: {failures:#?}");
 +    }
 +}
 diff --git a/src/engine/preview.rs b/src/engine/preview.rs
@@ -3736,7 +4746,7 @@ index caf4a9d..25598b0 100644
              seqno: 7,
              needs_state_init: false,
 diff --git a/src/wallet/transfer.rs b/src/wallet/transfer.rs
-index 2737a9e..7666626 100644
+index 2737a9e..401dd17 100644
 --- a/src/wallet/transfer.rs
 +++ b/src/wallet/transfer.rs
 @@ -122,7 +122,7 @@ pub(crate) fn prepare_transfer(
@@ -3748,7 +4758,36 @@ index 2737a9e..7666626 100644
      let messages = request.intent.messages.clone();
      let (internal, send_modes) = build_internal_messages(&messages)?;
  
-@@ -269,7 +269,7 @@ pub(crate) fn prepare_transfer_emulation(
+@@ -226,12 +226,19 @@ pub(crate) fn prepare_internal_signed_transfer(
+ }
+ 
+ /// Builds both supported delivery forms from one account snapshot and expiry.
++///
++/// The internal form signs `gasless_request` when given, otherwise `request`.
++#[allow(
++    clippy::too_many_arguments,
++    reason = "both delivery forms must be signed from one explicit account snapshot and expiry"
++)]
+ pub(crate) fn prepare_transfer_pair(
+     mnemonic_bytes: &[u8],
+     record_id: &NonEmptyString,
+     source: &TonAddressString,
+     network: Network,
+     request: &SendRequest,
++    gasless_request: Option<&SendRequest>,
+     account: &FreshSendAccount,
+     valid_until: u64,
+ ) -> Result<(PreparedTransfer, PreparedTransfer), TransferError> {
+@@ -249,7 +256,7 @@ pub(crate) fn prepare_transfer_pair(
+         record_id,
+         source,
+         network,
+-        request,
++        gasless_request.unwrap_or(request),
+         account,
+         valid_until,
+     )?;
+@@ -269,7 +276,7 @@ pub(crate) fn prepare_transfer_emulation(
      account: &FreshSendAccount,
      valid_until: u64,
  ) -> Result<Boc, TransferError> {
@@ -3757,7 +4796,7 @@ index 2737a9e..7666626 100644
      let (internal, send_modes) = build_internal_messages(&request.intent.messages)?;
      let wallet_id = match network {
          Network::Mainnet => WALLET_SUBWALLET_ID_DEFAULT,
-@@ -322,6 +322,24 @@ pub(crate) fn prepare_transfer_emulation(
+@@ -322,6 +329,24 @@ pub(crate) fn prepare_transfer_emulation(
          .map_err(TransferError::InvalidBoc)
  }
  
@@ -3782,7 +4821,7 @@ index 2737a9e..7666626 100644
  /// Serializes one ordered message batch and selects each wallet send mode.
  fn build_internal_messages(
      send_messages: &[SendMessage],
-@@ -338,7 +356,8 @@ fn build_internal_messages(
+@@ -338,7 +363,8 @@ fn build_internal_messages(
  
  /// Serializes one complete send message and selects its wallet send mode.
  fn build_internal_message(send_message: &SendMessage) -> Result<(TonCell, u8), TransferError> {
@@ -3792,7 +4831,7 @@ index 2737a9e..7666626 100644
          SendAmount::Exact { nanograms } => {
              let amount = nanograms
                  .try_to::<u128>()
-@@ -347,6 +366,7 @@ fn build_internal_message(send_message: &SendMessage) -> Result<(TonCell, u8), T
+@@ -347,6 +373,7 @@ fn build_internal_message(send_message: &SendMessage) -> Result<(TonCell, u8), T
          }
          SendAmount::All => (0, ALL_BALANCE_SEND_MODE),
      };
@@ -3800,7 +4839,7 @@ index 2737a9e..7666626 100644
      let mut info = CommonMsgInfoInt::new(
          send_message.destination.as_address().to_msg_address(),
          TLBCoins::new(amount_nanograms),
-@@ -397,11 +417,17 @@ pub(crate) fn derive_source(
+@@ -397,11 +424,17 @@ pub(crate) fn derive_source(
  mod tests {
      use std::str::FromStr;
  
@@ -3818,7 +4857,15 @@ index 2737a9e..7666626 100644
  
      use super::*;
  
-@@ -792,6 +818,518 @@ mod tests {
+@@ -760,6 +793,7 @@ mod tests {
+             &source,
+             Network::Testnet,
+             &request,
++            None,
+             &account,
+             valid_until,
+         )
+@@ -792,6 +826,518 @@ mod tests {
          assert_eq!(external_body.valid_until, valid_until as u32);
      }
  
@@ -4337,7 +5384,7 @@ index 2737a9e..7666626 100644
      #[test]
      fn rotated_wallet_requests_use_the_signing_key_and_anchor_address() {
          let source = derive_source(ROTATED_MNEMONIC.as_bytes(), Network::Testnet)
-@@ -943,6 +1481,301 @@ mod tests {
+@@ -943,6 +1489,302 @@ mod tests {
              body,
              bounce: false,
              state_init,
@@ -4411,6 +5458,7 @@ index 2737a9e..7666626 100644
 +                &self.source,
 +                Network::Testnet,
 +                request,
++                None,
 +                &self.account,
 +                VALID_UNTIL,
 +            )
