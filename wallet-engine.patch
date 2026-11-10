@@ -1,8 +1,816 @@
+diff --git a/examples/tui/src/app.rs b/examples/tui/src/app.rs
+index 3f7cd71..c2853b3 100644
+--- a/examples/tui/src/app.rs
++++ b/examples/tui/src/app.rs
+@@ -629,6 +629,7 @@ impl App {
+                 body: SendMessageBody::Empty,
+                 bounce: false,
+                 state_init: None,
++                send_mode: None,
+             }],
+         };
+         self.status = Some("Checking transfer…".to_owned());
+diff --git a/examples/tui/src/ton_connect.rs b/examples/tui/src/ton_connect.rs
+index 5d7eeb3..230d067 100644
+--- a/examples/tui/src/ton_connect.rs
++++ b/examples/tui/src/ton_connect.rs
+@@ -775,6 +775,7 @@ fn engine_transaction_intent(
+             }),
+             bounce: false,
+             state_init,
++            send_mode: None,
+         });
+     }
+     let operation_id = NonEmptyString::try_from(format!("ton-connect-{session_id}-{request_id}"))
+diff --git a/src/domain/error.rs b/src/domain/error.rs
+index 26b26f4..a03aada 100644
+--- a/src/domain/error.rs
++++ b/src/domain/error.rs
+@@ -1,6 +1,6 @@
+ //! Resource state and errors exposed by wallet operations.
+ 
+-use super::AccountStatus;
++use super::{AccountStatus, SendIntentError};
+ use crate::{HttpHostErrorKind, UnsignedDecimalString};
+ 
+ /// Replaces control characters and bounds diagnostics stored in public errors.
+@@ -333,4 +333,28 @@ pub enum WalletClientError {
+         /// Bounded developer-facing reason that contains no secret material.
+         diagnostic: String,
+     },
++    /// A message names a send mode that the engine cannot sign exactly as given.
++    ///
++    /// No signed message is produced for the request.
++    #[error("send mode {mode} is not supported: {diagnostic}")]
++    UnsupportedSendMode {
++        /// The refused mode exactly as the caller supplied it.
++        mode: i32,
++        /// A fixed reason that contains no message data or secret material.
++        diagnostic: String,
++    },
++}
++
++impl From<SendIntentError> for WalletClientError {
++    fn from(error: SendIntentError) -> Self {
++        match error {
++            SendIntentError::InvalidMessageCount | SendIntentError::WholeBalanceInBatch => {
++                Self::InvalidSendRequest
++            }
++            SendIntentError::UnsupportedSendMode { mode, reason } => Self::UnsupportedSendMode {
++                mode,
++                diagnostic: reason.to_string(),
++            },
++        }
++    }
+ }
+diff --git a/src/domain/send.rs b/src/domain/send.rs
+index 5fd95f5..83a9344 100644
+--- a/src/domain/send.rs
++++ b/src/domain/send.rs
+@@ -2,6 +2,11 @@
+ 
+ use std::ops::Add;
+ 
++use ton::block_tlb::{
++    SEND_MODE_CARRY_ALL_BALANCE, SEND_MODE_CARRY_ALL_REMAINING_MESSAGE_VALUE,
++    SEND_MODE_DESTROY_ACCOUNT, SEND_MODE_IGNORE_ERRORS,
++};
++
+ use crate::{
+     Base64Hash, Boc, NonEmptyString, TonAddressString, UnsignedDecimalString,
+     UnsignedDecimalStringError,
+@@ -71,6 +76,51 @@ pub struct SendMessage {
+     pub bounce: bool,
+     /// Optional destination-contract `StateInit` attached independently of the body.
+     pub state_init: Option<Boc>,
++    /// Optional wallet send mode signed exactly as given for this message.
++    ///
++    /// `None` keeps the engine's modes: 3 for an exact value and 130 for
++    /// [`SendAmount::All`]. An explicit mode needs an exact value and can combine
++    /// only +1 (pay fees separately), +2 (ignore errors) and +16 (bounce on action
++    /// failure); an external message also needs +2. The engine never changes a
++    /// given mode and refuses any other value with
++    /// [`crate::WalletClientError::UnsupportedSendMode`].
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    #[uniffi(default = None)]
++    pub send_mode: Option<i32>,
++}
++
++/// Flags that no send mode defines.
++const UNDEFINED_SEND_MODE_FLAGS: u8 = 4 | 8;
++
++impl SendMessage {
++    /// Validates the explicit send mode accepted by every delivery form.
++    ///
++    /// `None` means the message keeps the engine's mode for its amount.
++    pub(crate) fn explicit_send_mode(&self) -> Result<Option<u8>, SendIntentError> {
++        let Some(mode) = self.send_mode else {
++            return Ok(None);
++        };
++        let refuse = |reason| SendIntentError::UnsupportedSendMode { mode, reason };
++        let Ok(flags) = u8::try_from(mode) else {
++            return Err(refuse(SendModeRefusal::OutOfRange));
++        };
++        if matches!(self.amount, SendAmount::All) {
++            return Err(refuse(SendModeRefusal::WholeBalanceAmount));
++        }
++        if flags & UNDEFINED_SEND_MODE_FLAGS != 0 {
++            return Err(refuse(SendModeRefusal::UndefinedFlag));
++        }
++        if flags & SEND_MODE_CARRY_ALL_BALANCE != 0 {
++            return Err(refuse(SendModeRefusal::CarryAllBalance));
++        }
++        if flags & SEND_MODE_CARRY_ALL_REMAINING_MESSAGE_VALUE != 0 {
++            return Err(refuse(SendModeRefusal::CarryInboundValue));
++        }
++        if flags & SEND_MODE_DESTROY_ACCOUNT != 0 {
++            return Err(refuse(SendModeRefusal::DestroyAccount));
++        }
++        Ok(Some(flags))
++    }
+ }
+ 
+ /// The policy used to select the wallet message expiration boundary.
+@@ -108,12 +158,17 @@ impl SendIntent {
+     ///
+     /// `None` identifies the single whole-balance form, whose final value can
+     /// only be determined by the wallet contract after fees are charged.
++    /// Every explicit send mode must pass the checks shared by both delivery
++    /// forms; [`Self::exact_value_total_for_external`] adds the external rule.
+     pub(crate) fn exact_value_total(
+         &self,
+     ) -> Result<Option<UnsignedDecimalString>, SendIntentError> {
+         if self.messages.is_empty() || self.messages.len() > 255 {
+             return Err(SendIntentError::InvalidMessageCount);
+         }
++        for message in &self.messages {
++            let _ = message.explicit_send_mode()?;
++        }
+         if self.messages.len() > 1
+             && self
+                 .messages
+@@ -132,6 +187,29 @@ impl SendIntent {
+         }
+         Ok(Some(total))
+     }
++
++    /// Validates an intent signed as an incoming external message.
++    ///
++    /// External requests also need +2 (ignore errors) in every explicit mode:
++    /// a failed action would otherwise abort the request with its seqno
++    /// uncommitted, so the same request would be processed again until it
++    /// expires.
++    pub(crate) fn exact_value_total_for_external(
++        &self,
++    ) -> Result<Option<UnsignedDecimalString>, SendIntentError> {
++        let total = self.exact_value_total()?;
++        for message in &self.messages {
++            if let Some(flags) = message.explicit_send_mode()?
++                && flags & SEND_MODE_IGNORE_ERRORS == 0
++            {
++                return Err(SendIntentError::UnsupportedSendMode {
++                    mode: i32::from(flags),
++                    reason: SendModeRefusal::MissingIgnoreErrors,
++                });
++            }
++        }
++        Ok(total)
++    }
+ }
+ 
+ /// Reports a transfer batch that Wallet V5 cannot represent unambiguously.
+@@ -143,6 +221,51 @@ pub(crate) enum SendIntentError {
+     /// Carry-all-balance mode cannot be combined with another outgoing message.
+     #[error("whole-balance transfer must be the only message in its batch")]
+     WholeBalanceInBatch,
++    /// An explicit message send mode cannot be signed exactly as given.
++    #[error("send mode {mode} is not supported: {reason}")]
++    UnsupportedSendMode {
++        /// The explicit mode exactly as the caller supplied it.
++        mode: i32,
++        /// The first refusal rule the mode matched.
++        reason: SendModeRefusal,
++    },
++}
++
++/// Why an explicit send mode is refused, in checking order.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum SendModeRefusal {
++    /// The value does not fit the wallet action's 8-bit mode.
++    OutOfRange,
++    /// The whole-balance amount keeps its own carry-all mode.
++    WholeBalanceAmount,
++    /// Flag 4 or 8 is not a send-mode flag.
++    UndefinedFlag,
++    /// +128 sends the whole balance instead of the message value.
++    CarryAllBalance,
++    /// +64 adds the remaining inbound value to the message value.
++    CarryInboundValue,
++    /// +32 requests destruction of the wallet account.
++    DestroyAccount,
++    /// An external message needs +2, which keeps a failed action replay-safe.
++    MissingIgnoreErrors,
++}
++
++impl std::fmt::Display for SendModeRefusal {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str(match self {
++            Self::OutOfRange => "the mode does not fit the wallet action's 8-bit field",
++            Self::WholeBalanceAmount => "a whole-balance transfer keeps its own send mode",
++            Self::UndefinedFlag => "the mode sets flag 4 or 8, which no send mode defines",
++            Self::CarryAllBalance => {
++                "flag 128 would send the whole balance instead of the message value"
++            }
++            Self::CarryInboundValue => {
++                "flag 64 would add the remaining inbound value to the message value"
++            }
++            Self::DestroyAccount => "flag 32 would request destruction of the wallet account",
++            Self::MissingIgnoreErrors => "an external wallet message needs flag 2 (ignore errors)",
++        })
++    }
+ }
+ 
+ /// Requests one signed wallet transfer.
+@@ -454,9 +577,10 @@ pub struct SendResult {
+ #[cfg(test)]
+ mod tests {
+     use super::{
+-        SendAmount, SendExpiration, SendIntent, SendMessage, SendMessageBody, SendRequest,
++        SendAmount, SendExpiration, SendIntent, SendIntentError, SendMessage, SendMessageBody,
++        SendModeRefusal, SendRequest,
+     };
+-    use crate::{Boc, NonEmptyString, TonAddressString};
++    use crate::{Boc, NonEmptyString, TonAddressString, UnsignedDecimalString, WalletClientError};
+     use ton::ton_core::cell::TonCell;
+ 
+     #[test]
+@@ -548,6 +672,291 @@ mod tests {
+         assert!(!decoded.intent.messages[0].bounce);
+     }
+ 
++    /// Keeps mode-less JSON unchanged and preserves an explicit signed mode.
++    #[test]
++    fn send_mode_json_is_omitted_when_absent_and_round_trips_when_present() {
++        let request = send_request(SendExpiration::EngineDefault, SendMessageBody::Empty);
++        let json = serde_json::to_value(&request).expect("send request serializes");
++        assert!(json["intent"]["messages"][0].get("sendMode").is_none());
++
++        let mut explicit = request;
++        for mode in [-1, 19, 256] {
++            explicit.intent.messages[0].send_mode = Some(mode);
++            let json = serde_json::to_value(&explicit).expect("send request serializes");
++            assert_eq!(json["intent"]["messages"][0]["sendMode"], mode);
++
++            let decoded: SendRequest =
++                serde_json::from_value(json).expect("send request deserializes");
++            assert_eq!(decoded, explicit);
++        }
++    }
++
++    /// Reads a message persisted before send modes existed as a mode-less one.
++    #[test]
++    fn legacy_send_message_json_reads_without_a_send_mode() {
++        let legacy = r#"{"destination":"0:2222222222222222222222222222222222222222222222222222222222222222","amount":{"kind":"exact","nanograms":"1"},"body":{"kind":"empty"},"bounce":false,"stateInit":null}"#;
++
++        let message: SendMessage = serde_json::from_str(legacy).expect("legacy message decodes");
++
++        assert_eq!(message.send_mode, None);
++        assert_eq!(
++            serde_json::to_string(&message).expect("message serializes"),
++            legacy
++        );
++    }
++
++    /// Lists the explicit modes one exact-value message accepts under `validate`.
++    ///
++    /// Sweeps every value around the 8-bit action field plus the `i32`
++    /// extremes and 1024, the fee-estimation flag that only `SENDMSG` defines.
++    fn accepted_send_modes(
++        validate: impl Fn(&SendIntent) -> Result<Option<UnsignedDecimalString>, SendIntentError>,
++    ) -> Vec<i32> {
++        (-1..=256)
++            .chain([i32::MIN, 1024, i32::MAX])
++            .filter(|&mode| {
++                let mut request =
++                    send_request(SendExpiration::EngineDefault, SendMessageBody::Empty);
++                request.intent.messages[0].send_mode = Some(mode);
++                let accepted = validate(&request.intent);
++                if let Ok(total) = &accepted {
++                    assert_eq!(total, &Some(UnsignedDecimalString::from(1_u64)));
++                }
++                accepted.is_ok()
++            })
++            .collect()
++    }
++
++    #[test]
++    fn explicit_send_modes_accept_only_the_literal_sets() {
++        assert_eq!(
++            accepted_send_modes(SendIntent::exact_value_total),
++            [0, 1, 2, 3, 16, 17, 18, 19]
++        );
++        assert_eq!(
++            accepted_send_modes(SendIntent::exact_value_total_for_external),
++            [2, 3, 18, 19]
++        );
++    }
++
++    /// Returns a one-message intent whose message names `mode` explicitly.
++    fn intent_with_mode(amount: SendAmount, mode: i32) -> SendIntent {
++        let mut intent = send_request(SendExpiration::EngineDefault, SendMessageBody::Empty).intent;
++        intent.messages[0].amount = amount;
++        intent.messages[0].send_mode = Some(mode);
++        intent
++    }
++
++    /// Names the supplied signed value and the first matching rule in order.
++    #[test]
++    fn refused_send_modes_name_the_supplied_value_and_the_first_reason() {
++        use SendModeRefusal::{
++            CarryAllBalance, CarryInboundValue, DestroyAccount, MissingIgnoreErrors, OutOfRange,
++            UndefinedFlag,
++        };
++
++        let refused_in_every_form = [
++            (i32::MIN, OutOfRange),
++            (-1, OutOfRange),
++            (256, OutOfRange),
++            (1024, OutOfRange),
++            (i32::MAX, OutOfRange),
++            (4, UndefinedFlag),
++            (8, UndefinedFlag),
++            (36, UndefinedFlag),
++            (255, UndefinedFlag),
++            (128, CarryAllBalance),
++            (130, CarryAllBalance),
++            (160, CarryAllBalance),
++            (192, CarryAllBalance),
++            (64, CarryInboundValue),
++            (66, CarryInboundValue),
++            (96, CarryInboundValue),
++            (32, DestroyAccount),
++            (34, DestroyAccount),
++        ];
++        for (mode, reason) in refused_in_every_form {
++            let intent = intent_with_mode(SendAmount::exact("1").expect("valid amount"), mode);
++            let refused = Err(SendIntentError::UnsupportedSendMode { mode, reason });
++
++            assert_eq!(intent.exact_value_total(), refused, "mode {mode}");
++            assert_eq!(
++                intent.exact_value_total_for_external(),
++                refused,
++                "mode {mode}"
++            );
++        }
++
++        for mode in [0, 1, 16, 17] {
++            let intent = intent_with_mode(SendAmount::exact("1").expect("valid amount"), mode);
++
++            assert_eq!(
++                intent.exact_value_total(),
++                Ok(Some(UnsignedDecimalString::from(1_u64))),
++                "mode {mode}"
++            );
++            assert_eq!(
++                intent.exact_value_total_for_external(),
++                Err(SendIntentError::UnsupportedSendMode {
++                    mode,
++                    reason: MissingIgnoreErrors,
++                }),
++                "mode {mode}"
++            );
++        }
++    }
++
++    /// Keeps the whole-balance form on its own mode instead of a served one.
++    #[test]
++    fn whole_balance_messages_refuse_every_explicit_send_mode() {
++        for mode in [0, 2, 3, 19, 128, 130] {
++            let intent = intent_with_mode(SendAmount::All, mode);
++            let refused = Err(SendIntentError::UnsupportedSendMode {
++                mode,
++                reason: SendModeRefusal::WholeBalanceAmount,
++            });
++
++            assert_eq!(intent.exact_value_total(), refused, "mode {mode}");
++            assert_eq!(
++                intent.exact_value_total_for_external(),
++                refused,
++                "mode {mode}"
++            );
++        }
++
++        let unrepresentable = intent_with_mode(SendAmount::All, 256);
++        assert_eq!(
++            unrepresentable.exact_value_total(),
++            Err(SendIntentError::UnsupportedSendMode {
++                mode: 256,
++                reason: SendModeRefusal::OutOfRange,
++            })
++        );
++
++        let mut mode_less = intent_with_mode(SendAmount::All, 130);
++        mode_less.messages[0].send_mode = None;
++        assert_eq!(mode_less.exact_value_total(), Ok(None));
++        assert_eq!(mode_less.exact_value_total_for_external(), Ok(None));
++    }
++
++    /// Refuses a whole batch when only a later message names a refused mode.
++    #[test]
++    fn a_refused_later_message_refuses_the_whole_batch() {
++        let mut intent = intent_with_mode(SendAmount::exact("1").expect("valid amount"), 3);
++        let second = SendMessage {
++            amount: SendAmount::exact("2").expect("valid amount"),
++            send_mode: Some(64),
++            ..intent.messages[0].clone()
++        };
++        intent.messages.push(second);
++        let carries_inbound_value = Err(SendIntentError::UnsupportedSendMode {
++            mode: 64,
++            reason: SendModeRefusal::CarryInboundValue,
++        });
++        assert_eq!(intent.exact_value_total(), carries_inbound_value);
++        assert_eq!(
++            intent.exact_value_total_for_external(),
++            carries_inbound_value
++        );
++
++        intent.messages[1].send_mode = Some(1);
++        assert_eq!(
++            intent.exact_value_total(),
++            Ok(Some(UnsignedDecimalString::from(3_u64)))
++        );
++        assert_eq!(
++            intent.exact_value_total_for_external(),
++            Err(SendIntentError::UnsupportedSendMode {
++                mode: 1,
++                reason: SendModeRefusal::MissingIgnoreErrors,
++            })
++        );
++
++        intent.messages[1].send_mode = None;
++        let total = Ok(Some(UnsignedDecimalString::from(3_u64)));
++        assert_eq!(intent.exact_value_total(), total);
++        assert_eq!(intent.exact_value_total_for_external(), total);
++    }
++
++    /// Converts each refusal into the public error with the original signed value.
++    #[test]
++    fn send_mode_refusals_convert_to_a_public_error_naming_the_signed_value() {
++        let cases = [
++            (
++                i32::MIN,
++                SendModeRefusal::OutOfRange,
++                "send mode -2147483648 is not supported: the mode does not fit the wallet action's 8-bit field",
++            ),
++            (
++                -1,
++                SendModeRefusal::OutOfRange,
++                "send mode -1 is not supported: the mode does not fit the wallet action's 8-bit field",
++            ),
++            (
++                i32::MAX,
++                SendModeRefusal::OutOfRange,
++                "send mode 2147483647 is not supported: the mode does not fit the wallet action's 8-bit field",
++            ),
++            (
++                130,
++                SendModeRefusal::WholeBalanceAmount,
++                "send mode 130 is not supported: a whole-balance transfer keeps its own send mode",
++            ),
++            (
++                12,
++                SendModeRefusal::UndefinedFlag,
++                "send mode 12 is not supported: the mode sets flag 4 or 8, which no send mode defines",
++            ),
++            (
++                192,
++                SendModeRefusal::CarryAllBalance,
++                "send mode 192 is not supported: flag 128 would send the whole balance instead of the message value",
++            ),
++            (
++                64,
++                SendModeRefusal::CarryInboundValue,
++                "send mode 64 is not supported: flag 64 would add the remaining inbound value to the message value",
++            ),
++            (
++                32,
++                SendModeRefusal::DestroyAccount,
++                "send mode 32 is not supported: flag 32 would request destruction of the wallet account",
++            ),
++            (
++                17,
++                SendModeRefusal::MissingIgnoreErrors,
++                "send mode 17 is not supported: an external wallet message needs flag 2 (ignore errors)",
++            ),
++        ];
++        for (mode, reason, display) in cases {
++            let error =
++                WalletClientError::from(SendIntentError::UnsupportedSendMode { mode, reason });
++
++            let WalletClientError::UnsupportedSendMode {
++                mode: public_mode,
++                diagnostic,
++            } = &error
++            else {
++                panic!("mode {mode} converted to {error:?}");
++            };
++            assert_eq!(*public_mode, mode);
++            assert_eq!(
++                display.strip_prefix(&format!("send mode {mode} is not supported: ")),
++                Some(diagnostic.as_str())
++            );
++            assert_eq!(error.to_string(), display);
++        }
++
++        assert_eq!(
++            WalletClientError::from(SendIntentError::InvalidMessageCount),
++            WalletClientError::InvalidSendRequest
++        );
++        assert_eq!(
++            WalletClientError::from(SendIntentError::WholeBalanceInBatch),
++            WalletClientError::InvalidSendRequest
++        );
++    }
++
+     /// Builds one public send request for serialization tests.
+     fn send_request(expiration: SendExpiration, body: SendMessageBody) -> SendRequest {
+         SendRequest {
+@@ -564,6 +973,7 @@ mod tests {
+                     body,
+                     bounce: false,
+                     state_init: None,
++                    send_mode: None,
+                 }],
+             },
+         }
+diff --git a/src/engine/prepare_transfer.rs b/src/engine/prepare_transfer.rs
+index 50d5caf..fe583f2 100644
+--- a/src/engine/prepare_transfer.rs
++++ b/src/engine/prepare_transfer.rs
+@@ -30,8 +30,8 @@ impl WalletClient {
+     ) -> Result<PreparedTransfer, WalletClientError> {
+         let requested = request
+             .intent
+-            .exact_value_total()
+-            .map_err(|_| WalletClientError::InvalidSendRequest)?;
++            .exact_value_total_for_external()
++            .map_err(WalletClientError::from)?;
+         let operation_id = request.operation_id.clone();
+         let send_request = SendRequest {
+             operation_id: request.operation_id,
+@@ -226,3 +226,185 @@ impl WalletClient {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use std::sync::{Arc, Mutex};
++
++    use futures::executor::block_on;
++
++    use super::*;
++    use crate::wallet::crypto::derive_wallet;
++    use crate::{
++        HttpHostError, HttpHostErrorKind, HttpRequest, HttpRequestId, HttpResponse,
++        JournalCompareExchange, JournalCompareExchangeResult, JournalHostError, JournalKey,
++        JournalRecord, Network, NonEmptyString, ProtectedSecretHostError, ProtectedSecretRef,
++        ProtectedSecretStore, ProviderConfig, SendAmount, SendExpiration, SendIntent, SendMessage,
++        SendMessageBody, TonAddressString, WalletClientConfig, WalletHttpHost, WalletPlatformHost,
++    };
++
++    const MNEMONIC: &str =
++        "notice tortoise soup strong gun divide offer process salon siren general carry";
++    const DESTINATION: &str = "0:2222222222222222222222222222222222222222222222222222222222222222";
++
++    /// Records every provider request and answers it as offline.
++    struct OfflineHost {
++        requests: Mutex<Vec<HttpRequest>>,
++    }
++
++    impl OfflineHost {
++        fn request_count(&self) -> usize {
++            self.requests.lock().expect("request lock").len()
++        }
++    }
++
++    #[async_trait::async_trait]
++    impl WalletHttpHost for OfflineHost {
++        async fn execute_http(&self, request: HttpRequest) -> Result<HttpResponse, HttpHostError> {
++            self.requests.lock().expect("request lock").push(request);
++            Err(HttpHostError::Failed {
++                kind: HttpHostErrorKind::Offline,
++                diagnostic: "scripted offline".to_owned(),
++            })
++        }
++
++        async fn cancel_http(&self, _request_id: HttpRequestId) {}
++    }
++
++    /// Records protected-secret reads; transfer preparation uses no other call.
++    struct SecretHost {
++        reasons: Mutex<Vec<SecretAccessReason>>,
++    }
++
++    impl SecretHost {
++        fn read_count(&self) -> usize {
++            self.reasons.lock().expect("reason lock").len()
++        }
++    }
++
++    #[async_trait::async_trait]
++    impl WalletPlatformHost for SecretHost {
++        async fn read_protected_secret(
++            &self,
++            request: ProtectedSecretRead,
++        ) -> Result<Vec<u8>, ProtectedSecretHostError> {
++            self.reasons
++                .lock()
++                .expect("reason lock")
++                .push(request.reason);
++            Ok(MNEMONIC.as_bytes().to_vec())
++        }
++
++        async fn store_protected_secret(
++            &self,
++            _request: ProtectedSecretStore,
++        ) -> Result<(), ProtectedSecretHostError> {
++            panic!("not used by transfer preparation")
++        }
++
++        async fn delete_protected_secret(
++            &self,
++            _secret_ref: ProtectedSecretRef,
++        ) -> Result<(), ProtectedSecretHostError> {
++            panic!("not used by transfer preparation")
++        }
++
++        async fn load_journal(
++            &self,
++            _key: JournalKey,
++        ) -> Result<Option<JournalRecord>, JournalHostError> {
++            panic!("not used by transfer preparation")
++        }
++
++        async fn compare_exchange_journal(
++            &self,
++            _mutation: JournalCompareExchange,
++        ) -> Result<JournalCompareExchangeResult, JournalHostError> {
++            panic!("not used by transfer preparation")
++        }
++    }
++
++    fn client_config() -> WalletClientConfig {
++        let wallet = derive_wallet(MNEMONIC, Network::Testnet).expect("wallet derives");
++        WalletClientConfig {
++            record_id: NonEmptyString::try_from("prepare-transfer-test").expect("record ID"),
++            address: TonAddressString::from_address(&wallet.address, Network::Testnet),
++            public_key: wallet.key_pair.public_key.to_vec(),
++            local_secret_ref: Some(ProtectedSecretRef {
++                value: "wallet-secret".to_owned(),
++            }),
++            network: Network::Testnet,
++            send_validity_seconds: 300,
++            resolution_margin_seconds: 60,
++            providers: ProviderConfig {
++                toncenter_base_url: "https://provider.example".to_owned(),
++                dns_root_address: None,
++                request_timeout_ms: 15_000,
++            },
++        }
++    }
++
++    /// Builds a one-message preparation request naming `send_mode`.
++    fn request(send_mode: Option<i32>) -> PrepareTransferRequest {
++        PrepareTransferRequest {
++            operation_id: NonEmptyString::try_from("prepare-transfer").expect("operation ID"),
++            intent: SendIntent {
++                expiration: SendExpiration::EngineDefault,
++                messages: vec![SendMessage {
++                    destination: TonAddressString::try_from(DESTINATION).expect("destination"),
++                    amount: SendAmount::exact("1").expect("amount"),
++                    body: SendMessageBody::Empty,
++                    bounce: false,
++                    state_init: None,
++                    send_mode,
++                }],
++            },
++        }
++    }
++
++    /// Refuses a served mode before any provider request or secret read.
++    #[test]
++    fn unsupported_send_modes_are_refused_before_provider_or_secret_access() {
++        let http = Arc::new(OfflineHost {
++            requests: Mutex::new(Vec::new()),
++        });
++        let platform = Arc::new(SecretHost {
++            reasons: Mutex::new(Vec::new()),
++        });
++        let client = WalletClient::new(client_config(), http.clone(), platform.clone())
++            .expect("client builds");
++
++        for (mode, diagnostic) in [
++            (1, "an external wallet message needs flag 2 (ignore errors)"),
++            (256, "the mode does not fit the wallet action's 8-bit field"),
++        ] {
++            let error = block_on(client.prepare_transfer(request(Some(mode))))
++                .expect_err("the mode is refused");
++
++            assert_eq!(
++                error,
++                WalletClientError::UnsupportedSendMode {
++                    mode,
++                    diagnostic: diagnostic.to_owned(),
++                }
++            );
++            assert_eq!(
++                error.to_string(),
++                format!("send mode {mode} is not supported: {diagnostic}")
++            );
++            assert_eq!(http.request_count(), 0, "mode {mode}");
++            assert_eq!(platform.read_count(), 0, "mode {mode}");
++        }
++
++        // Control: an accepted mode reaches the provider, which is offline, and
++        // the refusals above left no preparation in progress.
++        let error = block_on(client.prepare_transfer(request(Some(3))))
++            .expect_err("the offline provider fails the preparation");
++        assert!(
++            !matches!(error, WalletClientError::UnsupportedSendMode { .. }),
++            "{error:?}"
++        );
++        assert_eq!(http.request_count(), 1);
++        assert_eq!(platform.read_count(), 0);
++    }
++}
+diff --git a/src/engine/preview.rs b/src/engine/preview.rs
+index 4a91f8a..22c9a9d 100644
+--- a/src/engine/preview.rs
++++ b/src/engine/preview.rs
+@@ -91,8 +91,8 @@ impl WalletClient {
+         let available = account.balance_nanograms.clone();
+         let requested = request
+             .intent
+-            .exact_value_total()
+-            .map_err(|_| self.preview_error(generation, WalletClientError::InvalidSendRequest))?;
++            .exact_value_total_for_external()
++            .map_err(|error| self.preview_error(generation, WalletClientError::from(error)))?;
+ 
+         if let Some(nanograms) = &requested
+             && nanograms > &available
+@@ -407,7 +407,7 @@ impl WalletClient {
+         let _ = request
+             .intent
+             .exact_value_total()
+-            .map_err(|_| self.preview_error(generation, WalletClientError::InvalidSendRequest))?;
++            .map_err(|error| self.preview_error(generation, WalletClientError::from(error)))?;
+         let account = self
+             .execute_tracked_preview_request(generation, &account_request)
+             .await?
+diff --git a/src/engine/send.rs b/src/engine/send.rs
+index 09d374f..7a14618 100644
+--- a/src/engine/send.rs
++++ b/src/engine/send.rs
+@@ -184,10 +184,13 @@ impl WalletClient {
+         // Reject an impossible value before reading the mnemonic or creating a signed BOC.
+         // Fees are intentionally not estimated here, so equality can still fail on-chain.
+         let available = &account.balance_nanograms;
+-        let Ok(requested) = request.intent.exact_value_total() else {
+-            let error = WalletClientError::InvalidSendRequest;
+-            self.fail_send(generation, error.to_string())?;
+-            return Err(error);
++        let requested = match request.intent.exact_value_total_for_external() {
++            Ok(requested) => requested,
++            Err(error) => {
++                let error = WalletClientError::from(error);
++                self.fail_send(generation, error.to_string())?;
++                return Err(error);
++            }
+         };
+         if let Some(nanograms) = &requested
+             && nanograms > available
+diff --git a/src/engine/sign_message.rs b/src/engine/sign_message.rs
+index 7ae8e0a..2b949dc 100644
+--- a/src/engine/sign_message.rs
++++ b/src/engine/sign_message.rs
+@@ -159,8 +159,8 @@ impl WalletClient {
+         };
+         self.publish_send_workflow(generation, &workflow)?;
+ 
+-        if send_request.intent.exact_value_total().is_err() {
+-            let error = WalletClientError::InvalidSendRequest;
++        if let Err(error) = send_request.intent.exact_value_total() {
++            let error = WalletClientError::from(error);
+             self.fail_send(generation, error.to_string())?;
+             return Err(error);
+         }
 diff --git a/src/lib.rs b/src/lib.rs
-index 0ece7af..0f1f172 100644
+index af06abd..463d889 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -46,6 +46,7 @@
+@@ -47,6 +47,7 @@
  mod domain;
  mod engine;
  mod ton_connect;
@@ -10,7 +818,7 @@ index 0ece7af..0f1f172 100644
  mod transport;
  mod types;
  mod wallet;
-@@ -53,6 +54,9 @@ mod wallet;
+@@ -54,6 +55,9 @@ mod wallet;
  pub use domain::*;
  pub use engine::{WalletClient, WalletPlatformHost};
  pub use ton_connect::*;
@@ -20,6 +828,18 @@ index 0ece7af..0f1f172 100644
  pub use transport::*;
  pub use types::{
      Base64Hash, Base64HashError, Boc, BocError, NonEmptyString, NonEmptyStringError,
+diff --git a/src/ton_connect.rs b/src/ton_connect.rs
+index fd07126..74081af 100644
+--- a/src/ton_connect.rs
++++ b/src/ton_connect.rs
+@@ -862,6 +862,7 @@ fn decode_transaction_request(
+             }),
+             bounce: message.address.is_bounceable(),
+             state_init,
++            send_mode: None,
+         });
+     }
+     let operation_id =
 diff --git a/src/ton_connect/derived.rs b/src/ton_connect/derived.rs
 index c08665e..6687fc5 100644
 --- a/src/ton_connect/derived.rs
@@ -2862,6 +3682,1007 @@ index 0000000..c280bb4
 +        })
 +    }
 +}
+diff --git a/src/wallet/mod.rs b/src/wallet/mod.rs
+index 8843ccb..bb1b8f6 100644
+--- a/src/wallet/mod.rs
++++ b/src/wallet/mod.rs
+@@ -16,6 +16,7 @@ pub(crate) mod slip_0010;
+ pub(crate) mod transfer;
+ 
+ pub use mnemonic_scheme::{MnemonicScheme, detect_mnemonic_schemes, rotation_mnemonic_public_key};
++pub use transfer::build_contract_state_init;
+ 
+ use std::sync::Arc;
+ 
+diff --git a/src/wallet/nft_transfer.rs b/src/wallet/nft_transfer.rs
+index e9a343c..2ef40fa 100644
+--- a/src/wallet/nft_transfer.rs
++++ b/src/wallet/nft_transfer.rs
+@@ -91,6 +91,7 @@ pub(crate) fn canonicalize_nft_transfer(
+                 body: SendMessageBody::RawPayload { boc: body },
+                 bounce: true,
+                 state_init: None,
++                send_mode: None,
+             }],
+         },
+     })
+diff --git a/src/wallet/send.rs b/src/wallet/send.rs
+index caf4a9d..25598b0 100644
+--- a/src/wallet/send.rs
++++ b/src/wallet/send.rs
+@@ -1800,6 +1800,8 @@ mod tests {
+                         .expect("the empty-cell BOC fixture is valid"),
+                 );
+             }),
++            // Mode 3 signs like no mode, but the bound message must still match.
++            Box::new(|prepared| prepared.messages[0].send_mode = Some(3)),
+             Box::new(|prepared| prepared.seqno = 8),
+             Box::new(|prepared| prepared.needs_state_init = true),
+         ];
+@@ -1861,6 +1863,7 @@ mod tests {
+                     body: SendMessageBody::Empty,
+                     bounce: false,
+                     state_init: None,
++                    send_mode: None,
+                 }],
+             },
+         }
+@@ -1903,6 +1906,7 @@ mod tests {
+                 body: SendMessageBody::Empty,
+                 bounce: false,
+                 state_init: None,
++                send_mode: None,
+             }],
+             seqno: 7,
+             needs_state_init: false,
+diff --git a/src/wallet/transfer.rs b/src/wallet/transfer.rs
+index 2737a9e..7666626 100644
+--- a/src/wallet/transfer.rs
++++ b/src/wallet/transfer.rs
+@@ -122,7 +122,7 @@ pub(crate) fn prepare_transfer(
+     if account.needs_state_init() && !wallet.is_pre_rotation() {
+         return Err(TransferError::RotatedWalletRequiresActiveAccount);
+     }
+-    let _ = request.intent.exact_value_total()?;
++    let _ = request.intent.exact_value_total_for_external()?;
+     let messages = request.intent.messages.clone();
+     let (internal, send_modes) = build_internal_messages(&messages)?;
+ 
+@@ -269,7 +269,7 @@ pub(crate) fn prepare_transfer_emulation(
+     account: &FreshSendAccount,
+     valid_until: u64,
+ ) -> Result<Boc, TransferError> {
+-    let _ = request.intent.exact_value_total()?;
++    let _ = request.intent.exact_value_total_for_external()?;
+     let (internal, send_modes) = build_internal_messages(&request.intent.messages)?;
+     let wallet_id = match network {
+         Network::Mainnet => WALLET_SUBWALLET_ID_DEFAULT,
+@@ -322,6 +322,24 @@ pub(crate) fn prepare_transfer_emulation(
+         .map_err(TransferError::InvalidBoc)
+ }
+ 
++/// Composes a contract `StateInit` from serialized `code` and `data` cells.
++///
++/// Each argument must be one single-root BOC. The result holds exactly these
++/// two cells, with no split depth, special flag or library, and can be passed
++/// as [`SendMessage::state_init`]. The message destination is not derived from
++/// it. Returns `None` when an argument or the composed `StateInit` is not a
++/// valid single-root BOC.
++#[uniffi::export]
++#[must_use]
++pub fn build_contract_state_init(code: Vec<u8>, data: Vec<u8>) -> Option<Boc> {
++    let code = Boc::try_from(code).ok()?;
++    let data = Boc::try_from(data).ok()?;
++    let code = TonCell::from_boc(code.as_bytes().to_vec()).ok()?;
++    let data = TonCell::from_boc(data.as_bytes().to_vec()).ok()?;
++    let state_init = StateInit::new(code, data);
++    Boc::try_from(state_init.to_boc().ok()?).ok()
++}
++
+ /// Serializes one ordered message batch and selects each wallet send mode.
+ fn build_internal_messages(
+     send_messages: &[SendMessage],
+@@ -338,7 +356,8 @@ fn build_internal_messages(
+ 
+ /// Serializes one complete send message and selects its wallet send mode.
+ fn build_internal_message(send_message: &SendMessage) -> Result<(TonCell, u8), TransferError> {
+-    let (amount_nanograms, send_mode) = match &send_message.amount {
++    let explicit_mode = send_message.explicit_send_mode()?;
++    let (amount_nanograms, default_mode) = match &send_message.amount {
+         SendAmount::Exact { nanograms } => {
+             let amount = nanograms
+                 .try_to::<u128>()
+@@ -347,6 +366,7 @@ fn build_internal_message(send_message: &SendMessage) -> Result<(TonCell, u8), T
+         }
+         SendAmount::All => (0, ALL_BALANCE_SEND_MODE),
+     };
++    let send_mode = explicit_mode.unwrap_or(default_mode);
+     let mut info = CommonMsgInfoInt::new(
+         send_message.destination.as_address().to_msg_address(),
+         TLBCoins::new(amount_nanograms),
+@@ -397,11 +417,17 @@ pub(crate) fn derive_source(
+ mod tests {
+     use std::str::FromStr;
+ 
++    use crate::SendModeRefusal::{
++        self, CarryAllBalance, CarryInboundValue, DestroyAccount, MissingIgnoreErrors, OutOfRange,
++        UndefinedFlag,
++    };
+     use crate::{SendExpiration, SendIntent};
+     use ed25519_dalek::{Signature, VerifyingKey};
+     use ton::block_tlb::CommonMsgInfo;
++    use ton::ton_core::cell::BoC;
+     use ton::ton_core::types::tlb_core::MsgAddress;
+     use ton::ton_wallet::WalletExtMsgBody;
++    use ton_connect_core::test_boc::REFERENCE_PAST_THE_LAST_CELL;
+ 
+     use super::*;
+ 
+@@ -792,6 +818,518 @@ mod tests {
+         assert_eq!(external_body.valid_until, valid_until as u32);
+     }
+ 
++    /// Signed BOCs captured from the serializer before explicit send modes existed.
++    ///
++    /// Order: exact raw-payload message with a ready `StateInit` as the external
++    /// and internal form, whole-balance message as the external and internal
++    /// form, then the exact message's external emulation. Never regenerate them.
++    const LEGACY_GOLDEN_BOCS: [&str; 5] = [
++        "te6ccgEBBgEAvQABRYgAZ4xQk4U3opHAuJR05zBkP9ox03AUWUCLZzGptmq5eCIMAQGiCvtOSMqMAgxnDujt/c+fM8zATFlTerh+iSFerml8ldYgCNHYA6LNjf7Ct+nfKZkqXgt4ZIBKw53oUfnuOua2AmOJbnV//3/9cT+zAAAAAAcDAgNpYgARERERERERERERERERERERERERERERERERERERERERESHc1lAIAAAAAAAAAAAAAAAAAjYDBAUAAhEAAioAAmM=",
++        "te6ccgEBBgEAygABYEIAGeMUJOFN6KRwLiUdOcwZD/aMdNwFFlAi2cxqbZquXgiAAAAAAAAAAAAAAAAAAQEBojB1jdYxO0+m+mGITmCv5bE7jjCTsWvGeuU0LGm8iScNSj5aL6frtw+DxtLAx2QxD8XEi8mEXDbQaCthWNqiEQZjiW50f/9//XE/swAAAAAHAwIDaWIAEREREREREREREREREREREREREREREREREREREREREREh3NZQCAAAAAAAAAAAAAAAAAI2AwQFAAIRAAIqAAJj",
++        "te6ccgEBBAEArwABRYgAZ4xQk4U3opHAuJR05zBkP9ox03AUWUCLZzGptmq5eCIMAQGiMa8/Kfv0j6JLKUejvwMMYoVGIWkqnsZrQ7GEdRVHDtWRU+s6Pf+HQGToRuNv50Di7zhA0Ez14WX0+07SPeQpDmOJbnV//3/9cT+zAAAAAAeCAgFgQgAREREREREREREREREREREREREREREREREREREREREREQAAAAAAAAAAAAAAAAABAwAA",
++        "te6ccgEBBAEAvAABYEIAGeMUJOFN6KRwLiUdOcwZD/aMdNwFFlAi2cxqbZquXgiAAAAAAAAAAAAAAAAAAQEBouE4y1xwwelg6AoN/TMPXavLO/no5qumOZpmFoCCXY79rAEGDE+pyiErxmU/bX/E4A/hgUUYyVDFWc25PfHrDg1jiW50f/9//XE/swAAAAAHggIBYEIAEREREREREREREREREREREREREREREREREREREREREREAAAAAAAAAAAAAAAAAAQMAAA==",
++        "te6ccgEBBgEAvQABRYgAZ4xQk4U3opHAuJR05zBkP9ox03AUWUCLZzGptmq5eCIMAQGiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGOJbnV//3/9cT+zAAAAAAcDAgNpYgARERERERERERERERERERERERERERERERERERERERERESHc1lAIAAAAAAAAAAAAAAAAAjYDBAUAAhEAAioAAmM=",
++    ];
++
++    #[test]
++    fn mode_less_messages_keep_their_legacy_signed_bocs() {
++        let wallet = derive_wallet(PRE_ROTATION_MNEMONIC, Network::Testnet)
++            .expect("fixture mnemonic derives a wallet");
++        let public_key = wallet.key_pair.public_key;
++        let source = TonAddressString::from_address(&wallet.address, Network::Testnet);
++        let record_id = NonEmptyString::try_from("record").expect("record id is valid");
++        let account = FreshSendAccount {
++            status: crate::AccountStatus::Active,
++            seqno: 7,
++        };
++        let valid_until = 1_900_000_000;
++        let one_byte_boc = |value: u8| {
++            let mut cell = TonCell::builder();
++            cell.write_num(&value, 8).expect("one byte fits");
++            let cell = cell.build().expect("cell builds");
++            Boc::try_from(cell.to_boc().expect("cell BOC encodes")).expect("cell BOC validates")
++        };
++        let state_init = StateInit::new(
++            TonCell::from_boc(one_byte_boc(17).as_bytes().to_vec()).expect("code decodes"),
++            TonCell::from_boc(one_byte_boc(42).as_bytes().to_vec()).expect("data decodes"),
++        );
++        let state_init = Boc::try_from(state_init.to_boc().expect("StateInit BOC encodes"))
++            .expect("StateInit BOC validates");
++        let mut exact = send_message(
++            SendAmount::exact("1000000001").expect("valid exact amount"),
++            SendMessageBody::RawPayload {
++                boc: one_byte_boc(99),
++            },
++            Some(state_init),
++        );
++        exact.bounce = true;
++        let whole_balance = send_message(SendAmount::All, SendMessageBody::Empty, None);
++        let request = |message: SendMessage| SendRequest {
++            operation_id: NonEmptyString::try_from("golden").expect("operation id is valid"),
++            force: false,
++            intent: SendIntent {
++                expiration: SendExpiration::Exact {
++                    unix_timestamp: valid_until,
++                },
++                messages: vec![message],
++            },
++        };
++        let sign = |request: &SendRequest| {
++            let external = prepare_transfer(
++                PRE_ROTATION_MNEMONIC.as_bytes(),
++                &record_id,
++                &source,
++                Network::Testnet,
++                request,
++                &account,
++                valid_until,
++            )
++            .expect("external form signs");
++            let internal = prepare_internal_signed_transfer(
++                PRE_ROTATION_MNEMONIC.as_bytes(),
++                &record_id,
++                &source,
++                Network::Testnet,
++                request,
++                &account,
++                valid_until,
++            )
++            .expect("internal form signs");
++            (
++                external.signed_boc.to_base64(),
++                internal.signed_boc.to_base64(),
++            )
++        };
++
++        let (exact_external, exact_internal) = sign(&request(exact.clone()));
++        let (all_external, all_internal) = sign(&request(whole_balance));
++        let exact_emulation = prepare_transfer_emulation(
++            &source,
++            &public_key,
++            Network::Testnet,
++            &SendPreviewRequest {
++                intent: request(exact).intent,
++            },
++            &account,
++            valid_until,
++        )
++        .expect("external emulation builds")
++        .to_base64();
++
++        assert_eq!(
++            [
++                exact_external,
++                exact_internal,
++                all_external,
++                all_internal,
++                exact_emulation,
++            ],
++            LEGACY_GOLDEN_BOCS
++        );
++    }
++
++    /// Explicit modes given to the real signers, with the refusal expected for
++    /// an external and for an internal request; `None` means it is signed.
++    const SIGNING_MODE_CASES: [(i32, Option<SendModeRefusal>, Option<SendModeRefusal>); 16] = [
++        (-1, Some(OutOfRange), Some(OutOfRange)),
++        (0, Some(MissingIgnoreErrors), None),
++        (1, Some(MissingIgnoreErrors), None),
++        (2, None, None),
++        (3, None, None),
++        (4, Some(UndefinedFlag), Some(UndefinedFlag)),
++        (8, Some(UndefinedFlag), Some(UndefinedFlag)),
++        (16, Some(MissingIgnoreErrors), None),
++        (17, Some(MissingIgnoreErrors), None),
++        (18, None, None),
++        (19, None, None),
++        (32, Some(DestroyAccount), Some(DestroyAccount)),
++        (64, Some(CarryInboundValue), Some(CarryInboundValue)),
++        (128, Some(CarryAllBalance), Some(CarryAllBalance)),
++        (130, Some(CarryAllBalance), Some(CarryAllBalance)),
++        (256, Some(OutOfRange), Some(OutOfRange)),
++    ];
++
++    /// Signs each accepted explicit mode exactly and names each refused one.
++    #[test]
++    fn explicit_send_modes_are_signed_exactly_or_refused_by_name_in_each_form() {
++        let fixture = SigningFixture::new();
++        let mut external_modes = Vec::new();
++        let mut internal_modes = Vec::new();
++        let mut pair_modes = Vec::new();
++
++        for (mode, external_refusal, internal_refusal) in SIGNING_MODE_CASES {
++            let served = [Served::call(Some(mode))];
++            let request = served_request(&served);
++
++            let external = refusal(fixture.external(&request)).map(|prepared| {
++                fixture.signed_modes(&prepared.signed_boc, Delivery::External, &served)
++            });
++            assert_eq!(
++                external,
++                expected_signing(mode, external_refusal),
++                "external form, mode {mode}"
++            );
++            let internal = refusal(fixture.internal(&request)).map(|prepared| {
++                fixture.signed_modes(&prepared.signed_boc, Delivery::Internal, &served)
++            });
++            assert_eq!(
++                internal,
++                expected_signing(mode, internal_refusal),
++                "internal form, mode {mode}"
++            );
++            // The pair always builds an external BOC as well, so it follows the external rule.
++            let pair = refusal(fixture.pair(&request)).map(|(external, internal)| {
++                let modes = fixture.signed_modes(&external.signed_boc, Delivery::External, &served);
++                assert_eq!(
++                    fixture.signed_modes(&internal.signed_boc, Delivery::Internal, &served),
++                    modes
++                );
++                modes
++            });
++            assert_eq!(
++                pair,
++                expected_signing(mode, external_refusal),
++                "pair, mode {mode}"
++            );
++
++            for (outcome, accepted) in [
++                (external.is_ok(), &mut external_modes),
++                (internal.is_ok(), &mut internal_modes),
++                (pair.is_ok(), &mut pair_modes),
++            ] {
++                if outcome {
++                    accepted.push(mode);
++                }
++            }
++        }
++
++        assert_eq!(external_modes, [2, 3, 18, 19]);
++        assert_eq!(internal_modes, [0, 1, 2, 3, 16, 17, 18, 19]);
++        assert_eq!(pair_modes, [2, 3, 18, 19]);
++    }
++
++    /// Signs an explicit mode 3 byte-for-byte like a message without a mode.
++    #[test]
++    fn explicit_mode_three_signs_the_same_bytes_as_no_mode() {
++        let fixture = SigningFixture::new();
++        let mode_less = [Served::call(None)];
++        let mode_less_request = served_request(&mode_less);
++        let explicit_request = served_request(&[Served::call(Some(3))]);
++
++        let external = fixture
++            .external(&mode_less_request)
++            .expect("mode-less external request signs");
++        let internal = fixture
++            .internal(&mode_less_request)
++            .expect("mode-less internal request signs");
++
++        assert_eq!(
++            fixture
++                .external(&explicit_request)
++                .expect("explicit external request signs")
++                .signed_boc,
++            external.signed_boc
++        );
++        assert_eq!(
++            fixture
++                .internal(&explicit_request)
++                .expect("explicit internal request signs")
++                .signed_boc,
++            internal.signed_boc
++        );
++        assert_eq!(
++            fixture
++                .emulation(&explicit_request)
++                .expect("explicit request emulates"),
++            fixture
++                .emulation(&mode_less_request)
++                .expect("mode-less request emulates")
++        );
++        assert_eq!(
++            fixture.signed_modes(&external.signed_boc, Delivery::External, &mode_less),
++            [3]
++        );
++        assert_eq!(
++            fixture.signed_modes(&internal.signed_boc, Delivery::Internal, &mode_less),
++            [3]
++        );
++    }
++
++    /// Keeps each action's own mode and served fields in batch order.
++    #[test]
++    fn ordered_batches_carry_each_message_mode_in_both_forms() {
++        let fixture = SigningFixture::new();
++        let mixed = [
++            Served::new(DESTINATION, 1_000, false, 0x0000_0001, None),
++            Served::new(OTHER_DESTINATION, 2_000, true, 0x0000_0002, Some(2)),
++            Served::new(THIRD_DESTINATION, 3_000, false, 0x0000_0003, Some(19)),
++        ];
++        let request = served_request(&mixed);
++
++        let (external, internal) = fixture
++            .pair(&request)
++            .expect("mixed batch signs in both forms");
++        assert_eq!(
++            fixture.signed_modes(&external.signed_boc, Delivery::External, &mixed),
++            [3, 2, 19]
++        );
++        assert_eq!(
++            fixture.signed_modes(&internal.signed_boc, Delivery::Internal, &mixed),
++            [3, 2, 19]
++        );
++        let preview = fixture.emulation(&request).expect("mixed batch emulates");
++        assert_eq!(
++            fixture.signed_modes(&preview, Delivery::External, &mixed),
++            [3, 2, 19]
++        );
++
++        // Four actions span two message-array chunks of the bulk request.
++        let internal_only = [
++            Served::new(DESTINATION, 4_000, true, 0x0000_0004, Some(0)),
++            Served::new(OTHER_DESTINATION, 5_000, false, 0x0000_0005, Some(1)),
++            Served::new(THIRD_DESTINATION, 6_000, true, 0x0000_0006, Some(16)),
++            Served::new(DESTINATION, 7_000, false, 0x0000_0007, Some(17)),
++        ];
++        let request = served_request(&internal_only);
++
++        let internal = fixture
++            .internal(&request)
++            .expect("internal-only modes sign as an internal request");
++        assert_eq!(
++            fixture.signed_modes(&internal.signed_boc, Delivery::Internal, &internal_only),
++            [0, 1, 16, 17]
++        );
++        let first_without_ignore_errors = Some(SendIntentError::UnsupportedSendMode {
++            mode: 0,
++            reason: MissingIgnoreErrors,
++        });
++        assert_eq!(
++            refusal(fixture.external(&request)).err(),
++            first_without_ignore_errors
++        );
++        assert_eq!(
++            refusal(fixture.pair(&request)).err(),
++            first_without_ignore_errors
++        );
++        assert_eq!(
++            refusal(fixture.emulation(&request)).err(),
++            first_without_ignore_errors
++        );
++    }
++
++    /// Refuses a whole batch when only its second message names a refused mode.
++    #[test]
++    fn a_refused_second_message_refuses_the_batch_in_every_form() {
++        let fixture = SigningFixture::new();
++        let request = served_request(&[
++            Served::call(Some(3)),
++            Served::new(OTHER_DESTINATION, 2_000, false, 0x0000_0002, Some(64)),
++        ]);
++        let carries_inbound_value = Some(SendIntentError::UnsupportedSendMode {
++            mode: 64,
++            reason: CarryInboundValue,
++        });
++        assert_eq!(
++            refusal(fixture.external(&request)).err(),
++            carries_inbound_value
++        );
++        assert_eq!(
++            refusal(fixture.internal(&request)).err(),
++            carries_inbound_value
++        );
++        assert_eq!(refusal(fixture.pair(&request)).err(), carries_inbound_value);
++        assert_eq!(
++            refusal(fixture.emulation(&request)).err(),
++            carries_inbound_value
++        );
++
++        let internal_only_second = [
++            Served::call(Some(2)),
++            Served::new(OTHER_DESTINATION, 2_000, false, 0x0000_0002, Some(17)),
++        ];
++        let request = served_request(&internal_only_second);
++        let lacks_ignore_errors = Some(SendIntentError::UnsupportedSendMode {
++            mode: 17,
++            reason: MissingIgnoreErrors,
++        });
++        assert_eq!(
++            refusal(fixture.external(&request)).err(),
++            lacks_ignore_errors
++        );
++        assert_eq!(refusal(fixture.pair(&request)).err(), lacks_ignore_errors);
++        assert_eq!(
++            refusal(fixture.emulation(&request)).err(),
++            lacks_ignore_errors
++        );
++        let internal = fixture
++            .internal(&request)
++            .expect("an internal request accepts mode 17");
++        assert_eq!(
++            fixture.signed_modes(
++                &internal.signed_boc,
++                Delivery::Internal,
++                &internal_only_second
++            ),
++            [2, 17]
++        );
++    }
++
++    /// Emulates each accepted external mode exactly and names every other value.
++    #[test]
++    fn external_emulation_carries_accepted_modes_and_refuses_every_other_value() {
++        let fixture = SigningFixture::new();
++        let mut emulated = Vec::new();
++
++        for mode in (-1..=256).chain([i32::MIN, 1024, i32::MAX]) {
++            let served = [Served::call(Some(mode))];
++            match refusal(fixture.emulation(&served_request(&served))) {
++                Ok(preview) => {
++                    assert_eq!(
++                        fixture.signed_modes(&preview, Delivery::External, &served),
++                        [mode]
++                    );
++                    emulated.push(mode);
++                }
++                Err(error) => {
++                    let SendIntentError::UnsupportedSendMode { mode: refused, .. } = error else {
++                        panic!("mode {mode}: unexpected refusal {error:?}");
++                    };
++                    assert_eq!(refused, mode);
++                }
++            }
++        }
++
++        assert_eq!(emulated, [2, 3, 18, 19]);
++    }
++
++    /// Composes a `StateInit` cell holding exactly the served code and data.
++    #[test]
++    fn contract_state_init_holds_exactly_the_served_code_and_data_cells() {
++        let (code, data) = served_contract_cells();
++        let state_init = build_contract_state_init(
++            code.to_boc().expect("code BOC encodes"),
++            data.to_boc().expect("data BOC encodes"),
++        )
++        .expect("valid code and data compose");
++
++        let root = TonCell::from_boc(state_init.as_bytes().to_vec()).expect("helper BOC parses");
++        assert_eq!(root.data_len_bits(), 5);
++        assert_eq!(root.refs().len(), 2);
++        let mut parser = root.parser();
++        let flags = (0..5)
++            .map(|_| parser.read_bit().expect("flag bit"))
++            .collect::<Vec<_>>();
++        // No split depth, no special flags, code present, data present, no library.
++        assert_eq!(flags, [false, false, true, true, false]);
++        assert_eq!(parser.read_next_ref().expect("code reference"), &code);
++        assert_eq!(parser.read_next_ref().expect("data reference"), &data);
++        parser
++            .ensure_empty()
++            .expect("nothing follows the code and data references");
++        assert_eq!(root.refs()[0].refs().len(), 2, "code keeps its children");
++    }
++
++    /// Signs the composed deployment to the served destination in both forms.
++    #[test]
++    fn contract_state_init_is_signed_with_the_served_destination_in_both_forms() {
++        let fixture = SigningFixture::new();
++        let (code, data) = served_contract_cells();
++        let state_init = build_contract_state_init(
++            code.to_boc().expect("code BOC encodes"),
++            data.to_boc().expect("data BOC encodes"),
++        )
++        .expect("valid code and data compose");
++        let state_init_root =
++            TonCell::from_boc(state_init.as_bytes().to_vec()).expect("helper BOC parses");
++        let derived = TonAddress::new(
++            0,
++            state_init_root
++                .hash()
++                .expect("StateInit cell hashes")
++                .clone(),
++        );
++        assert_ne!(
++            TonAddress::from_str(ESCROW_DESTINATION).expect("served destination parses"),
++            derived,
++            "the served destination must differ from the hash-derived one"
++        );
++        let served = Served {
++            state_init: Some(state_init),
++            ..Served::new(
++                ESCROW_DESTINATION,
++                1_234_567_891,
++                true,
++                0x7362_d09c,
++                Some(18),
++            )
++        };
++
++        let (external, internal) = fixture
++            .pair(&served_request(std::slice::from_ref(&served)))
++            .expect("the deployment signs in both forms");
++
++        for (boc, delivery) in [
++            (&external.signed_boc, Delivery::External),
++            (&internal.signed_boc, Delivery::Internal),
++        ] {
++            let actions = decode_wallet_actions(boc, &fixture.source, delivery);
++            let [(mode, action)] = actions.as_slice() else {
++                panic!("{delivery:?} form must carry exactly one action");
++            };
++            assert_eq!(*mode, 18, "{delivery:?}");
++            served.assert_carried_by(action);
++
++            let init = &action
++                .init
++                .as_ref()
++                .expect("the action carries the StateInit")
++                .value;
++            assert_eq!(init.split_depth, None, "{delivery:?}");
++            assert_eq!(init.tick_tock, None, "{delivery:?}");
++            assert_eq!(init.code.as_deref(), Some(&code), "{delivery:?}");
++            assert_eq!(init.data.as_deref(), Some(&data), "{delivery:?}");
++            assert!(init.library.is_empty(), "{delivery:?}");
++            assert_eq!(
++                init.to_cell().expect("attached StateInit serializes"),
++                state_init_root,
++                "{delivery:?}"
++            );
++        }
++    }
++
++    /// Refuses an empty, malformed or multi-root BOC in either argument.
++    #[test]
++    fn contract_state_init_refuses_an_invalid_code_or_data_argument() {
++        let (code, data) = served_contract_cells();
++        let two_roots = BoC::from_roots([code.clone(), TonCell::empty().clone()])
++            .to_bytes(false)
++            .expect("two-root BOC encodes");
++        let code = code.to_boc().expect("code BOC encodes");
++        let data = data.to_boc().expect("data BOC encodes");
++        let invalid = [
++            ("empty", Vec::new()),
++            ("not a BOC", b"not a boc".to_vec()),
++            ("truncated", code[..code.len() - 1].to_vec()),
++            (
++                "reference past the last cell",
++                REFERENCE_PAST_THE_LAST_CELL.to_vec(),
++            ),
++            ("two roots", two_roots),
++        ];
++
++        assert!(build_contract_state_init(code.clone(), data.clone()).is_some());
++        for (name, bytes) in invalid {
++            assert!(
++                build_contract_state_init(bytes.clone(), data.clone()).is_none(),
++                "code: {name}"
++            );
++            assert!(
++                build_contract_state_init(code.clone(), bytes).is_none(),
++                "data: {name}"
++            );
++        }
++    }
++
+     #[test]
+     fn rotated_wallet_requests_use_the_signing_key_and_anchor_address() {
+         let source = derive_source(ROTATED_MNEMONIC.as_bytes(), Network::Testnet)
+@@ -943,6 +1481,301 @@ mod tests {
+             body,
+             bounce: false,
+             state_init,
++            send_mode: None,
++        }
++    }
++
++    /// Fixed expiry shared by the explicit-mode signing tests.
++    const VALID_UNTIL: u64 = 1_900_000_000;
++    const OTHER_DESTINATION: &str =
++        "0:3333333333333333333333333333333333333333333333333333333333333333";
++    const THIRD_DESTINATION: &str =
++        "0:4444444444444444444444444444444444444444444444444444444444444444";
++    const ESCROW_DESTINATION: &str =
++        "0:5555555555555555555555555555555555555555555555555555555555555555";
++
++    /// The throwaway pre-rotation wallet on an active account at seqno 7.
++    struct SigningFixture {
++        source: TonAddressString,
++        public_key: [u8; 32],
++        record_id: NonEmptyString,
++        account: FreshSendAccount,
++    }
++
++    impl SigningFixture {
++        fn new() -> Self {
++            let wallet = derive_wallet(PRE_ROTATION_MNEMONIC, Network::Testnet)
++                .expect("fixture mnemonic derives a wallet");
++            Self {
++                source: TonAddressString::from_address(&wallet.address, Network::Testnet),
++                public_key: wallet.key_pair.public_key,
++                record_id: NonEmptyString::try_from("record").expect("record id is valid"),
++                account: FreshSendAccount {
++                    status: crate::AccountStatus::Active,
++                    seqno: 7,
++                },
++            }
++        }
++
++        fn external(&self, request: &SendRequest) -> Result<PreparedTransfer, TransferError> {
++            prepare_transfer(
++                PRE_ROTATION_MNEMONIC.as_bytes(),
++                &self.record_id,
++                &self.source,
++                Network::Testnet,
++                request,
++                &self.account,
++                VALID_UNTIL,
++            )
++        }
++
++        fn internal(&self, request: &SendRequest) -> Result<PreparedTransfer, TransferError> {
++            prepare_internal_signed_transfer(
++                PRE_ROTATION_MNEMONIC.as_bytes(),
++                &self.record_id,
++                &self.source,
++                Network::Testnet,
++                request,
++                &self.account,
++                VALID_UNTIL,
++            )
++        }
++
++        fn pair(
++            &self,
++            request: &SendRequest,
++        ) -> Result<(PreparedTransfer, PreparedTransfer), TransferError> {
++            prepare_transfer_pair(
++                PRE_ROTATION_MNEMONIC.as_bytes(),
++                &self.record_id,
++                &self.source,
++                Network::Testnet,
++                request,
++                &self.account,
++                VALID_UNTIL,
++            )
++        }
++
++        fn emulation(&self, request: &SendRequest) -> Result<Boc, TransferError> {
++            prepare_transfer_emulation(
++                &self.source,
++                &self.public_key,
++                Network::Testnet,
++                &SendPreviewRequest {
++                    intent: request.intent.clone(),
++                },
++                &self.account,
++                VALID_UNTIL,
++            )
++        }
++
++        /// Decodes `boc`, checks each action against `served` in order, and
++        /// returns the action modes.
++        fn signed_modes(&self, boc: &Boc, delivery: Delivery, served: &[Served]) -> Vec<i32> {
++            let actions = decode_wallet_actions(boc, &self.source, delivery);
++            assert_eq!(actions.len(), served.len(), "{delivery:?} action count");
++            for ((_, action), served) in actions.iter().zip(served) {
++                served.assert_carried_by(action);
++            }
++            actions
++                .into_iter()
++                .map(|(mode, _)| i32::from(mode))
++                .collect()
++        }
++    }
++
++    /// A served message described by literals, independent of the signer.
++    #[derive(Clone)]
++    struct Served {
++        destination: &'static str,
++        nanograms: u128,
++        bounce: bool,
++        body: TonCell,
++        state_init: Option<Boc>,
++        mode: Option<i32>,
++    }
++
++    impl Served {
++        /// A bounceable contract call with a raw body and the given `mode`.
++        fn call(mode: Option<i32>) -> Self {
++            Self::new(DESTINATION, 1_000_000_001, true, 0x0f8a_7ea5, mode)
++        }
++
++        /// A message whose raw body is the 32-bit `opcode`.
++        fn new(
++            destination: &'static str,
++            nanograms: u128,
++            bounce: bool,
++            opcode: u32,
++            mode: Option<i32>,
++        ) -> Self {
++            let mut body = TonCell::builder();
++            body.write_num(&opcode, 32).expect("opcode fits");
++            Self {
++                destination,
++                nanograms,
++                bounce,
++                body: body.build().expect("body cell builds"),
++                state_init: None,
++                mode,
++            }
++        }
++
++        /// The engine message a caller builds from these served fields.
++        fn message(&self) -> SendMessage {
++            SendMessage {
++                destination: TonAddressString::try_from(self.destination)
++                    .expect("served destination is valid"),
++                amount: SendAmount::exact(self.nanograms.to_string())
++                    .expect("served value is valid"),
++                body: SendMessageBody::RawPayload {
++                    boc: Boc::try_from(self.body.to_boc().expect("body BOC encodes"))
++                        .expect("body BOC validates"),
++                },
++                bounce: self.bounce,
++                state_init: self.state_init.clone(),
++                send_mode: self.mode,
++            }
++        }
++
++        /// Asserts that a decoded wallet action carries exactly these fields.
++        fn assert_carried_by(&self, action: &Msg<TonCell>) {
++            let CommonMsgInfo::Int(info) = &action.info else {
++                panic!("a wallet action must be an internal message");
++            };
++            assert_eq!(
++                info.dst,
++                TonAddress::from_str(self.destination)
++                    .expect("served destination parses")
++                    .to_msg_address()
++            );
++            assert_eq!(info.value.coins, TLBCoins::new(self.nanograms));
++            assert_eq!(info.bounce, self.bounce);
++            assert_eq!(action.body.value, self.body);
++            if self.state_init.is_none() {
++                assert!(action.init.is_none(), "no StateInit was served");
++            }
++        }
++    }
++
++    /// Builds one fixed-expiry request carrying `served` in order.
++    fn served_request(served: &[Served]) -> SendRequest {
++        SendRequest {
++            operation_id: NonEmptyString::try_from("served").expect("operation id is valid"),
++            force: false,
++            intent: SendIntent {
++                expiration: SendExpiration::Exact {
++                    unix_timestamp: VALID_UNTIL,
++                },
++                messages: served.iter().map(Served::message).collect(),
++            },
++        }
++    }
++
++    /// Delivery form of a signed wallet request.
++    #[derive(Debug, Clone, Copy)]
++    enum Delivery {
++        /// An incoming external message, as normal submission and emulation use.
++        External,
++        /// An owner-signed internal message, as gasless submission uses.
++        Internal,
++    }
++
++    /// Decodes a complete signed wallet BOC with the vendored readers alone.
++    ///
++    /// The envelope must address `source` and deploy nothing; each action
++    /// message must be consumed completely. Returns every action's mode and
++    /// message in request order.
++    fn decode_wallet_actions(
++        boc: &Boc,
++        source: &TonAddressString,
++        delivery: Delivery,
++    ) -> Vec<(u8, Msg<TonCell>)> {
++        let root = TonCell::from_boc(boc.as_bytes().to_vec()).expect("signed BOC parses");
++        let envelope = read_whole_message(&root);
++        assert!(envelope.init.is_none(), "an active wallet is not deployed");
++        let mut body = envelope.body.value.parser();
++        let (modes, messages) = match delivery {
++            Delivery::External => {
++                let CommonMsgInfo::ExtIn(info) = &envelope.info else {
++                    panic!("an external request must use an external envelope");
++                };
++                assert_eq!(info.dst, source.as_address().to_msg_address_int());
++                let (request, _) = WalletExtMsgBody::read_signed(&mut body)
++                    .expect("external wallet request decodes");
++                (request.msgs_modes, request.msgs)
++            }
++            Delivery::Internal => {
++                let CommonMsgInfo::Int(info) = &envelope.info else {
++                    panic!("an internal request must use an internal envelope");
++                };
++                assert_eq!(info.dst, source.as_address().to_msg_address());
++                let (request, _) =
++                    ton::ton_wallet::WalletInternalSignedBody::read_signed(&mut body)
++                        .expect("internal wallet request decodes");
++                (request.msgs_modes, request.msgs)
++            }
++        };
++        assert_eq!(modes.len(), messages.len());
++        modes
++            .into_iter()
++            .zip(messages.iter().map(read_whole_message))
++            .collect()
++    }
++
++    /// Reads one message cell and requires that nothing follows the message.
++    fn read_whole_message(cell: &TonCell) -> Msg<TonCell> {
++        let mut parser = cell.parser();
++        let message = Msg::<TonCell>::read(&mut parser).expect("message decodes");
++        parser
++            .ensure_empty()
++            .expect("message has no trailing bits or references");
++        message
++    }
++
++    /// Keeps a signer's intent refusal and fails on any other signing error.
++    fn refusal<T>(result: Result<T, TransferError>) -> Result<T, SendIntentError> {
++        result.map_err(|error| {
++            let TransferError::InvalidIntent(refusal) = error else {
++                panic!("unexpected signing error: {error}");
++            };
++            refusal
++        })
++    }
++
++    /// The outcome expected from signing one served `mode`: its exact mode, or
++    /// the named refusal.
++    fn expected_signing(
++        mode: i32,
++        refusal: Option<SendModeRefusal>,
++    ) -> Result<Vec<i32>, SendIntentError> {
++        refusal.map_or_else(
++            || Ok(vec![mode]),
++            |reason| Err(SendIntentError::UnsupportedSendMode { mode, reason }),
++        )
++    }
++
++    /// A served contract's code cell, with children, and its distinct data cell.
++    fn served_contract_cells() -> (TonCell, TonCell) {
++        let code = bytes_cell(
++            &[0xc0, 0xde],
++            vec![
++                bytes_cell(&[0x01], Vec::new()),
++                bytes_cell(&[0x02], vec![bytes_cell(&[0x6c], Vec::new())]),
++            ],
++        );
++        let data = bytes_cell(&[0xda, 0x7a], vec![bytes_cell(&[0x03], Vec::new())]);
++        (code, data)
++    }
++
++    /// Builds an ordinary cell from whole bytes and child references.
++    fn bytes_cell(bytes: &[u8], children: Vec<TonCell>) -> TonCell {
++        let mut cell = TonCell::builder();
++        cell.write_bits(bytes, bytes.len() * 8)
++            .expect("bytes fit one cell");
++        for child in children {
++            cell.write_ref(child).expect("child reference fits");
+         }
++        cell.build().expect("cell builds")
+     }
+ }
+diff --git a/tests/support/scenario.rs b/tests/support/scenario.rs
+index 67d7e7d..aabdd02 100644
+--- a/tests/support/scenario.rs
++++ b/tests/support/scenario.rs
+@@ -1719,6 +1719,7 @@ impl ScenarioRunner {
+                                     }),
+                                     bounce: false,
+                                     state_init: None,
++                                    send_mode: None,
+                                 }],
+                             },
+                         };
+@@ -1750,6 +1751,7 @@ impl ScenarioRunner {
+                                     }),
+                                     bounce: false,
+                                     state_init: None,
++                                    send_mode: None,
+                                 }],
+                             },
+                         };
+diff --git a/tests/support/ton_connect_scenario.rs b/tests/support/ton_connect_scenario.rs
+index a5f9ef2..7be884c 100644
+--- a/tests/support/ton_connect_scenario.rs
++++ b/tests/support/ton_connect_scenario.rs
+@@ -1769,6 +1769,7 @@ impl ScenarioRunner {
+                         .as_ref()
+                         .map(|value| Boc::try_from(value.as_bytes().to_vec()))
+                         .transpose()?,
++                    send_mode: None,
+                 })
+             })
+             .collect::<TestResult<Vec<_>>>()?;
+diff --git a/tests/support/wallet_lifecycle_scenario.rs b/tests/support/wallet_lifecycle_scenario.rs
+index 2fd9f50..669ba87 100644
+--- a/tests/support/wallet_lifecycle_scenario.rs
++++ b/tests/support/wallet_lifecycle_scenario.rs
+@@ -682,6 +682,7 @@ pub(crate) fn execute_key_rotation_shares_send_slot_on_localnet() -> Result<(),
+                 body: SendMessageBody::Empty,
+                 bounce: false,
+                 state_init: None,
++                send_mode: None,
+             }],
+         },
+     };
 diff --git a/vendor/ton/src/block_tlb/state_init.rs b/vendor/ton/src/block_tlb/state_init.rs
 index 43f7877..856afa4 100644
 --- a/vendor/ton/src/block_tlb/state_init.rs
