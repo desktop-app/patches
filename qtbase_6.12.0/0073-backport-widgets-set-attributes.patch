@@ -284,7 +284,7 @@ index 78f8f6c9ca437b57405d1d5172408426446ee31b..4c588d5299bfff0378f67b5eb629cdf8
 +    QCOMPARE(iHelp->attributesInterface()->attributeValue(QAccessible::Attribute::PositionInSet).toInt(), 3);
 +    QCOMPARE(iAction->attributesInterface()->attributeValue(QAccessible::Attribute::PositionInSet).toInt(), 4);
 +    QCOMPARE(iAction->attributesInterface()->attributeValue(QAccessible::Attribute::SizeOfSet).toInt(), 5);
- #ifndef Q_OS_MAC
+ #ifndef Q_OS_MACOS
      QCOMPARE(mw.mapFromGlobal(interface->rect().topLeft()), mw.menuBar()->geometry().topLeft());
      QCOMPARE(interface->rect().size(), mw.menuBar()->size());
 @@ -1674,6 +1697,10 @@ void tst_QAccessibility::menuTest()
