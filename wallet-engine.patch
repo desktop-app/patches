@@ -1,3 +1,66 @@
+diff --git a/README.md b/README.md
+index 83321d7..a937908 100644
+--- a/README.md
++++ b/README.md
+@@ -756,8 +756,12 @@ flowchart TD
+     EmulationResult -- wallet transaction failed --> Rejected
+     EmulationResult -- wallet succeeded --> Fees
+     Fees -- no --> FeeBalance["CALL ERROR<br/>InsufficientBalanceForFees"]
++    Delivery{"Wallet created every<br/>intent message?"}
++    Fees -- yes --> Delivery
++    Delivery -- none / only some --> Rejected
++    Delivery -- not reported --> EmulationFailed
+     Result["RETURN VALUE<br/>SendPreview<br/>fees · actions · warnings · BOC"]
+-    Fees -- yes --> Result
++    Delivery -- yes --> Result
+ 
+     classDef result fill:#dcfce7,stroke:#15803d,color:#14532d;
+     classDef callError fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d;
+@@ -767,8 +771,32 @@ flowchart TD
+ ```
+ 
+ Child transaction failures can make `traceSucceeded` false without rejecting
+-the preview. Only failure of the source wallet transaction produces
+-`EmulationRejected`.
++the preview. `EmulationRejected` comes only from the source wallet
++transaction: its compute or action phase failed, or it skipped or did not
++create an outgoing message of the intent, for example a send mode with +2
++(ignore errors) whose balance does not cover the message. The wallet's action
++counters show the delivery, or its `out_msgs` list when the counters are
++unusable; an answer that shows it in neither is `EmulationFailed`. A skipped
++message is a funds refusal only when the balance checks above establish one.
++`previewTonConnect` and NFT transfer previews take this path too.
++`previewSendBoc` emulates an opaque signed BOC without a message list, so it
++checks only that the wallet transaction succeeded, and `previewSignMessage`
++does not emulate.
++
++A `previewSend` request with `estimateShortfall` and exact values also asks
++for what the operation costs. `walletFeesNanograms` stays the root wallet
++transaction fee F, and the preview reports `operationSpendNanograms`, what
++the wallet spends beyond the values: with send mode +1 (pay fees separately:
++modes 3 and 19, and the mode-less default) F plus the part of the forwarding
++fee that travels with the message, and for modes 2 and 18, whose values pay
++the forwarding fee, F less the action fee. Such a preview succeeds only with a
++known spend and only when the values plus the spend fit the balance; equality
++fits, and one nanogram less is `InsufficientBalanceForFees` with the fee and
++the spend. When the wallet skipped every message, a zero-value companion
++emulated at the same block prices them, and the preview is the funds refusal
++with that fee and spend, or `EmulationRejected` where the spend fits. A
++refusal that established no amount carries none, and an unknown spend is never
++zero. Messages of one intent must share a fee kind for a spend to be known.
+ 
+ ### Sign and submit a transfer
+ 
+@@ -1150,7 +1178,8 @@ message could not be built. `EmulationFailed` means that the emulation service,
+ transport, or response failed. `EmulationMessageNotAccepted` means that the
+ current chain state rejected the external message, for example after another
+ client advanced the wallet seqno. `EmulationRejected` means that the external
+-message created a wallet transaction, but its compute or action phase failed.
++message created a wallet transaction, but its compute or action phase failed,
++or, for an intent preview, that it did not create every outgoing message.
+ The last error includes the returned TVM phase codes.
+ 
+ Handle every send phase explicitly:
 diff --git a/examples/tui/src/app.rs b/examples/tui/src/app.rs
 index 3f7cd71..ba51f9b 100644
 --- a/examples/tui/src/app.rs
@@ -37,8 +100,118 @@ index 5d7eeb3..b5d4b05 100644
          });
      }
      let operation_id = NonEmptyString::try_from(format!("ton-connect-{session_id}-{request_id}"))
+diff --git a/examples/web/e2e/support/provider-server.ts b/examples/web/e2e/support/provider-server.ts
+index 9b67c75..d522a8b 100644
+--- a/examples/web/e2e/support/provider-server.ts
++++ b/examples/web/e2e/support/provider-server.ts
+@@ -8,6 +8,8 @@ import {createServer as createHttpsServer} from "node:https"
+ import path from "node:path"
+ import process from "node:process"
+ 
++import {Cell, loadMessage} from "@ton/core"
++
+ import {ActonLocalnet} from "./acton-localnet"
+ 
+ const DEFAULT_PORT: number = 5198
+@@ -18,6 +20,9 @@ const SCRIPTED_NFT_COLLECTION: string =
+   "0:4444444444444444444444444444444444444444444444444444444444444444"
+ const REPOSITORY_ROOT: string = path.resolve(import.meta.dirname, "../../../..")
+ const TLS_FIXTURES: string = path.join(REPOSITORY_ROOT, "tests/ton-connect/dapp/fixtures")
++/** Telegram wallet opcodes of a signed external request with one or several messages. */
++const SEND_ONE_EXTERNAL_OPCODE: number = 0x63896e75
++const SEND_BULK_EXTERNAL_OPCODE: number = 0x73896e75
+ 
+ const port: number = parsePort(process.argv, DEFAULT_PORT)
+ const servesInsecureHttp: boolean = process.argv.includes("--http")
+@@ -85,15 +90,15 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
+     return
+   }
+ 
+-  scriptedResponse(request, requestUrl, response)
++  await scriptedResponse(request, requestUrl, response)
+ }
+ 
+ /** Returns the deterministic provider response used by non-localnet client scenarios. */
+-function scriptedResponse(
++async function scriptedResponse(
+   request: IncomingMessage,
+   requestUrl: URL,
+   response: ServerResponse,
+-): void {
++): Promise<void> {
+   if (requestUrl.pathname.endsWith("/api/v2/getAddressInformation")) {
+     walletAddress = requestUrl.searchParams.get("address") ?? walletAddress
+     sendJson(response, 200, {
+@@ -112,7 +117,8 @@ function scriptedResponse(
+       sendJson(response, 409, {error: "Wallet account must be loaded before emulation"})
+       return
+     }
+-    sendJson(response, 200, successfulEmulation(walletAddress))
++    const messages: number = emulatedMessageCount(await readBody(request))
++    sendJson(response, 200, successfulEmulation(walletAddress, messages))
+     return
+   }
+ 
+@@ -439,8 +445,36 @@ function scriptedNftArtwork(variant: string | null): string {
+ </svg>`
+ }
+ 
+-/** Returns a successful trace rooted at the wallet most recently loaded by the engine. */
+-function successfulEmulation(account: string): unknown {
++/** Counts the outgoing messages of the wallet request signed into an emulateTrace body's BOC. */
++function emulatedMessageCount(body: Buffer): number {
++  const request: unknown = JSON.parse(body.toString("utf8"))
++  if (
++    typeof request !== "object" ||
++    request === null ||
++    !("boc" in request) ||
++    typeof request.boc !== "string"
++  ) {
++    throw new Error("Expected an emulateTrace body with a BOC")
++  }
++  const wallet = loadMessage(Cell.fromBase64(request.boc).beginParse()).body.beginParse()
++  // Signature, then opcode, wallet id, expiration and seqno.
++  wallet.skip(512)
++  const opcode: number = wallet.loadUint(32)
++  wallet.skip(96)
++  if (opcode === SEND_ONE_EXTERNAL_OPCODE) {
++    return 1
++  }
++  if (opcode === SEND_BULK_EXTERNAL_OPCODE) {
++    return wallet.loadUint(8)
++  }
++  throw new Error(`Unsupported wallet request opcode 0x${opcode.toString(16)}`)
++}
++
++/**
++ * Returns a successful trace rooted at the wallet most recently loaded by the engine, in which the
++ * wallet created each of its `messages` outgoing messages, as the engine's preview requires.
++ */
++function successfulEmulation(account: string, messages: number): unknown {
+   return {
+     actions: [],
+     is_incomplete: false,
+@@ -452,10 +486,17 @@ function successfulEmulation(account: string): unknown {
+         account,
+         description: {
+           aborted: false,
+-          action: {result_code: 0, success: true},
++          action: {
++            msgs_created: messages,
++            result_code: 0,
++            skipped_actions: 0,
++            success: true,
++            tot_actions: messages,
++          },
+           compute_ph: {exit_code: 0, success: true},
+           type: "ord",
+         },
++        out_msgs: Array.from({length: messages}, () => ({source: account})),
+         total_fees: "1000000",
+       },
+     },
 diff --git a/src/domain/error.rs b/src/domain/error.rs
-index 26b26f4..d96fd21 100644
+index 26b26f4..a2c64b6 100644
 --- a/src/domain/error.rs
 +++ b/src/domain/error.rs
 @@ -1,6 +1,6 @@
@@ -49,7 +222,7 @@ index 26b26f4..d96fd21 100644
  use crate::{HttpHostErrorKind, UnsignedDecimalString};
  
  /// Replaces control characters and bounds diagnostics stored in public errors.
-@@ -254,6 +254,11 @@ pub enum WalletClientError {
+@@ -254,6 +254,22 @@ pub enum WalletClientError {
          available_nanograms: UnsignedDecimalString,
          /// The requested transfer value, in nanograms.
          requested_nanograms: UnsignedDecimalString,
@@ -58,10 +231,21 @@ index 26b26f4..d96fd21 100644
 +        /// provider's emulations.
 +        #[serde(default, skip_serializing_if = "Option::is_none")]
 +        operation_fee_nanograms: Option<UnsignedDecimalString>,
++        /// What this exact operation spends beyond the requested value, in
++        /// nanograms, present only when a preview that asked for the
++        /// operation's fee established it; `None` means unknown, never zero.
++        ///
++        /// Unlike `operation_fee_nanograms`, the root wallet transaction fee,
++        /// this counts the part of the forwarding fee that travels with each
++        /// message under send mode +1, and leaves out the action fee that a
++        /// message without +1 pays from its own value: the requested value
++        /// plus this amount is what the wallet would spend.
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        operation_spend_nanograms: Option<UnsignedDecimalString>,
      },
      /// The requested exact value fits, but the value and emulated wallet fee do not.
      #[error(
-@@ -266,6 +271,11 @@ pub enum WalletClientError {
+@@ -266,6 +282,24 @@ pub enum WalletClientError {
          requested_nanograms: UnsignedDecimalString,
          /// The wallet transaction fee returned by emulation.
          estimated_fee_nanograms: UnsignedDecimalString,
@@ -70,10 +254,23 @@ index 26b26f4..d96fd21 100644
 +        /// provider's emulations.
 +        #[serde(default, skip_serializing_if = "Option::is_none")]
 +        operation_fee_nanograms: Option<UnsignedDecimalString>,
++        /// What this exact operation spends beyond the requested value, in
++        /// nanograms, present only when a preview that asked for the
++        /// operation's fee established it; `None` means unknown, never zero.
++        ///
++        /// Unlike `operation_fee_nanograms`, the root wallet transaction fee,
++        /// this counts the part of the forwarding fee that travels with each
++        /// message under send mode +1, and leaves out the action fee that a
++        /// message without +1 pays from its own value. When it is present,
++        /// this refusal means that the requested value plus this amount
++        /// exceeds the balance, where equality fits, instead of a comparison
++        /// with `estimated_fee_nanograms`.
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        operation_spend_nanograms: Option<UnsignedDecimalString>,
      },
      /// The protected secret cannot be decoded as a valid wallet recovery phrase.
      #[error("the protected wallet secret is invalid")]
-@@ -333,4 +343,86 @@ pub enum WalletClientError {
+@@ -333,4 +367,145 @@ pub enum WalletClientError {
          /// Bounded developer-facing reason that contains no secret material.
          diagnostic: String,
      },
@@ -121,12 +318,14 @@ index 26b26f4..d96fd21 100644
 +                available_nanograms: UnsignedDecimalString::from(5_u64),
 +                requested_nanograms: UnsignedDecimalString::from(7_u64),
 +                operation_fee_nanograms: None,
++                operation_spend_nanograms: None,
 +            },
 +            WalletClientError::InsufficientBalanceForFees {
 +                available_nanograms: UnsignedDecimalString::from(9_u64),
 +                requested_nanograms: UnsignedDecimalString::from(7_u64),
 +                estimated_fee_nanograms: UnsignedDecimalString::from(2_u64),
 +                operation_fee_nanograms: None,
++                operation_spend_nanograms: None,
 +            },
 +        ];
 +        for (json, error) in legacy.into_iter().zip(without_fee) {
@@ -144,6 +343,7 @@ index 26b26f4..d96fd21 100644
 +            available_nanograms: UnsignedDecimalString::from(5_u64),
 +            requested_nanograms: UnsignedDecimalString::from(7_u64),
 +            operation_fee_nanograms: Some(UnsignedDecimalString::from(419_405_u64)),
++            operation_spend_nanograms: None,
 +        };
 +        let json = serde_json::to_value(&with_fee).expect("refusal serializes");
 +        assert_eq!(
@@ -159,9 +359,65 @@ index 26b26f4..d96fd21 100644
 +            "insufficient wallet balance: requested 7 nanograms, available 5"
 +        );
 +    }
++
++    /// Reads a funds refusal without the spend as `None`, omits an absent
++    /// spend and round-trips a positive one beside the fee, with the same
++    /// display text.
++    #[test]
++    fn funds_refusals_carry_an_optional_operation_spend() {
++        let short = |spend: Option<u64>| WalletClientError::InsufficientBalance {
++            available_nanograms: UnsignedDecimalString::from(5_u64),
++            requested_nanograms: UnsignedDecimalString::from(7_u64),
++            operation_fee_nanograms: Some(UnsignedDecimalString::from(419_380_u64)),
++            operation_spend_nanograms: spend.map(UnsignedDecimalString::from),
++        };
++        let short_for_fees = |spend: Option<u64>| WalletClientError::InsufficientBalanceForFees {
++            available_nanograms: UnsignedDecimalString::from(701_082_553_u64),
++            requested_nanograms: UnsignedDecimalString::from(700_614_284_u64),
++            estimated_fee_nanograms: UnsignedDecimalString::from(419_380_u64),
++            operation_fee_nanograms: Some(UnsignedDecimalString::from(419_380_u64)),
++            operation_spend_nanograms: spend.map(UnsignedDecimalString::from),
++        };
++        let rows = [
++            (
++                short(None),
++                short(Some(468_270)),
++                "insufficientBalance",
++                r#"{"insufficientBalance":{"available_nanograms":"5","requested_nanograms":"7","operation_fee_nanograms":"419380"}}"#,
++                "insufficient wallet balance: requested 7 nanograms, available 5",
++            ),
++            (
++                short_for_fees(None),
++                short_for_fees(Some(468_270)),
++                "insufficientBalanceForFees",
++                r#"{"insufficientBalanceForFees":{"available_nanograms":"701082553","requested_nanograms":"700614284","estimated_fee_nanograms":"419380","operation_fee_nanograms":"419380"}}"#,
++                "insufficient wallet balance including fees: requested 700614284 nanograms, estimated fee 419380 nanograms, available 701082553 nanograms",
++            ),
++        ];
++        for (without_spend, with_spend, variant, json, display) in rows {
++            assert_eq!(
++                serde_json::from_str::<WalletClientError>(json).expect("JSON decodes"),
++                without_spend
++            );
++            assert_eq!(
++                serde_json::to_string(&without_spend).expect("refusal serializes"),
++                json
++            );
++
++            let encoded = serde_json::to_value(&with_spend).expect("refusal serializes");
++            assert_eq!(encoded[variant]["operation_spend_nanograms"], "468270");
++            assert_eq!(encoded[variant]["operation_fee_nanograms"], "419380");
++            assert_eq!(
++                serde_json::from_value::<WalletClientError>(encoded).expect("refusal decodes"),
++                with_spend
++            );
++            assert_eq!(without_spend.to_string(), display);
++            assert_eq!(with_spend.to_string(), display);
++        }
++    }
  }
 diff --git a/src/domain/send.rs b/src/domain/send.rs
-index 5fd95f5..6fe519e 100644
+index 5fd95f5..a93eda4 100644
 --- a/src/domain/send.rs
 +++ b/src/domain/send.rs
 @@ -2,6 +2,11 @@
@@ -388,20 +644,48 @@ index 5fd95f5..6fe519e 100644
  }
  
  /// An informational transfer preview produced without unlocking the wallet secret.
-@@ -454,9 +604,10 @@ pub struct SendResult {
+@@ -279,6 +429,26 @@ pub struct SendPreview {
+     pub message_boc_base64: Boc,
+     /// The bounded Toncenter emulation summary shown before authorization.
+     pub emulation: SendEmulation,
++    /// What the wallet spends beyond the exact message values, in nanograms.
++    ///
++    /// Present only on a preview that asked for the operation's fee with
++    /// [`SendPreviewRequest::estimate_shortfall`] for an exact-value intent;
++    /// such a preview succeeds only when the engine established this amount.
++    /// It is not [`SendEmulation::wallet_fees_nanograms`], the root wallet
++    /// transaction fee: with send mode +1 (pay fees separately: modes 3 and
++    /// 19, and the mode-less exact value) it adds the part of the forwarding
++    /// fee that travels with each message, and without +1 (modes 2 and 18)
++    /// the forwarding fee comes out of the message value instead, so it is
++    /// that fee less the action fee. The values plus this amount fit the
++    /// fresh balance, equality included; one nanogram less refuses.
++    ///
++    /// `None` means the amount is unknown, never zero: every default preview,
++    /// every whole-balance intent and every BOC preview leaves it absent.
++    /// Default intent previews also refuse an emulation in which the wallet
++    /// did not create every outgoing message.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    #[uniffi(default = None)]
++    pub operation_spend_nanograms: Option<UnsignedDecimalString>,
+ }
+ 
+ /// A validated internal-message signing preview without submission fee claims.
+@@ -454,9 +624,11 @@ pub struct SendResult {
  #[cfg(test)]
  mod tests {
      use super::{
 -        SendAmount, SendExpiration, SendIntent, SendMessage, SendMessageBody, SendRequest,
-+        PrepareTransferRequest, SendAmount, SendExpiration, SendIntent, SendIntentError,
-+        SendMessage, SendMessageBody, SendModeRefusal, SendPreviewRequest, SendRequest,
++        PrepareTransferRequest, SendAmount, SendEmulation, SendExpiration, SendIntent,
++        SendIntentError, SendMessage, SendMessageBody, SendModeRefusal, SendPreview,
++        SendPreviewRequest, SendRequest,
      };
 -    use crate::{Boc, NonEmptyString, TonAddressString};
 +    use crate::{Boc, NonEmptyString, TonAddressString, UnsignedDecimalString, WalletClientError};
      use ton::ton_core::cell::TonCell;
  
      #[test]
-@@ -548,6 +699,406 @@ mod tests {
+@@ -548,6 +720,454 @@ mod tests {
          assert!(!decoded.intent.messages[0].bounce);
      }
  
@@ -473,6 +757,54 @@ index 5fd95f5..6fe519e 100644
 +        let decoded: SendPreviewRequest =
 +            serde_json::from_value(explicit).expect("explicit default decodes");
 +        assert_eq!(decoded, request);
++    }
++
++    /// Keeps a preview without a spend as it serialized before the field
++    /// existed, reads that JSON as `None` and round-trips a positive spend.
++    #[test]
++    fn preview_json_omits_an_absent_operation_spend() {
++        let preview = SendPreview {
++            messages: send_request(SendExpiration::EngineDefault, SendMessageBody::Empty)
++                .intent
++                .messages,
++            valid_until: 1_900_000_000,
++            message_boc_base64: Boc::try_from(TonCell::EMPTY_BOC.to_vec()).expect("valid BOC"),
++            emulation: SendEmulation {
++                mc_block_seqno: 104_737_326,
++                wallet_fees_nanograms: UnsignedDecimalString::from(419_380_u64),
++                trace_fees_nanograms: UnsignedDecimalString::from(419_380_u64),
++                transaction_count: 1,
++                actions: Vec::new(),
++                transactions: Vec::new(),
++                trace_succeeded: true,
++                is_incomplete: false,
++            },
++            operation_spend_nanograms: None,
++        };
++        let json = serde_json::to_value(&preview).expect("preview serializes");
++        let mut fields = json
++            .as_object()
++            .expect("preview object")
++            .keys()
++            .map(String::as_str)
++            .collect::<Vec<_>>();
++        fields.sort_unstable();
++        assert_eq!(
++            fields,
++            ["emulation", "messageBocBase64", "messages", "validUntil"]
++        );
++        let decoded: SendPreview = serde_json::from_value(json).expect("preview deserializes");
++        assert_eq!(decoded, preview);
++
++        let opted = SendPreview {
++            operation_spend_nanograms: Some(UnsignedDecimalString::from(468_270_u64)),
++            ..preview
++        };
++        let json = serde_json::to_value(&opted).expect("preview serializes");
++        assert_eq!(json["operationSpendNanograms"], "468270");
++        assert_eq!(json["emulation"]["walletFeesNanograms"], "419380");
++        let decoded: SendPreview = serde_json::from_value(json).expect("preview deserializes");
++        assert_eq!(decoded, opted);
 +    }
 +
 +    /// Reads a message persisted before send modes existed as a mode-less one.
@@ -808,7 +1140,7 @@ index 5fd95f5..6fe519e 100644
      /// Builds one public send request for serialization tests.
      fn send_request(expiration: SendExpiration, body: SendMessageBody) -> SendRequest {
          SendRequest {
-@@ -564,6 +1115,7 @@ mod tests {
+@@ -564,6 +1184,7 @@ mod tests {
                      body,
                      bounce: false,
                      state_init: None,
@@ -817,7 +1149,7 @@ index 5fd95f5..6fe519e 100644
              },
          }
 diff --git a/src/engine/emulation.rs b/src/engine/emulation.rs
-index 2fe02bf..aa3a6fa 100644
+index 2fe02bf..101b7d6 100644
 --- a/src/engine/emulation.rs
 +++ b/src/engine/emulation.rs
 @@ -13,7 +13,8 @@ use crate::types::Boc;
@@ -830,16 +1162,58 @@ index 2fe02bf..aa3a6fa 100644
  };
  
  #[derive(Debug)]
-@@ -22,12 +23,63 @@ pub(super) struct EvaluatedEmulation {
+@@ -22,12 +23,121 @@ pub(super) struct EvaluatedEmulation {
      pub(super) wallet_succeeded: bool,
      pub(super) compute_exit_code: Option<i32>,
      pub(super) action_result_code: Option<i32>,
 +    /// The root wallet transaction's message delivery, when its counters are usable.
 +    pub(super) delivery: Option<RootDelivery>,
++    /// The length of the root wallet transaction's `out_msgs` list, when it is
++    /// a list: one entry for each outgoing message the wallet created.
++    pub(super) out_messages: Option<usize>,
 +    /// The root wallet transaction's fee components, when all of them are usable.
 +    pub(super) composition: Option<RootComposition>,
++    /// The root wallet transaction's forwarding fees, when both are usable.
++    pub(super) forwarding: Option<RootForwarding>,
  }
  
++impl EvaluatedEmulation {
++    /// How the root wallet transaction delivered `messages` outgoing messages.
++    ///
++    /// The action counters decide when they are usable; only otherwise does
++    /// the length of the root's `out_msgs` list. `None` means that neither
++    /// records the delivery, never that nothing was created.
++    pub(super) fn message_creation(&self, messages: usize) -> Option<MessageCreation> {
++        let creation = if let Some(delivery) = self.delivery {
++            if delivery.created_all(messages) {
++                MessageCreation::Every
++            } else if delivery.skipped_all(messages) {
++                MessageCreation::Nothing
++            } else {
++                MessageCreation::Partial
++            }
++        } else {
++            match self.out_messages? {
++                created if created == messages => MessageCreation::Every,
++                0 => MessageCreation::Nothing,
++                _ => MessageCreation::Partial,
++            }
++        };
++        Some(creation)
++    }
++}
++
++/// How the root wallet transaction delivered the requested outgoing messages.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(super) enum MessageCreation {
++    /// It created every message and skipped none.
++    Every,
++    /// It created none of them.
++    Nothing,
++    /// Any other delivery, such as only some of the messages.
++    Partial,
++}
++
 +/// How the root wallet transaction's action phase handled its actions.
 +///
 +/// Read leniently from the answer: unusable counters leave this absent and
@@ -884,6 +1258,22 @@ index 2fe02bf..aa3a6fa 100644
 +    pub(super) storage_fees: BigUint,
 +}
 +
++/// Root wallet transaction forwarding fees, from which a preview prices the
++/// wallet's spend on the messages that this transaction created.
++///
++/// Read leniently from the answer, separately from [`RootComposition`]: a
++/// created operation needs neither its gas nor its storage fee. Whether the
++/// values can price a message is decided where they are used.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(super) struct RootForwarding {
++    /// `total_action_fees`: the forwarding fees' part that the action phase
++    /// keeps; the protocol omits it when it is zero.
++    pub(super) total_action_fees: BigUint,
++    /// `total_fwd_fees`: the whole forwarding fees of the created messages,
++    /// which includes the action fees; the protocol omits it when it is zero.
++    pub(super) total_fwd_fees: BigUint,
++}
++
 +/// Builds the Emulate API request; `mc_block_seqno` pins the emulated state
 +/// to that masterchain block, and `None` asks for the current state.
  pub(super) fn build_emulation_request(
@@ -894,7 +1284,7 @@ index 2fe02bf..aa3a6fa 100644
  ) -> Result<HttpRequest, WalletClientError> {
      let body = serde_json::to_vec(&serde_json::json!({
          "boc": signed_boc,
-@@ -36,7 +88,7 @@ pub(super) fn build_emulation_request(
+@@ -36,7 +146,7 @@ pub(super) fn build_emulation_request(
          "include_address_book": false,
          "include_metadata": false,
          "with_actions": true,
@@ -903,12 +1293,14 @@ index 2fe02bf..aa3a6fa 100644
      }))
      .map_err(|_| WalletClientError::StateUnavailable)?;
  
-@@ -161,9 +213,61 @@ pub(super) fn parse_emulation(
+@@ -161,9 +271,77 @@ pub(super) fn parse_emulation(
              .action
              .as_ref()
              .and_then(|phase| phase.result_code),
 +        delivery: root_delivery(&wallet.description),
++        out_messages: wallet.out_msgs.as_array().map(Vec::len),
 +        composition: root_composition(&wallet.description),
++        forwarding: root_forwarding(&wallet.description),
 +    })
 +}
 +
@@ -926,12 +1318,7 @@ index 2fe02bf..aa3a6fa 100644
 +    let action = description.action.as_ref()?;
 +    let compute = description.compute_ph.as_ref()?;
 +    Some(RootComposition {
-+        // `total_action_fees:(Maybe Grams)` is stored only when nonzero.
-+        total_action_fees: if action.total_action_fees.is_null() {
-+            BigUint::default()
-+        } else {
-+            lenient_unsigned(&action.total_action_fees)?
-+        },
++        total_action_fees: maybe_nanograms(&action.total_action_fees)?,
 +        gas_used: lenient_unsigned(&compute.gas_used)?,
 +        storage_fees: match &description.storage_ph {
 +            // `storage_ph:(Maybe TrStoragePhase)` absent: nothing was collected.
@@ -944,9 +1331,28 @@ index 2fe02bf..aa3a6fa 100644
 +            | serde_json::Value::String(_)
 +            | serde_json::Value::Array(_) => return None,
 +        },
++    })
++}
++
++fn root_forwarding(description: &EmulatedTransactionDescription) -> Option<RootForwarding> {
++    let action = description.action.as_ref()?;
++    Some(RootForwarding {
++        total_action_fees: maybe_nanograms(&action.total_action_fees)?,
++        total_fwd_fees: maybe_nanograms(&action.total_fwd_fees)?,
      })
  }
  
++/// Reads a `(Maybe Grams)` fee that the protocol stores only when nonzero:
++/// an absent or `null` value is zero, any other value reads as
++/// [`lenient_unsigned`] does.
++fn maybe_nanograms(value: &serde_json::Value) -> Option<BigUint> {
++    if value.is_null() {
++        Some(BigUint::default())
++    } else {
++        lenient_unsigned(value)
++    }
++}
++
 +/// Reads a nonnegative integer that Toncenter encodes as a JSON number or as
 +/// a canonical decimal string; any other value is unusable.
 +fn lenient_unsigned(value: &serde_json::Value) -> Option<BigUint> {
@@ -965,13 +1371,19 @@ index 2fe02bf..aa3a6fa 100644
  pub(super) fn is_message_not_accepted(error: &DomainError) -> bool {
      let diagnostic = error.developer_message.to_ascii_lowercase();
      diagnostic.contains("external message") && diagnostic.contains("not accepted")
-@@ -279,23 +383,38 @@ struct EmulatedTransaction {
+@@ -277,25 +455,46 @@ struct EmulatedTransaction {
+     account: String,
+     total_fees: String,
      description: EmulatedTransactionDescription,
++    /// Read only for its length, leniently like the fields below.
++    #[serde(default)]
++    out_msgs: serde_json::Value,
  }
  
-+// The raw `serde_json::Value` fields are read leniently by `root_delivery` and
-+// `root_composition`: any JSON value deserializes, so they never change
-+// whether or how the rest of an answer parses.
++// The raw `serde_json::Value` fields are read leniently by `root_delivery`,
++// `root_composition`, `root_forwarding` and `parse_emulation`: any JSON value
++// deserializes, so they never change whether or how the rest of an answer
++// parses.
  #[derive(Deserialize)]
  struct EmulatedTransactionDescription {
      aborted: Option<bool>,
@@ -1001,10 +1413,12 @@ index 2fe02bf..aa3a6fa 100644
 +    msgs_created: serde_json::Value,
 +    #[serde(default)]
 +    total_action_fees: serde_json::Value,
++    #[serde(default)]
++    total_fwd_fees: serde_json::Value,
  }
  
  #[cfg(test)]
-@@ -304,7 +423,7 @@ mod tests {
+@@ -304,7 +503,7 @@ mod tests {
  
      use super::*;
      use crate::types::Boc;
@@ -1013,7 +1427,7 @@ index 2fe02bf..aa3a6fa 100644
      use ton::ton_core::cell::TonCell;
  
      const ADDRESS: &str = "0:1111111111111111111111111111111111111111111111111111111111111111";
-@@ -313,7 +432,7 @@ mod tests {
+@@ -313,7 +512,7 @@ mod tests {
      fn builds_the_emulate_trace_request_from_the_provider_base() {
          let config = config("https://provider.example/custom/");
          let boc = Boc::try_from(TonCell::EMPTY_BOC.to_vec()).expect("valid BOC fixture");
@@ -1022,7 +1436,7 @@ index 2fe02bf..aa3a6fa 100644
              .expect("emulation request must build");
          let body: serde_json::Value =
              serde_json::from_slice(&request.body).expect("request body must be JSON");
-@@ -328,6 +447,207 @@ mod tests {
+@@ -328,6 +527,415 @@ mod tests {
          assert_eq!(body["with_actions"], true);
      }
  
@@ -1118,6 +1532,113 @@ index 2fe02bf..aa3a6fa 100644
 +        );
 +    }
 +
++    /// Reads the forwarding fees of captured created and skipped answers as
++    /// numbers or decimal strings, an omitted fee as zero, and leaves the
++    /// record absent for a malformed fee or a missing action phase; created
++    /// answers keep it without gas or storage fees, which only the
++    /// composition needs. The delivery and composition never depend on it.
++    #[test]
++    fn reads_the_root_forwarding_fees_leniently() {
++        let source = TonAddressString::try_from(ADDRESS).expect("test address must parse");
++        let forwarding = |action: u32, total: u32| {
++            Some(RootForwarding {
++                total_action_fees: BigUint::from(action),
++                total_fwd_fees: BigUint::from(total),
++            })
++        };
++        // The captured mode-3 1e8 answer at block 104746942.
++        let mut created = transaction(ADDRESS, "419405", false, true, true, 0, 0);
++        created["description"]["storage_ph"] = serde_json::json!({
++            "storage_fees_collected": "26",
++            "status_change": "unchanged"
++        });
++        created["description"]["compute_ph"]["gas_used"] = serde_json::json!("3560");
++        let action = &mut created["description"]["action"];
++        action["tot_actions"] = serde_json::json!(1);
++        action["skipped_actions"] = serde_json::json!(0);
++        action["msgs_created"] = serde_json::json!(1);
++        action["total_action_fees"] = serde_json::json!("24444");
++        action["total_fwd_fees"] = serde_json::json!("73334");
++        let parsed = parse(&created, &source).expect("answer parses");
++        assert_eq!(parsed.forwarding, forwarding(24_444, 73_334));
++        assert!(parsed.composition.is_some());
++        let delivery = parsed.delivery;
++        assert!(delivery.is_some_and(|delivery| delivery.created_all(1)));
++
++        let mut numbers = created.clone();
++        numbers["description"]["action"]["total_action_fees"] = serde_json::json!(24_444);
++        numbers["description"]["action"]["total_fwd_fees"] = serde_json::json!(73_334);
++        assert_eq!(
++            parse(&numbers, &source).expect("answer parses").forwarding,
++            forwarding(24_444, 73_334)
++        );
++
++        // A skipped answer reports its fine and a `null` forwarding total.
++        let mut skipped = created.clone();
++        skipped["description"]["action"]["skipped_actions"] = serde_json::json!(1);
++        skipped["description"]["action"]["msgs_created"] = serde_json::json!(0);
++        skipped["description"]["action"]["total_action_fees"] = serde_json::json!("1666");
++        skipped["description"]["action"]["total_fwd_fees"] = serde_json::Value::Null;
++        assert_eq!(
++            parse(&skipped, &source).expect("answer parses").forwarding,
++            forwarding(1_666, 0)
++        );
++        let mut omitted = skipped.clone();
++        let _ = omitted["description"]["action"]
++            .as_object_mut()
++            .expect("action object")
++            .remove("total_fwd_fees");
++        assert_eq!(
++            parse(&omitted, &source).expect("answer parses").forwarding,
++            forwarding(1_666, 0)
++        );
++
++        for value in [
++            serde_json::json!(-73_334),
++            serde_json::json!(73_334.5),
++            serde_json::json!("073334"),
++            serde_json::json!("+73334"),
++            serde_json::json!("0x11e76"),
++            serde_json::json!([73_334]),
++            serde_json::json!({ "value": 73_334 }),
++            serde_json::json!(true),
++        ] {
++            for field in ["total_action_fees", "total_fwd_fees"] {
++                let mut root = created.clone();
++                root["description"]["action"][field] = value.clone();
++                let parsed = parse(&root, &source).expect("answer still parses");
++                assert_eq!(parsed.forwarding, None, "{field} {value}");
++                assert_eq!(parsed.delivery, delivery, "{field} {value}");
++                if field == "total_fwd_fees" {
++                    assert!(parsed.composition.is_some(), "{value}");
++                }
++            }
++        }
++
++        // Gas and storage fees are not part of the forwarding record.
++        let mut bare = created.clone();
++        let description = bare["description"]
++            .as_object_mut()
++            .expect("description object");
++        let _ = description.remove("storage_ph");
++        let _ = description["compute_ph"]
++            .as_object_mut()
++            .expect("compute object")
++            .remove("gas_used");
++        let parsed = parse(&bare, &source).expect("answer parses");
++        assert_eq!(parsed.composition, None);
++        assert_eq!(parsed.forwarding, forwarding(24_444, 73_334));
++
++        let mut no_action = created;
++        no_action["description"]["action"] = serde_json::Value::Null;
++        assert_eq!(
++            parse(&no_action, &source)
++                .expect("answer parses")
++                .forwarding,
++            None
++        );
++    }
++
 +    /// Unusable new fields leave the rest of the answer, and so every default
 +    /// preview, exactly as without them; they only make the reading absent.
 +    #[test]
@@ -1126,7 +1647,16 @@ index 2fe02bf..aa3a6fa 100644
 +        let plain = transaction(ADDRESS, "11", false, true, true, 0, 0);
 +        let baseline = parse(&plain, &source).expect("plain answer parses");
 +        assert_eq!(baseline.delivery, None);
++        assert_eq!(baseline.out_messages, None);
 +        assert_eq!(baseline.composition, None);
++        // Both omitted `(Maybe Grams)` fees read as zero; admission decides.
++        assert_eq!(
++            baseline.forwarding,
++            Some(RootForwarding {
++                total_action_fees: BigUint::default(),
++                total_fwd_fees: BigUint::default(),
++            })
++        );
 +
 +        let unusable = [
 +            serde_json::json!(-1),
@@ -1141,6 +1671,7 @@ index 2fe02bf..aa3a6fa 100644
 +        ];
 +        for value in unusable {
 +            let mut root = plain.clone();
++            root["out_msgs"] = value.clone();
 +            root["description"]["storage_ph"] = value.clone();
 +            root["description"]["compute_ph"]["gas_used"] = value.clone();
 +            for field in [
@@ -1148,6 +1679,7 @@ index 2fe02bf..aa3a6fa 100644
 +                "skipped_actions",
 +                "msgs_created",
 +                "total_action_fees",
++                "total_fwd_fees",
 +            ] {
 +                root["description"]["action"][field] = value.clone();
 +            }
@@ -1155,7 +1687,15 @@ index 2fe02bf..aa3a6fa 100644
 +            assert_eq!(parsed.summary, baseline.summary, "{value}");
 +            assert_eq!(parsed.wallet_succeeded, baseline.wallet_succeeded);
 +            assert_eq!(parsed.delivery, None, "{value}");
++            let list_length = value.as_array().map(Vec::len);
++            assert_eq!(parsed.out_messages, list_length, "{value}");
 +            assert_eq!(parsed.composition, None, "{value}");
++            // Only the uint16-overflowing count is a valid fee.
++            let forwarding = (value == serde_json::json!(65_536)).then(|| RootForwarding {
++                total_action_fees: BigUint::from(65_536_u32),
++                total_fwd_fees: BigUint::from(65_536_u32),
++            });
++            assert_eq!(parsed.forwarding, forwarding, "{value}");
 +        }
 +
 +        // A present storage phase without its collected fee is unknown, not zero.
@@ -1211,6 +1751,88 @@ index 2fe02bf..aa3a6fa 100644
 +        );
 +    }
 +
++    /// Usable counters decide the message creation even beside a missing or
++    /// disagreeing `out_msgs` list; only without them does the list's length
++    /// decide, and without either the creation is unknown, never "none".
++    #[test]
++    fn counters_decide_the_message_creation_before_the_output_list() {
++        use MessageCreation::{Every, Nothing, Partial};
++
++        let source = TonAddressString::try_from(ADDRESS).expect("test address must parse");
++        let entry = serde_json::json!({ "source": ADDRESS, "destination": ADDRESS });
++        let list = |length: usize| serde_json::Value::Array(vec![entry.clone(); length]);
++        let root = |counters: Option<(u16, u16, u16)>, out_msgs: Option<serde_json::Value>| {
++            let mut root = transaction(ADDRESS, "11", false, true, true, 0, 0);
++            if let Some((total, skipped, created)) = counters {
++                let action = &mut root["description"]["action"];
++                action["tot_actions"] = total.into();
++                action["skipped_actions"] = skipped.into();
++                action["msgs_created"] = created.into();
++            }
++            if let Some(out_msgs) = out_msgs {
++                root["out_msgs"] = out_msgs;
++            }
++            root
++        };
++        // Counters, output list, message count and the expected creation.
++        let rows = [
++            (Some((1, 0, 1)), Some(list(1)), 1, Some(Every)),
++            (Some((1, 0, 1)), None, 1, Some(Every)),
++            (
++                Some((1, 0, 1)),
++                Some(serde_json::json!("x")),
++                1,
++                Some(Every),
++            ),
++            (Some((1, 0, 1)), Some(list(0)), 1, Some(Every)),
++            (Some((1, 1, 0)), Some(list(1)), 1, Some(Nothing)),
++            (Some((1, 1, 0)), None, 1, Some(Nothing)),
++            (Some((1, 1, 1)), Some(list(1)), 1, Some(Partial)),
++            (Some((2, 1, 1)), Some(list(1)), 2, Some(Partial)),
++            (Some((2, 0, 2)), Some(list(2)), 2, Some(Every)),
++            (Some((2, 2, 0)), Some(list(0)), 2, Some(Nothing)),
++            (Some((1, 0, 1)), Some(list(1)), 2, Some(Partial)),
++            (None, Some(list(1)), 1, Some(Every)),
++            (None, Some(list(0)), 1, Some(Nothing)),
++            (None, Some(list(2)), 2, Some(Every)),
++            (None, Some(list(1)), 2, Some(Partial)),
++            (None, Some(list(0)), 2, Some(Nothing)),
++            (None, Some(list(2)), 1, Some(Partial)),
++            (None, None, 1, None),
++            (None, Some(serde_json::Value::Null), 1, None),
++            (None, Some(serde_json::json!({ "0": entry })), 1, None),
++            (None, Some(serde_json::json!(1)), 1, None),
++            (None, Some(serde_json::json!("[]")), 1, None),
++        ];
++        for (counters, out_msgs, messages, expected) in rows {
++            let label = format!("{counters:?} {out_msgs:?} {messages}");
++            let parsed = parse(&root(counters, out_msgs), &source).expect("answer parses");
++            assert_eq!(parsed.message_creation(messages), expected, "{label}");
++        }
++
++        // Unusable counters fall back to the list exactly like absent ones.
++        for counter in [
++            serde_json::json!(-1),
++            serde_json::json!(1.5),
++            serde_json::json!("one"),
++            serde_json::json!(65_536),
++            serde_json::json!("18446744073709551616"),
++            serde_json::Value::Null,
++        ] {
++            for (out_msgs, expected) in [
++                (Some(list(1)), Some(Every)),
++                (Some(list(0)), Some(Nothing)),
++                (None, None),
++            ] {
++                let mut root = root(Some((1, 0, 1)), out_msgs);
++                root["description"]["action"]["msgs_created"] = counter.clone();
++                let parsed = parse(&root, &source).expect("answer parses");
++                assert_eq!(parsed.delivery, None, "{counter}");
++                assert_eq!(parsed.message_creation(1), expected, "{counter}");
++            }
++        }
++    }
++
 +    fn parse(
 +        root: &serde_json::Value,
 +        source: &TonAddressString,
@@ -1230,7 +1852,7 @@ index 2fe02bf..aa3a6fa 100644
      #[test]
      fn parses_fees_and_detects_a_failed_child_transaction() {
          let source = TonAddressString::try_from(ADDRESS).expect("test address must parse");
-@@ -516,11 +836,17 @@ mod tests {
+@@ -516,12 +1124,20 @@ mod tests {
                  compute_ph: compute.map(|(success, exit_code)| EmulatedComputePhase {
                      success: Some(success),
                      exit_code: Some(exit_code),
@@ -1243,13 +1865,16 @@ index 2fe02bf..aa3a6fa 100644
 +                    skipped_actions: serde_json::Value::Null,
 +                    msgs_created: serde_json::Value::Null,
 +                    total_action_fees: serde_json::Value::Null,
++                    total_fwd_fees: serde_json::Value::Null,
                  }),
 +                storage_ph: serde_json::Value::Null,
              },
++            out_msgs: serde_json::Value::Null,
          }
      }
+ 
 diff --git a/src/engine/nft_transfer.rs b/src/engine/nft_transfer.rs
-index c727fc4..1b77246 100644
+index c727fc4..93bf6c7 100644
 --- a/src/engine/nft_transfer.rs
 +++ b/src/engine/nft_transfer.rs
 @@ -34,6 +34,7 @@ impl WalletClient {
@@ -1260,8 +1885,16 @@ index c727fc4..1b77246 100644
              })
              .await?;
          validate_nft_emulation(&preview, &request.intent.nft_address)?;
+@@ -305,6 +306,7 @@ mod tests {
+                 trace_succeeded: true,
+                 is_incomplete: false,
+             },
++            operation_spend_nanograms: None,
+         }
+     }
+ 
 diff --git a/src/engine/prepare_transfer.rs b/src/engine/prepare_transfer.rs
-index 50d5caf..eb1ab89 100644
+index 50d5caf..137bac5 100644
 --- a/src/engine/prepare_transfer.rs
 +++ b/src/engine/prepare_transfer.rs
 @@ -5,7 +5,8 @@ use crate::transport::build_toncenter_v2_request;
@@ -1318,15 +1951,16 @@ index 50d5caf..eb1ab89 100644
          let send_request = SendRequest {
              operation_id: request.operation_id,
              force: false,
-@@ -102,6 +124,7 @@ impl WalletClient {
+@@ -102,6 +124,8 @@ impl WalletClient {
              let error = WalletClientError::InsufficientBalance {
                  available_nanograms: account.balance_nanograms,
                  requested_nanograms,
 +                operation_fee_nanograms: None,
++                operation_spend_nanograms: None,
              };
              self.discard_transfer_preparation(generation);
              return Err(error);
-@@ -164,6 +187,7 @@ impl WalletClient {
+@@ -164,6 +188,7 @@ impl WalletClient {
              &expected_source,
              config.network,
              &send_request,
@@ -1334,7 +1968,7 @@ index 50d5caf..eb1ab89 100644
              &fresh,
              valid_until,
          )
-@@ -226,3 +250,1040 @@ impl WalletClient {
+@@ -226,3 +251,1041 @@ impl WalletClient {
          }
      }
  }
@@ -2337,6 +2971,7 @@ index 50d5caf..eb1ab89 100644
 +                        available_nanograms: UnsignedDecimalString::from(row.balance),
 +                        requested_nanograms: UnsignedDecimalString::from(requested),
 +                        operation_fee_nanograms: None,
++                        operation_spend_nanograms: None,
 +                    };
 +                    (Err(error), vec![account], Vec::new())
 +                },
@@ -2376,7 +3011,7 @@ index 50d5caf..eb1ab89 100644
 +    }
 +}
 diff --git a/src/engine/preview.rs b/src/engine/preview.rs
-index 4a91f8a..6428893 100644
+index 4a91f8a..1ed5c97 100644
 --- a/src/engine/preview.rs
 +++ b/src/engine/preview.rs
 @@ -1,17 +1,23 @@
@@ -2401,13 +3036,13 @@ index 4a91f8a..6428893 100644
  use super::WalletClient;
 -use super::emulation::{build_emulation_request, is_message_not_accepted, parse_emulation};
 +use super::emulation::{
-+    EvaluatedEmulation, RootComposition, build_emulation_request, is_message_not_accepted,
-+    parse_emulation,
++    EvaluatedEmulation, MessageCreation, RootComposition, build_emulation_request,
++    is_message_not_accepted, parse_emulation,
 +};
  use super::expiration::resolve_send_expiration;
  use super::provider::parse_account;
  use super::send_http::{build_seqno_request, parse_seqno};
-@@ -91,20 +97,26 @@ impl WalletClient {
+@@ -91,20 +97,27 @@ impl WalletClient {
          let available = account.balance_nanograms.clone();
          let requested = request
              .intent
@@ -2433,6 +3068,7 @@ index 4a91f8a..6428893 100644
 -            ));
 -        }
 +                    operation_fee_nanograms: None,
++                    operation_spend_nanograms: None,
 +                };
 +                if !request.estimate_shortfall {
 +                    return Err(self.preview_error(generation, refusal));
@@ -2445,7 +3081,7 @@ index 4a91f8a..6428893 100644
  
          let seqno = match account.status {
              AccountStatus::Active => self
-@@ -114,16 +126,16 @@ impl WalletClient {
+@@ -114,16 +127,16 @@ impl WalletClient {
                  .map_err(|error| {
                      self.preview_error(
                          generation,
@@ -2465,7 +3101,7 @@ index 4a91f8a..6428893 100644
                  ));
              }
          };
-@@ -137,9 +149,9 @@ impl WalletClient {
+@@ -137,9 +150,9 @@ impl WalletClient {
          .map_err(|error| {
              self.preview_error(
                  generation,
@@ -2477,7 +3113,7 @@ index 4a91f8a..6428893 100644
              )
          })?;
  
-@@ -159,40 +171,72 @@ impl WalletClient {
+@@ -159,48 +172,89 @@ impl WalletClient {
          .map_err(|error| {
              self.preview_error(
                  generation,
@@ -2498,7 +3134,7 @@ index 4a91f8a..6428893 100644
 -                &boc,
 -            )
 -            .await?;
-+        let (emulation, operation_fee) = match &requested {
++        let (emulation, operation_fee, operation_spend, undelivered) = match &requested {
 +            Some(nanograms) if request.estimate_shortfall => {
 +                let companion = || {
 +                    prepare_transfer_emulation(
@@ -2517,14 +3153,14 @@ index 4a91f8a..6428893 100644
 +                        &config,
 +                        emulation_request_id,
 +                        &boc,
-+                        request.intent.messages.len(),
++                        &request.intent.messages,
 +                        companion,
 +                    )
 +                    .await?
 +                {
-+                    Ok(OperationQuote::Created(emulation)) => {
++                    Ok(OperationQuote::Created { emulation, spend }) => {
 +                        let fee = emulation.wallet_fees_nanograms.clone();
-+                        (emulation, Some(fee))
++                        (emulation, Some(fee), Some(spend), None)
 +                    }
 +                    Ok(OperationQuote::Unusable(quote)) => {
 +                        return Err(
@@ -2535,7 +3171,7 @@ index 4a91f8a..6428893 100644
 +                }
 +            }
 +            Some(_) | None => {
-+                let emulation = self
++                let evaluated = self
 +                    .emulate_preview_boc(
 +                        generation,
 +                        &config,
@@ -2544,7 +3180,8 @@ index 4a91f8a..6428893 100644
 +                        &boc,
 +                    )
 +                    .await?;
-+                (emulation, None)
++                let undelivered = delivery_refusal(&evaluated, request.intent.messages.len());
++                (evaluated.summary, None, None, undelivered)
 +            }
 +        };
  
@@ -2567,18 +3204,59 @@ index 4a91f8a..6428893 100644
 -                    },
 -                ));
 +            // Only a preview that asked for the operation's fee gets here
-+            // above the balance, with the fee of its created operation.
++            // above the balance, with the fee and the spend of its created
++            // operation.
 +            if let Some(refusal) = funds_refusal(
 +                &available,
 +                nanograms,
 +                &emulation.wallet_fees_nanograms,
 +                operation_fee,
++                operation_spend.clone(),
 +            ) {
 +                return Err(self.preview_error(generation, refusal));
              }
          }
++        // A default preview whose wallet did not create every message is
++        // refused only after the funds checks above, which keep their outcome.
++        if let Some(refusal) = undelivered {
++            return Err(self.preview_error(generation, refusal));
++        }
  
-@@ -365,6 +409,7 @@ impl WalletClient {
+         let preview = SendPreview {
+             messages: request.intent.messages,
+             valid_until,
+             message_boc_base64: boc,
+             emulation,
++            operation_spend_nanograms: operation_spend,
+         };
+         self.finish_preview(generation)?;
+         Ok(preview)
+@@ -335,6 +389,7 @@ impl WalletClient {
+             )
+         })?;
+ 
++        // The signed BOC stays opaque, so no message count is checked here.
+         let emulation = self
+             .emulate_preview_boc(
+                 generation,
+@@ -343,13 +398,15 @@ impl WalletClient {
+                 emulation_request_id,
+                 &prepared.signed_boc,
+             )
+-            .await?;
++            .await?
++            .summary;
+ 
+         let preview = SendPreview {
+             messages: prepared.messages,
+             valid_until,
+             message_boc_base64: prepared.signed_boc,
+             emulation,
++            operation_spend_nanograms: None,
+         };
+         self.finish_preview(generation)?;
+         Ok(preview)
+@@ -365,6 +422,7 @@ impl WalletClient {
      ) -> Result<SendPreview, WalletClientError> {
          self.preview_send(SendPreviewRequest {
              intent: request.intent,
@@ -2586,7 +3264,7 @@ index 4a91f8a..6428893 100644
          })
          .await
      }
-@@ -407,7 +452,7 @@ impl WalletClient {
+@@ -407,7 +465,7 @@ impl WalletClient {
          let _ = request
              .intent
              .exact_value_total()
@@ -2595,25 +3273,33 @@ index 4a91f8a..6428893 100644
          let account = self
              .execute_tracked_preview_request(generation, &account_request)
              .await?
-@@ -472,6 +517,169 @@ impl WalletClient {
+@@ -472,7 +530,265 @@ impl WalletClient {
      }
  }
  
 +/// What a preview that asked for the operation's fee learned from emulating it.
 +enum OperationQuote {
 +    /// The wallet created every message and paid a positive root fee, which
-+    /// is the operation's fee.
-+    Created(SendEmulation),
++    /// is the operation's fee in `emulation`, and the answer established the
++    /// operation's `spend` beyond the message values.
++    Created {
++        emulation: SendEmulation,
++        spend: UnsignedDecimalString,
++    },
 +    /// The emulation cannot stand for the operation.
 +    Unusable(UnusableQuote),
 +}
 +
 +/// An emulation of the exact operation that is not a successful preview.
 +struct UnusableQuote {
-+    /// This emulation's root wallet fee, which is not the operation's fee.
++    /// This emulation's root wallet fee, which is not the operation's fee
++    /// unless the wallet created every message.
 +    raw_fee: UnsignedDecimalString,
-+    /// The operation's fee, when the companion emulation established it.
++    /// The operation's fee, when the emulations established it.
 +    operation_fee: Option<UnsignedDecimalString>,
++    /// The operation's spend beyond the message values, when the emulations
++    /// established it; never without `operation_fee`.
++    operation_spend: Option<UnsignedDecimalString>,
 +    /// The emulation error that stands when no funds check refuses.
 +    error: WalletClientError,
 +}
@@ -2622,10 +3308,12 @@ index 4a91f8a..6428893 100644
 +    /// Resolves the preview with the funds checks of [`funds_refusal`], never
 +    /// as a success.
 +    ///
-+    /// An established fee is compared like a created emulation's fee and
-+    /// reported; without one, the raw fee keeps only the refusal that the
-+    /// default preview would give and is never reported as the operation's
-+    /// fee. When neither check refuses, the emulation error stands.
++    /// An established spend decides like a created emulation's spend, and an
++    /// established fee without one is compared like the default preview's
++    /// fee; both are reported. Without either, the raw fee keeps only the
++    /// refusal that the default preview would give and is never reported as
++    /// the operation's fee. When no check refuses, the emulation error stands,
++    /// even where the spend fits: the wallet did not create the messages.
 +    fn refusal(
 +        self,
 +        available: &UnsignedDecimalString,
@@ -2634,44 +3322,103 @@ index 4a91f8a..6428893 100644
 +        let Self {
 +            raw_fee,
 +            operation_fee,
++            operation_spend,
 +            error,
 +        } = self;
 +        let fee = operation_fee.clone().unwrap_or(raw_fee);
-+        funds_refusal(available, requested, &fee, operation_fee).unwrap_or(error)
++        funds_refusal(available, requested, &fee, operation_fee, operation_spend).unwrap_or(error)
 +    }
 +}
 +
 +/// The funds refusal of an emulated exact-value preview, if any.
 +///
-+/// A value above the balance is refused first. Otherwise exact sends must
++/// A value above the balance is refused first. With `operation_spend`, the
++/// operation's spend beyond the value that the preview established, the
++/// value plus that spend must fit the balance, equality included: exactly
++/// then can the wallet create the messages. Without it, exact sends must
 +/// leave a positive remainder after `fee`, the emulated wallet fee that the
 +/// check compares; use `SendAmount::All` to drain the wallet with
-+/// carry-all-balance mode instead. Either refusal reports `operation_fee`,
-+/// the operation's fee when the preview established it.
++/// carry-all-balance mode instead. Either refusal reports `operation_fee`
++/// and `operation_spend`, the operation's fee and spend when the preview
++/// established them.
 +fn funds_refusal(
 +    available: &UnsignedDecimalString,
 +    requested: &UnsignedDecimalString,
 +    fee: &UnsignedDecimalString,
 +    operation_fee: Option<UnsignedDecimalString>,
++    operation_spend: Option<UnsignedDecimalString>,
 +) -> Option<WalletClientError> {
 +    if requested > available {
 +        return Some(WalletClientError::InsufficientBalance {
 +            available_nanograms: available.clone(),
 +            requested_nanograms: requested.clone(),
 +            operation_fee_nanograms: operation_fee,
++            operation_spend_nanograms: operation_spend,
 +        });
 +    }
 +    #[allow(
 +        clippy::arithmetic_side_effects,
 +        reason = "UnsignedDecimalString uses arbitrary-precision BigUint addition"
 +    )]
-+    let required = requested + fee;
-+    (&required >= available).then(|| WalletClientError::InsufficientBalanceForFees {
++    let refused = match &operation_spend {
++        Some(spend) => &(requested + spend) > available,
++        None => &(requested + fee) >= available,
++    };
++    refused.then(|| WalletClientError::InsufficientBalanceForFees {
 +        available_nanograms: available.clone(),
 +        requested_nanograms: requested.clone(),
 +        estimated_fee_nanograms: fee.clone(),
 +        operation_fee_nanograms: operation_fee,
++        operation_spend_nanograms: operation_spend,
 +    })
++}
++
++/// What the wallet spends beyond the exact values of `messages`, priced
++/// from `created`, an emulation in which the wallet created every one of
++/// them, and `fee`, the operation's root wallet fee.
++///
++/// The action phase keeps the first part of each message's forwarding fee,
++/// A (`total_action_fees`), inside the root fee; the rest travels with the
++/// message. With send mode +1 the wallet pays the whole forwarding fee T
++/// (`total_fwd_fees`) beside the value, otherwise the value pays it, so the
++/// spend is `fee - A + T` or `fee - A`. `None` mode is the engine's mode 3
++/// for an exact value. The messages must share one fee kind among the
++/// external modes 2, 3, 18 and 19, and A must be positive, within T and
++/// within `fee`; otherwise, or for a zero spend, nothing is established.
++fn operation_spend(
++    fee: &UnsignedDecimalString,
++    created: &EvaluatedEmulation,
++    messages: &[SendMessage],
++) -> Option<UnsignedDecimalString> {
++    let pays_forwarding = |message: &SendMessage| match (&message.amount, message.send_mode) {
++        (SendAmount::Exact { .. }, None) => Some(true),
++        (SendAmount::Exact { .. }, Some(mode @ (2 | 3 | 18 | 19))) => Some(mode & 1 != 0),
++        (SendAmount::Exact { .. } | SendAmount::All, _) => None,
++    };
++    let (first, rest) = messages.split_first()?;
++    let pays = pays_forwarding(first)?;
++    if rest
++        .iter()
++        .any(|message| pays_forwarding(message) != Some(pays))
++    {
++        return None;
++    }
++    let forwarding = created.forwarding.as_ref()?;
++    let action = &forwarding.total_action_fees;
++    let fee = fee.as_biguint();
++    if action == &BigUint::default() || &forwarding.total_fwd_fees < action || fee < action {
++        return None;
++    }
++    #[allow(
++        clippy::arithmetic_side_effects,
++        reason = "the action fee is within the fee, which rules out BigUint underflow, and addition cannot overflow"
++    )]
++    let spend = if pays {
++        fee - action + &forwarding.total_fwd_fees
++    } else {
++        fee - action
++    };
++    (spend != BigUint::default()).then(|| spend.into())
 +}
 +
 +/// The zero-value companion of an exact-value operation.
@@ -2762,18 +3509,47 @@ index 4a91f8a..6428893 100644
 +    }
 +}
 +
++const CREATED_NONE: &str = "emulated wallet created none of the messages";
++const CREATED_ONLY_SOME: &str = "emulated wallet created only some of the messages";
++const DELIVERY_UNREPORTED: &str = "emulation did not report the wallet's message delivery";
++const SPEND_UNPROVED: &str = "emulation did not establish the wallet's spend beyond the values";
++
++/// The refusal of a default preview whose successful wallet transaction did
++/// not create each of its `messages` outgoing messages, if any.
++///
++/// A skipped message alone does not prove insufficient funds, so this is an
++/// emulation refusal; an answer that records the delivery nowhere fails.
++fn delivery_refusal(evaluated: &EvaluatedEmulation, messages: usize) -> Option<WalletClientError> {
++    match evaluated.message_creation(messages) {
++        Some(MessageCreation::Every) => None,
++        Some(MessageCreation::Nothing) => Some(rejected_emulation(evaluated, CREATED_NONE)),
++        Some(MessageCreation::Partial) => Some(rejected_emulation(evaluated, CREATED_ONLY_SOME)),
++        None => Some(WalletClientError::EmulationFailed {
++            diagnostic: DELIVERY_UNREPORTED.to_owned(),
++        }),
++    }
++}
++
  impl WalletClient {
++    /// Emulates `boc` for a preview and returns the emulation of a successful
++    /// wallet transaction.
++    ///
++    /// Every error ends the preview: a provider, parse or wallet failure
++    /// finishes it here, and after a lifecycle failure it has already ended.
      async fn emulate_preview_boc(
          &self,
-@@ -481,43 +689,206 @@ impl WalletClient {
+         generation: u64,
+@@ -480,44 +796,232 @@ impl WalletClient {
+         expected_source: &TonAddressString,
          emulation_request_id: HttpRequestId,
          boc: &Boc,
-     ) -> Result<SendEmulation, WalletClientError> {
+-    ) -> Result<SendEmulation, WalletClientError> {
 -        let emulation_request = build_emulation_request(config, emulation_request_id, boc)
 -            .map_err(|error| {
 -                self.preview_error(
 -                    generation,
 -                    WalletClientError::SendPreviewFailed {
++    ) -> Result<EvaluatedEmulation, WalletClientError> {
 +        let evaluated = self
 +            .evaluate_preview_boc(
 +                generation,
@@ -2796,7 +3572,7 @@ index 4a91f8a..6428893 100644
 +            ));
 +        }
 +
-+        Ok(evaluated.summary)
++        Ok(evaluated)
 +    }
 +
 +    /// Emulates one message for a preview without finishing the preview.
@@ -2851,18 +3627,19 @@ index 4a91f8a..6428893 100644
 -            return Err(self.preview_error(
 +    /// Emulates the exact operation of a preview that asked for its fee.
 +    ///
-+    /// A created operation is the default preview. When the wallet skipped
-+    /// every message, `companion` is emulated in the same preview, pinned to
-+    /// the operation's block, to establish the operation's fee. The outer
-+    /// error is a lifecycle failure; the inner one is the emulation error of
-+    /// the operation itself.
++    /// A created operation is the default preview, and it is a quote only
++    /// with the spend its answer establishes for `messages`. When the wallet
++    /// skipped every message, `companion` is emulated in the same preview,
++    /// pinned to the operation's block, to establish the operation's fee and
++    /// spend. The outer error is a lifecycle failure; the inner one is the
++    /// emulation error of the operation itself.
 +    async fn quote_operation(
 +        &self,
 +        generation: u64,
 +        config: &WalletClientConfig,
 +        emulation_request_id: HttpRequestId,
 +        boc: &Boc,
-+        messages: usize,
++        messages: &[SendMessage],
 +        companion: impl FnOnce() -> Option<Boc>,
 +    ) -> Result<Result<OperationQuote, WalletClientError>, WalletClientError> {
 +        let evaluated = match self
@@ -2891,73 +3668,91 @@ index 4a91f8a..6428893 100644
 +        }
 +
 +        let raw_fee = evaluated.summary.wallet_fees_nanograms.clone();
-+        let unusable = |operation_fee, error| {
++        let unusable = |operation_fee, operation_spend, error| {
 +            Ok(Ok(OperationQuote::Unusable(UnusableQuote {
 +                raw_fee: raw_fee.clone(),
 +                operation_fee,
++                operation_spend,
 +                error,
 +            })))
 +        };
 +        match evaluated.delivery {
-+            Some(delivery) if delivery.created_all(messages) => {
++            Some(delivery) if delivery.created_all(messages.len()) => {
 +                if raw_fee.as_biguint() == &BigUint::default() {
 +                    return unusable(
++                        None,
 +                        None,
 +                        WalletClientError::EmulationFailed {
 +                            diagnostic: "emulated wallet fee is zero".to_owned(),
 +                        },
 +                    );
 +                }
-+                Ok(Ok(OperationQuote::Created(evaluated.summary)))
++                match operation_spend(&raw_fee, &evaluated, messages) {
++                    Some(spend) => Ok(Ok(OperationQuote::Created {
++                        emulation: evaluated.summary,
++                        spend,
++                    })),
++                    // The created operation's fee stands; without its spend
++                    // the preview is no quote.
++                    None => unusable(
++                        Some(raw_fee.clone()),
++                        None,
++                        WalletClientError::EmulationFailed {
++                            diagnostic: SPEND_UNPROVED.to_owned(),
++                        },
++                    ),
++                }
 +            }
-+            Some(delivery) if delivery.skipped_all(messages) => {
-+                let operation_fee = match companion() {
-+                    Some(companion) => {
-+                        self.quote_companion(generation, config, &evaluated, messages, &companion)
-+                            .await?
-+                    }
-+                    None => None,
++            Some(delivery) if delivery.skipped_all(messages.len()) => {
++                let (operation_fee, operation_spend) = match companion() {
++                    Some(companion) => self
++                        .quote_companion(generation, config, &evaluated, messages, &companion)
++                        .await?
++                        .map_or((None, None), |(fee, spend)| (Some(fee), spend)),
++                    None => (None, None),
 +                };
 +                unusable(
 +                    operation_fee,
-+                    rejected_emulation(&evaluated, "emulated wallet created none of the messages"),
++                    operation_spend,
++                    rejected_emulation(&evaluated, CREATED_NONE),
 +                )
 +            }
 +            Some(_) => unusable(
 +                None,
-+                rejected_emulation(
-+                    &evaluated,
-+                    "emulated wallet created only some of the messages",
-+                ),
++                None,
++                rejected_emulation(&evaluated, CREATED_ONLY_SOME),
 +            ),
 +            None => unusable(
 +                None,
++                None,
 +                WalletClientError::EmulationFailed {
-+                    diagnostic: "emulation did not report the wallet's message delivery".to_owned(),
++                    diagnostic: DELIVERY_UNREPORTED.to_owned(),
                  },
 -            ));
 +            ),
-         }
++        }
 +    }
- 
--        Ok(evaluated.summary)
++
 +    /// Emulates the zero-value companion at the operation's block and returns
-+    /// the operation's fee when the two answers establish it.
++    /// the operation's fee when the two answers establish it, with the
++    /// operation's spend on `messages` when the companion's forwarding fees
++    /// establish that too.
 +    ///
 +    /// The companion request belongs to the same preview, so cancelling the
 +    /// preview cancels it too. Only lifecycle failures are errors; any other
-+    /// failure leaves the fee unknown.
++    /// failure leaves the fee and the spend unknown.
 +    async fn quote_companion(
 +        &self,
 +        generation: u64,
 +        config: &WalletClientConfig,
 +        operation: &EvaluatedEmulation,
-+        messages: usize,
++        messages: &[SendMessage],
 +        companion: &Boc,
-+    ) -> Result<Option<UnsignedDecimalString>, WalletClientError> {
++    ) -> Result<Option<(UnsignedDecimalString, Option<UnsignedDecimalString>)>, WalletClientError>
++    {
 +        if operation.composition.is_none() {
 +            return Ok(None);
-+        }
+         }
 +        let Ok(request_id) = self.allocate_preview_request_id(generation)? else {
 +            return Ok(None);
 +        };
@@ -2971,11 +3766,17 @@ index 4a91f8a..6428893 100644
 +                Some(operation.summary.mc_block_seqno),
 +            )
 +            .await?;
-+        Ok(evaluated
-+            .ok()
-+            .and_then(|companion| composite_fee(operation, &companion, messages)))
++        Ok(evaluated.ok().and_then(|companion| {
++            // The companion created the same messages outside their roots, so
++            // its forwarding fees are the operation's own (see
++            // `shortfall_companion`); the modes stay the operation's.
++            let fee = composite_fee(operation, &companion, messages.len())?;
++            let spend = operation_spend(&fee, &companion, messages);
++            Some((fee, spend))
++        }))
 +    }
-+
+ 
+-        Ok(evaluated.summary)
 +    /// Allocates the identifier of a further request of the current preview.
 +    ///
 +    /// The outer error is a lifecycle failure; an exhausted identifier space
@@ -2993,7 +3794,7 @@ index 4a91f8a..6428893 100644
      }
  
      fn preview_error(&self, generation: u64, error: WalletClientError) -> WalletClientError {
-@@ -588,3 +959,2236 @@ impl WalletClient {
+@@ -588,3 +1092,3404 @@ impl WalletClient {
          Ok(())
      }
  }
@@ -3093,6 +3894,9 @@ index 4a91f8a..6428893 100644
 +        /// `total_action_fees`, left out of the answer when zero, as the
 +        /// protocol does.
 +        action_fees: u64,
++        /// `total_fwd_fees`, left out of the answer when zero (`null` in
++        /// every captured skipped answer), as the protocol does.
++        forwarding: u64,
 +    }
 +
 +    impl Root {
@@ -3102,72 +3906,85 @@ index 4a91f8a..6428893 100644
 +        }
 +    }
 +
++    /// The wallet's spend beyond `value` that a captured created answer
++    /// shows: its root transaction's `account_state_before.balance` minus
++    /// its `account_state_after.balance`, minus the value. An oracle
++    /// independent of the engine's fee fields.
++    const fn debit_spend(value: u64, before: u64, after: u64) -> u64 {
++        before - after - value
++    }
++
 +    const SKIPPED: (u16, u16, u16) = (1, 1, 0);
 +    const CREATED: (u16, u16, u16) = (1, 0, 1);
 +
 +    /// `W4` at block 104746942: 1e9 (4 bytes), empty body, modes 3, 2 and 18.
-+    const W4_SKIPPED_EMPTY: Root = w4(396_627, SKIPPED, 1_666);
++    const W4_SKIPPED_EMPTY: Root = w4(396_627, SKIPPED, 1_666, 0);
 +    /// `W4` at block 104746942: 5e9 (5 bytes), empty body, modes 3 and 2.
-+    const W4_SKIPPED_EMPTY_5B: Root = w4(397_160, SKIPPED, 1_666);
++    const W4_SKIPPED_EMPTY_5B: Root = w4(397_160, SKIPPED, 1_666, 0);
 +    /// `W4` at block 104746942: 1e9, comment, mode 3.
-+    const W4_SKIPPED_COMMENT: Root = w4(408_894, SKIPPED, 1_666);
++    const W4_SKIPPED_COMMENT: Root = w4(408_894, SKIPPED, 1_666, 0);
 +    /// `W4` at block 104746942: 1e9, opcode, query id and a referenced text, mode 3.
-+    const W4_SKIPPED_PAYLOAD: Root = w4(421_493, SKIPPED, 3_332);
++    const W4_SKIPPED_PAYLOAD: Root = w4(421_493, SKIPPED, 3_332, 0);
 +    /// `W4` at block 104746942: 1e9, `StateInit` and comment, modes 3 and 2.
-+    const W4_SKIPPED_INIT: Root = w4(460_626, SKIPPED, 4_998);
++    const W4_SKIPPED_INIT: Root = w4(460_626, SKIPPED, 4_998, 0);
 +    /// `W4` at block 104746942: value 0, empty body, modes 3 and 19.
-+    const W4_ZERO_EMPTY: Root = w4(417_272, CREATED, 24_444);
++    const W4_ZERO_EMPTY: Root = w4(417_272, CREATED, 24_444, 73_334);
 +    /// `W4` at block 104746942: value 0, empty body, modes 2 and 18, which
 +    /// take the forwarding fee from the zero value and skip.
-+    const W4_ZERO_EMPTY_KEPT_MODE: Root = w4(392_828, SKIPPED, 0);
++    const W4_ZERO_EMPTY_KEPT_MODE: Root = w4(392_828, SKIPPED, 0, 0);
 +    /// `W4` at block 104746942: value 0, comment, mode 3.
-+    const W4_ZERO_COMMENT: Root = w4(433_627, CREATED, 28_533);
++    const W4_ZERO_COMMENT: Root = w4(433_627, CREATED, 28_533, 85_601);
 +    /// `W4` at block 104746942: value 0, the payload above, mode 3.
-+    const W4_ZERO_PAYLOAD: Root = w4(448_205, CREATED, 32_177);
++    const W4_ZERO_PAYLOAD: Root = w4(448_205, CREATED, 32_177, 96_534);
 +    /// `W4` at block 104746942: value 0, `StateInit` and comment, mode 3.
-+    const W4_ZERO_INIT: Root = w4(498_026, CREATED, 44_532);
++    const W4_ZERO_INIT: Root = w4(498_026, CREATED, 44_532, 133_601);
 +    /// `W4` at block 104746942: 1e8 (4 bytes), empty body, modes 3, 2, 18 and 19.
-+    const W4_CREATED_EMPTY: Root = w4(419_405, CREATED, 24_444);
++    const W4_CREATED_EMPTY: Root = w4(419_405, CREATED, 24_444, 73_334);
 +    /// `W4` at block 104746942: 1e7 (3 bytes), empty body, mode 3.
-+    const W4_CREATED_EMPTY_3B: Root = w4(418_872, CREATED, 24_444);
++    const W4_CREATED_EMPTY_3B: Root = w4(418_872, CREATED, 24_444, 73_334);
 +    /// `W4` at block 104746942: 1e8, comment, mode 3.
-+    const W4_CREATED_COMMENT: Root = w4(435_761, CREATED, 28_533);
++    const W4_CREATED_COMMENT: Root = w4(435_761, CREATED, 28_533, 85_601);
 +    /// `W4` at block 104746942: 1e8, the payload above, mode 3.
-+    const W4_CREATED_PAYLOAD: Root = w4(450_338, CREATED, 32_177);
++    const W4_CREATED_PAYLOAD: Root = w4(450_338, CREATED, 32_177, 96_534);
 +    /// `W4` at block 104746942: 1e8, `StateInit` and comment, modes 3 and 2.
-+    const W4_CREATED_INIT: Root = w4(500_160, CREATED, 44_532);
++    const W4_CREATED_INIT: Root = w4(500_160, CREATED, 44_532, 133_601);
 +
 +    /// `W5` at block 104747074: 5e11 (5 bytes), empty body, mode 3.
-+    const W5_SKIPPED_EMPTY_5B: Root = w5(397_140, SKIPPED, 1_666);
++    const W5_SKIPPED_EMPTY_5B: Root = w5(397_140, SKIPPED, 1_666, 0);
 +    /// `W5` at block 104747074: 2e12 (6 bytes), empty body, mode 3.
-+    const W5_SKIPPED_EMPTY_6B: Root = w5(397_674, SKIPPED, 1_666);
++    const W5_SKIPPED_EMPTY_6B: Root = w5(397_674, SKIPPED, 1_666, 0);
 +    /// `W5` at block 104747074: 5e11, comment, mode 18.
-+    const W5_SKIPPED_COMMENT: Root = w5(409_407, SKIPPED, 1_666);
++    const W5_SKIPPED_COMMENT: Root = w5(409_407, SKIPPED, 1_666, 0);
 +    /// `W5` at block 104747074: 5e11, `StateInit` and comment, mode 2.
-+    const W5_SKIPPED_INIT: Root = w5(461_139, SKIPPED, 4_998);
++    const W5_SKIPPED_INIT: Root = w5(461_139, SKIPPED, 4_998, 0);
 +    /// `W5` at block 104747074: value 0, empty body, mode 3.
-+    const W5_ZERO_EMPTY: Root = w5(417_252, CREATED, 24_444);
++    const W5_ZERO_EMPTY: Root = w5(417_252, CREATED, 24_444, 73_334);
 +    /// `W5` at block 104747074: value 0, comment, mode 19.
-+    const W5_ZERO_COMMENT: Root = w5(433_607, CREATED, 28_533);
++    const W5_ZERO_COMMENT: Root = w5(433_607, CREATED, 28_533, 85_601);
 +    /// `W5` at block 104747074: value 0, `StateInit` and comment, mode 3.
-+    const W5_ZERO_INIT: Root = w5(498_006, CREATED, 44_532);
++    const W5_ZERO_INIT: Root = w5(498_006, CREATED, 44_532, 133_601);
 +    /// `W5` at block 104747074: 5e9 (5 bytes), empty body, mode 3.
-+    const W5_CREATED_EMPTY_5B: Root = w5(419_918, CREATED, 24_444);
++    const W5_CREATED_EMPTY_5B: Root = w5(419_918, CREATED, 24_444, 73_334);
 +    /// `W5` at block 104747074: 5e9, comment, mode 18.
-+    const W5_CREATED_COMMENT: Root = w5(436_274, CREATED, 28_533);
++    const W5_CREATED_COMMENT: Root = w5(436_274, CREATED, 28_533, 85_601);
 +    /// `W5` at block 104747074: 5e9, `StateInit` and comment, mode 2.
-+    const W5_CREATED_INIT: Root = w5(500_673, CREATED, 44_532);
++    const W5_CREATED_INIT: Root = w5(500_673, CREATED, 44_532, 133_601);
 +
 +    /// `W4` at the earlier block 104737326, empty body, mode 3: every value
 +    /// from 700614284 through 700685951 and 1e9, all of 4 bytes.
-+    const W4_EARLIER_SKIPPED: Root = w4_earlier(396_602, SKIPPED, 1_666);
++    const W4_EARLIER_SKIPPED: Root = w4_earlier(396_602, SKIPPED, 1_666, 0);
 +    /// `W4` at block 104737326: value 0, empty body, mode 3.
-+    const W4_EARLIER_ZERO: Root = w4_earlier(417_247, CREATED, 24_444);
++    const W4_EARLIER_ZERO: Root = w4_earlier(417_247, CREATED, 24_444, 73_334);
 +    /// `W4` at block 104737326: 1e8, 5e8, 7e8 and 700614283, the largest
 +    /// value whose message the wallet still created.
-+    const W4_EARLIER_CREATED: Root = w4_earlier(419_380, CREATED, 24_444);
++    const W4_EARLIER_CREATED: Root = w4_earlier(419_380, CREATED, 24_444, 73_334);
 +
-+    const fn w4(total_fees: u64, delivery: (u16, u16, u16), action_fees: u64) -> Root {
++    const fn w4(
++        total_fees: u64,
++        delivery: (u16, u16, u16),
++        action_fees: u64,
++        forwarding: u64,
++    ) -> Root {
 +        Root {
 +            block: 104_746_942,
 +            total_fees,
@@ -3175,10 +3992,16 @@ index 4a91f8a..6428893 100644
 +            gas_used: 3_560,
 +            delivery,
 +            action_fees,
++            forwarding,
 +        }
 +    }
 +
-+    const fn w5(total_fees: u64, delivery: (u16, u16, u16), action_fees: u64) -> Root {
++    const fn w5(
++        total_fees: u64,
++        delivery: (u16, u16, u16),
++        action_fees: u64,
++        forwarding: u64,
++    ) -> Root {
 +        Root {
 +            block: 104_747_074,
 +            total_fees,
@@ -3186,10 +4009,16 @@ index 4a91f8a..6428893 100644
 +            gas_used: 3_560,
 +            delivery,
 +            action_fees,
++            forwarding,
 +        }
 +    }
 +
-+    const fn w4_earlier(total_fees: u64, delivery: (u16, u16, u16), action_fees: u64) -> Root {
++    const fn w4_earlier(
++        total_fees: u64,
++        delivery: (u16, u16, u16),
++        action_fees: u64,
++        forwarding: u64,
++    ) -> Root {
 +        Root {
 +            block: 104_737_326,
 +            total_fees,
@@ -3197,6 +4026,7 @@ index 4a91f8a..6428893 100644
 +            gas_used: 3_560,
 +            delivery,
 +            action_fees,
++            forwarding,
 +        }
 +    }
 +
@@ -3229,6 +4059,14 @@ index 4a91f8a..6428893 100644
 +        if root.action_fees != 0 {
 +            action["total_action_fees"] = root.action_fees.to_string().into();
 +        }
++        if root.forwarding != 0 {
++            action["total_fwd_fees"] = root.forwarding.to_string().into();
++        }
++        // One entry per created message, as in every captured answer, and an
++        // empty list for a skipped one; the engine reads only its length.
++        let out_msgs = (0..messages_created)
++            .map(|_| serde_json::json!({ "source": address, "destination": DESTINATION }))
++            .collect::<Vec<_>>();
 +        serde_json::json!({
 +            "mc_block_seqno": root.block,
 +            "trace": { "tx_hash": "root" },
@@ -3236,6 +4074,7 @@ index 4a91f8a..6428893 100644
 +                "root": {
 +                    "account": address,
 +                    "total_fees": root.total_fees.to_string(),
++                    "out_msgs": out_msgs,
 +                    "description": {
 +                        "type": "ord",
 +                        "aborted": false,
@@ -3812,11 +4651,17 @@ index 4a91f8a..6428893 100644
 +        UnsignedDecimalString::from(value)
 +    }
 +
-+    fn short(account: Account, value: u64, fee: Option<u64>) -> WalletClientError {
++    fn short(
++        account: Account,
++        value: u64,
++        fee: Option<u64>,
++        spend: Option<u64>,
++    ) -> WalletClientError {
 +        WalletClientError::InsufficientBalance {
 +            available_nanograms: decimal(account.balance),
 +            requested_nanograms: decimal(value),
 +            operation_fee_nanograms: fee.map(decimal),
++            operation_spend_nanograms: spend.map(decimal),
 +        }
 +    }
 +
@@ -3825,12 +4670,33 @@ index 4a91f8a..6428893 100644
 +        value: u64,
 +        estimated: u64,
 +        fee: Option<u64>,
++        spend: Option<u64>,
 +    ) -> WalletClientError {
 +        WalletClientError::InsufficientBalanceForFees {
 +            available_nanograms: decimal(account.balance),
 +            requested_nanograms: decimal(value),
 +            estimated_fee_nanograms: decimal(estimated),
 +            operation_fee_nanograms: fee.map(decimal),
++            operation_spend_nanograms: spend.map(decimal),
++        }
++    }
++
++    /// The refusal of a value whose spend does not fit: above the balance
++    /// the value refusal, otherwise the fee refusal, both with the
++    /// operation's fee and spend.
++    fn spend_refusal(account: Account, value: u64, fee: u64, spend: u64) -> WalletClientError {
++        if value > account.balance {
++            short(account, value, Some(fee), Some(spend))
++        } else {
++            short_for_fees(account, value, fee, Some(fee), Some(spend))
++        }
++    }
++
++    const SPEND_UNPROVED: &str = "emulation did not establish the wallet's spend beyond the values";
++
++    fn unproved_spend() -> WalletClientError {
++        WalletClientError::EmulationFailed {
++            diagnostic: SPEND_UNPROVED.to_owned(),
 +        }
 +    }
 +
@@ -3843,6 +4709,109 @@ index 4a91f8a..6428893 100644
 +    }
 +
 +    const NONE_CREATED: &str = "emulated wallet created none of the messages";
++    const ONLY_SOME: &str = "emulated wallet created only some of the messages";
++
++    fn unreported() -> WalletClientError {
++        WalletClientError::EmulationFailed {
++            diagnostic: "emulation did not report the wallet's message delivery".to_owned(),
++        }
++    }
++
++    /// The successful preview of `request` from `account` for the answer of
++    /// `root`, built from the fixture rather than by the engine's parser.
++    fn expected_preview(request: &SendPreviewRequest, account: Account, root: Root) -> SendPreview {
++        let config = client_config();
++        let raw = config.address.as_address().to_hex().to_uppercase();
++        SendPreview {
++            messages: request.intent.messages.clone(),
++            valid_until: resolve_send_expiration(
++                &request.intent.expiration,
++                PROVIDER_TIME,
++                config.send_validity_seconds,
++            )
++            .expect("expiration resolves"),
++            message_boc_base64: expected_boc(request, account),
++            emulation: SendEmulation {
++                mc_block_seqno: root.block,
++                wallet_fees_nanograms: decimal(root.total_fees),
++                trace_fees_nanograms: decimal(root.total_fees),
++                transaction_count: 1,
++                actions: Vec::new(),
++                transactions: vec![crate::SendEmulationTransaction {
++                    account: TonAddressString::try_from(raw).expect("raw address"),
++                    succeeded: true,
++                    is_root: true,
++                }],
++                trace_succeeded: true,
++                is_incomplete: false,
++            },
++            operation_spend_nanograms: None,
++        }
++    }
++
++    /// [`expected_preview`] of a preview that asked for the operation's fee,
++    /// with the operation's `spend`.
++    fn expected_quote(
++        request: &SendPreviewRequest,
++        account: Account,
++        root: Root,
++        spend: u64,
++    ) -> SendPreview {
++        let defaulted = SendPreviewRequest {
++            estimate_shortfall: false,
++            ..request.clone()
++        };
++        SendPreview {
++            operation_spend_nanograms: Some(decimal(spend)),
++            ..expected_preview(&defaulted, account, root)
++        }
++    }
++
++    /// The complete requests of a default preview of `request` from an active
++    /// `account` on a fresh client: the account, the seqno and one unpinned
++    /// emulation of the default builder's message, with identifiers 1 to 3.
++    fn expected_requests(request: &SendPreviewRequest, account: Account) -> Vec<HttpRequest> {
++        let config = client_config();
++        vec![
++            build_toncenter_v2_request(
++                &config,
++                HttpRequestId { value: 1 },
++                "getAddressInformation",
++                &[("address", config.address.as_str())],
++            )
++            .expect("account request builds"),
++            build_seqno_request(&config, HttpRequestId { value: 2 }).expect("seqno request builds"),
++            build_emulation_request(
++                &config,
++                HttpRequestId { value: 3 },
++                &expected_boc(request, account),
++                None,
++            )
++            .expect("emulation request builds"),
++        ]
++    }
++
++    /// Synthetic: a created two-message answer at `W4`'s block, the
++    /// one-message capture plus a second empty message's action and
++    /// forwarding fees; not chain data.
++    const W4_CREATED_TWO: Root = Root {
++        total_fees: 443_849,
++        delivery: (2, 0, 2),
++        action_fees: 48_888,
++        forwarding: 146_668,
++        ..W4_CREATED_EMPTY
++    };
++
++    /// A two-message intent for the synthetic two-message answers.
++    fn batch() -> SendPreviewRequest {
++        request(
++            vec![
++                message(100_000_000, Some(2), Shape::Empty),
++                message(100_000_000, None, Shape::Comment),
++            ],
++            false,
++        )
++    }
 +
 +    /// Without the flag a value above the balance still ends after the account read.
 +    #[test]
@@ -3852,13 +4821,14 @@ index 4a91f8a..6428893 100644
 +            single(1_000_000_000, Some(2), Shape::Empty, false),
 +            |_| Vec::new(),
 +        );
-+        assert_eq!(result, Err(short(W4, 1_000_000_000, None)));
++        assert_eq!(result, Err(short(W4, 1_000_000_000, None, None)));
 +        assert_eq!(scripted.http.calls(), [Call::Account]);
 +    }
 +
 +    /// Above the balance the skipped operation is priced by a zero-value
 +    /// mode-3 companion pinned to the operation's block; the operation
-+    /// itself stays the exact requested message.
++    /// itself stays the exact requested message. Its mode-2 spend is the
++    /// spend that the same block's created mode-2 answer debited.
 +    #[test]
 +    fn a_value_above_the_balance_carries_the_composite_fee() {
 +        let request = single(1_000_000_000, Some(2), Shape::Empty, true);
@@ -3870,7 +4840,13 @@ index 4a91f8a..6428893 100644
 +        });
 +        let fee = W4_SKIPPED_EMPTY.composite(W4_ZERO_EMPTY);
 +        assert_eq!(fee, W4_CREATED_EMPTY.total_fees, "equals the direct quote");
-+        assert_eq!(result, Err(short(W4, 1_000_000_000, Some(fee))));
++        // Captured mode-2 1e8 answer: 701082553 before, 600687592 after.
++        let spend = debit_spend(100_000_000, 701_082_553, 600_687_592);
++        assert_eq!(spend, 394_961);
++        assert_eq!(
++            result,
++            Err(short(W4, 1_000_000_000, Some(fee), Some(spend)))
++        );
 +        assert_eq!(
 +            scripted.http.calls(),
 +            with_companion(W4_SKIPPED_EMPTY.block)
@@ -3893,12 +4869,15 @@ index 4a91f8a..6428893 100644
 +    /// Each send mode the served path accepts and each captured message
 +    /// shape gets the composite of its own captured answers, which equals
 +    /// the direct quote of an affordable message of the same shape and value
-+    /// length at the same block.
++    /// length at the same block, and the spend that this direct answer
++    /// debited from the wallet: the forwarding remainder added under +1, the
++    /// action fee left out without it.
 +    #[test]
 +    fn every_supported_mode_and_shape_gets_its_exact_composite_fee() {
-+        // Wallet, mode, shape, operation, companion and direct quote. Mode 19
-+        // itself was not emulated above the balance; its row reuses the
-+        // skipped answer captured identically for modes 3, 2 and 18.
++        // Wallet, mode, shape, operation, companion and direct quote, with
++        // the direct answer's value and captured balances before and after.
++        // Mode 19 itself was not emulated above the balance; its row reuses
++        // the skipped answer captured identically for modes 3, 2 and 18.
 +        let rows = [
 +            (
 +                W4,
@@ -3907,6 +4886,7 @@ index 4a91f8a..6428893 100644
 +                W4_SKIPPED_EMPTY,
 +                W4_ZERO_EMPTY,
 +                W4_CREATED_EMPTY,
++                (100_000_000, 701_082_553, 600_614_258),
 +            ),
 +            (
 +                W4,
@@ -3915,6 +4895,7 @@ index 4a91f8a..6428893 100644
 +                W4_SKIPPED_EMPTY,
 +                W4_ZERO_EMPTY,
 +                W4_CREATED_EMPTY,
++                (100_000_000, 701_082_553, 600_614_258),
 +            ),
 +            (
 +                W4,
@@ -3923,6 +4904,7 @@ index 4a91f8a..6428893 100644
 +                W4_SKIPPED_EMPTY,
 +                W4_ZERO_EMPTY,
 +                W4_CREATED_EMPTY,
++                (100_000_000, 701_082_553, 600_687_592),
 +            ),
 +            (
 +                W4,
@@ -3931,6 +4913,7 @@ index 4a91f8a..6428893 100644
 +                W4_SKIPPED_EMPTY,
 +                W4_ZERO_EMPTY,
 +                W4_CREATED_EMPTY,
++                (100_000_000, 701_082_553, 600_687_592),
 +            ),
 +            (
 +                W4,
@@ -3939,6 +4922,7 @@ index 4a91f8a..6428893 100644
 +                W4_SKIPPED_EMPTY,
 +                W4_ZERO_EMPTY,
 +                W4_CREATED_EMPTY,
++                (100_000_000, 701_082_553, 600_614_258),
 +            ),
 +            (
 +                W4,
@@ -3947,6 +4931,7 @@ index 4a91f8a..6428893 100644
 +                W4_SKIPPED_COMMENT,
 +                W4_ZERO_COMMENT,
 +                W4_CREATED_COMMENT,
++                (100_000_000, 701_082_553, 600_589_724),
 +            ),
 +            (
 +                W4,
@@ -3955,6 +4940,7 @@ index 4a91f8a..6428893 100644
 +                W4_SKIPPED_PAYLOAD,
 +                W4_ZERO_PAYLOAD,
 +                W4_CREATED_PAYLOAD,
++                (100_000_000, 701_082_553, 600_567_858),
 +            ),
 +            (
 +                W4,
@@ -3963,6 +4949,7 @@ index 4a91f8a..6428893 100644
 +                W4_SKIPPED_INIT,
 +                W4_ZERO_INIT,
 +                W4_CREATED_INIT,
++                (100_000_000, 701_082_553, 600_493_324),
 +            ),
 +            (
 +                W4,
@@ -3971,6 +4958,7 @@ index 4a91f8a..6428893 100644
 +                W4_SKIPPED_INIT,
 +                W4_ZERO_INIT,
 +                W4_CREATED_INIT,
++                (100_000_000, 701_082_553, 600_626_925),
 +            ),
 +            (
 +                W5,
@@ -3979,6 +4967,7 @@ index 4a91f8a..6428893 100644
 +                W5_SKIPPED_COMMENT,
 +                W5_ZERO_COMMENT,
 +                W5_CREATED_COMMENT,
++                (5_000_000_000, 100_006_637_868, 95_006_230_127),
 +            ),
 +            (
 +                W5,
@@ -3987,9 +4976,10 @@ index 4a91f8a..6428893 100644
 +                W5_SKIPPED_INIT,
 +                W5_ZERO_INIT,
 +                W5_CREATED_INIT,
++                (5_000_000_000, 100_006_637_868, 95_006_181_727),
 +            ),
 +        ];
-+        for (account, mode, shape, operation, companion, direct) in rows {
++        for (account, mode, shape, operation, companion, direct, (paid, before, after)) in rows {
 +            // Both values are above the balance and have the captured length.
 +            let value = if account.balance == W4.balance {
 +                1_000_000_000
@@ -3999,11 +4989,16 @@ index 4a91f8a..6428893 100644
 +            let label = format!("{mode:?} {shape:?}");
 +            let fee = operation.composite(companion);
 +            assert_eq!(fee, direct.total_fees, "{label}");
++            let spend = debit_spend(paid, before, after);
 +            let request = single(value, mode, shape, true);
 +            let (result, scripted) = run(account, request.clone(), |address| {
 +                vec![answer(address, operation), answer(address, companion)]
 +            });
-+            assert_eq!(result, Err(short(account, value, Some(fee))), "{label}");
++            assert_eq!(
++                result,
++                Err(short(account, value, Some(fee), Some(spend))),
++                "{label}"
++            );
 +            assert_eq!(
 +                scripted.http.calls(),
 +                with_companion(operation.block),
@@ -4045,10 +5040,11 @@ index 4a91f8a..6428893 100644
 +                let (result, scripted) = run(account, request.clone(), |address| {
 +                    vec![answer(address, operation), answer(address, companion)]
 +                });
-+                assert_eq!(
-+                    result,
-+                    Err(short(account, value, Some(operation.composite(companion))))
-+                );
++                // Mode 3 adds the companion's forwarding remainder, which
++                // the value's length does not change.
++                let fee = operation.composite(companion);
++                let spend = fee - companion.action_fees + companion.forwarding;
++                assert_eq!(result, Err(short(account, value, Some(fee), Some(spend))));
 +                let emulations = scripted.http.emulations();
 +                assert_operation_and_companion(&request, account, &emulations[0], &emulations[1]);
 +                companions.push(emulations[1]["boc"].clone());
@@ -4058,10 +5054,29 @@ index 4a91f8a..6428893 100644
 +            let delta = longer.composite(companion) - shorter.composite(companion);
 +            assert!((533..=534).contains(&delta), "{delta}");
 +        }
-+        // The direct quote at 5 bytes on W5 matches its composite exactly.
++        // The direct quote at 5 bytes on W5 matches its composite exactly,
++        // and so does the spend that it debited (5e9, captured balances).
 +        assert_eq!(
 +            W5_SKIPPED_EMPTY_5B.composite(W5_ZERO_EMPTY),
 +            W5_CREATED_EMPTY_5B.total_fees
++        );
++        let request = single(500_000_000_000, None, Shape::Empty, true);
++        let (result, _) = run(W5, request, |address| {
++            vec![
++                answer(address, W5_SKIPPED_EMPTY_5B),
++                answer(address, W5_ZERO_EMPTY),
++            ]
++        });
++        let spend = debit_spend(5_000_000_000, 100_006_637_868, 95_006_169_060);
++        assert_eq!(spend, 468_808);
++        assert_eq!(
++            result,
++            Err(short(
++                W5,
++                500_000_000_000,
++                Some(W5_CREATED_EMPTY_5B.total_fees),
++                Some(spend)
++            ))
 +        );
 +        // A created 3-byte and 4-byte value differ only by their import fee.
 +        assert_eq!(
@@ -4074,44 +5089,62 @@ index 4a91f8a..6428893 100644
 +        );
 +    }
 +
-+    /// Inside the measured skip window the wallet skips the operation's
-+    /// message although `V + F < B`: the opt-in preview is neither a success
-+    /// nor a funds refusal, and carries no fee. The default preview keeps
-+    /// today's success there.
++    /// The captured mode-3 delivery boundary at `W4`'s earlier block, both
++    /// sides captured at `B = 701082553`: 700614283 is the largest value whose
++    /// message the wallet created, with the wallet ending at 0, and it is the
++    /// opt-in success whose spend `S = 468270` meets the balance exactly
++    /// (`B = V + S`). From 700614284 (`B = V + S - 1`) the wallet skipped the
++    /// message although `V + F < B`; there the opt-in preview is the funds
++    /// refusal with the composite fee and spend, no longer a fee-less
++    /// emulation refusal. The default preview, which used to succeed there
++    /// with the raw skipped fee, gives the emulation refusal without asking
++    /// for a companion.
 +    #[test]
-+    fn the_skip_window_is_an_emulation_refusal_without_a_fee() {
++    fn the_captured_skip_window_is_refused_by_the_spend() {
 +        let fee = W4_EARLIER_SKIPPED.composite(W4_EARLIER_ZERO);
 +        assert_eq!(fee, W4_EARLIER_CREATED.total_fees);
-+        // The largest created value, the first skipped one and `B - F - 1`.
-+        let (created, opted) = run(
-+            W4,
-+            single(700_614_283, None, Shape::Empty, true),
-+            |address| vec![answer(address, W4_EARLIER_CREATED)],
-+        );
-+        let (_, default) = run(
-+            W4,
-+            single(700_614_283, None, Shape::Empty, false),
-+            |address| vec![answer(address, W4_EARLIER_CREATED)],
-+        );
-+        assert_eq!(
-+            created
-+                .expect("the created value succeeds")
-+                .emulation
-+                .wallet_fees_nanograms,
-+            decimal(fee)
-+        );
-+        assert_eq!(opted.http.calls(), UNTIL_OPERATION);
-+        assert_eq!(default.http.calls(), UNTIL_OPERATION);
++        let created = 700_614_283;
++        // The created answer's balances: 701082553 before, 0 after.
++        let spend = debit_spend(created, 701_082_553, 0);
++        assert_eq!(spend, 468_270);
++        assert_eq!(created + spend, W4.balance);
 +
-+        for value in [700_614_284, W4.balance - fee - 1] {
-+            assert!(value + fee < W4.balance);
++        let opted = single(created, None, Shape::Empty, true);
++        let (result, scripted) = run(W4, opted.clone(), |address| {
++            vec![answer(address, W4_EARLIER_CREATED)]
++        });
++        assert_eq!(
++            result,
++            Ok(expected_quote(&opted, W4, W4_EARLIER_CREATED, spend))
++        );
++        assert_eq!(scripted.http.calls(), UNTIL_OPERATION);
++        let default = single(created, None, Shape::Empty, false);
++        let (result, scripted) = run(W4, default.clone(), |address| {
++            vec![answer(address, W4_EARLIER_CREATED)]
++        });
++        assert_eq!(
++            result,
++            Ok(expected_preview(&default, W4, W4_EARLIER_CREATED))
++        );
++        assert_eq!(scripted.http.calls(), UNTIL_OPERATION);
++
++        // The first skipped value and the old `B - F - 1`, where even the
++        // composite fee fits, and the last value below the raw-fee refusal,
++        // all captured skipped.
++        let raw = W4_EARLIER_SKIPPED.total_fees;
++        for value in [created + 1, W4.balance - fee - 1, W4.balance - raw - 1] {
++            assert!(value + raw < W4.balance);
 +            let (result, scripted) = run(W4, single(value, None, Shape::Empty, true), |address| {
 +                vec![
 +                    answer(address, W4_EARLIER_SKIPPED),
 +                    answer(address, W4_EARLIER_ZERO),
 +                ]
 +            });
-+            assert_eq!(result, Err(rejected(NONE_CREATED)), "{value}");
++            assert_eq!(
++                result,
++                Err(short_for_fees(W4, value, fee, Some(fee), Some(spend))),
++                "{value}"
++            );
 +            assert_eq!(
 +                scripted.http.calls(),
 +                with_companion(W4_EARLIER_SKIPPED.block)
@@ -4121,54 +5154,74 @@ index 4a91f8a..6428893 100644
 +                run(W4, single(value, None, Shape::Empty, false), |address| {
 +                    vec![answer(address, W4_EARLIER_SKIPPED)]
 +                });
-+            assert_eq!(
-+                default
-+                    .expect("the default preview is unchanged")
-+                    .emulation
-+                    .wallet_fees_nanograms,
-+                decimal(W4_EARLIER_SKIPPED.total_fees)
-+            );
++            assert_eq!(default, Err(rejected(NONE_CREATED)), "{value}");
 +            assert_eq!(scripted.http.calls(), UNTIL_OPERATION);
 +        }
 +    }
 +
-+    /// On the captured skipped rows the composite fee meets the engine's
-+    /// `V + F >= B` check exactly: `B = V + F` and above refuse with the fee,
-+    /// `B = V + F + 1` is the fee-less emulation refusal. The default preview
-+    /// refuses only at its raw skipped fee and above.
++    /// On the captured skipped rows the composite spend meets the engine's
++    /// `V + S > B` check exactly: from `B = V + S - 1` down the opt-in preview
++    /// refuses with the fee and the spend. At `B = V + S` and above the spend
++    /// fits, and the skipped answer, reused there although the chain created
++    /// those values (synthetic), stays the fee-less emulation refusal: a skip
++    /// is never a success. The default preview keeps its funds refusal at its
++    /// raw skipped fee and above; below it, where it used to succeed, it is
++    /// the emulation refusal.
 +    #[test]
-+    fn the_engine_equality_holds_on_the_captured_composite_fee() {
++    fn the_engine_equality_holds_on_the_captured_composite_spend() {
 +        let raw = W4_EARLIER_SKIPPED.total_fees;
 +        let fee = W4_EARLIER_SKIPPED.composite(W4_EARLIER_ZERO);
-+        let funds = |value: u64| {
-+            if value > W4.balance {
-+                short(W4, value, Some(fee))
-+            } else {
-+                short_for_fees(W4, value, fee, Some(fee))
-+            }
-+        };
++        let spend = 468_270;
++        let funds = |value| spend_refusal(W4, value, fee, spend);
 +        // Value, opt-in result, default result.
 +        let rows = [
-+            (W4.balance - fee - 1, rejected(NONE_CREATED), None),
-+            (W4.balance - fee, funds(W4.balance - fee), None),
-+            (W4.balance - fee + 1, funds(W4.balance - fee + 1), None),
-+            (W4.balance - raw - 1, funds(W4.balance - raw - 1), None),
++            (
++                W4.balance - spend - 1,
++                rejected(NONE_CREATED),
++                rejected(NONE_CREATED),
++            ),
++            (
++                W4.balance - spend,
++                rejected(NONE_CREATED),
++                rejected(NONE_CREATED),
++            ),
++            (
++                W4.balance - spend + 1,
++                funds(W4.balance - spend + 1),
++                rejected(NONE_CREATED),
++            ),
++            (
++                W4.balance - fee - 1,
++                funds(W4.balance - fee - 1),
++                rejected(NONE_CREATED),
++            ),
++            (
++                W4.balance - fee,
++                funds(W4.balance - fee),
++                rejected(NONE_CREATED),
++            ),
++            (
++                W4.balance - raw - 1,
++                funds(W4.balance - raw - 1),
++                rejected(NONE_CREATED),
++            ),
 +            (
 +                W4.balance - raw,
 +                funds(W4.balance - raw),
-+                Some(short_for_fees(W4, W4.balance - raw, raw, None)),
++                short_for_fees(W4, W4.balance - raw, raw, None, None),
 +            ),
 +            (
 +                W4.balance,
 +                funds(W4.balance),
-+                Some(short_for_fees(W4, W4.balance, raw, None)),
++                short_for_fees(W4, W4.balance, raw, None, None),
 +            ),
 +            (
 +                1_000_000_000,
 +                funds(1_000_000_000),
-+                Some(short(W4, 1_000_000_000, None)),
++                short(W4, 1_000_000_000, None, None),
 +            ),
 +        ];
++        assert_eq!(W4.balance - spend + 1, 700_614_284);
 +        assert_eq!(W4.balance - fee, 700_663_173);
 +        assert_eq!(W4.balance - raw - 1, 700_685_950);
 +        for (value, opted, default) in rows {
@@ -4193,10 +5246,7 @@ index 4a91f8a..6428893 100644
 +                    vec![answer(address, W4_EARLIER_SKIPPED)]
 +                }
 +            });
-+            match default {
-+                Some(error) => assert_eq!(result, Err(error), "{value}"),
-+                None => assert!(result.is_ok(), "{value}: {result:?}"),
-+            }
++            assert_eq!(result, Err(default), "{value}");
 +            let expected: &[Call] = if above {
 +                &[Call::Account]
 +            } else {
@@ -4206,83 +5256,313 @@ index 4a91f8a..6428893 100644
 +        }
 +    }
 +
-+    /// Synthetic: a created operation where `V + F` reaches the balance
-+    /// cannot be emulated on chain (the wallet would skip it), so the
-+    /// captured created answer is reused at those values. `B = V + F - 1` and
-+    /// `B = V + F` refuse with the fee, `B = V + F + 1` succeeds, and a value
-+    /// above the balance carries the created fee. The default preview gives
-+    /// the same refusals without the operation fee.
++    /// Synthetic provider balances around captured answers: a created
++    /// operation refuses exactly when its value plus its spend exceeds the
++    /// balance, for each fee kind, with the fee and the spend, and succeeds
++    /// with the spend at equality and above. A mode-2 or mode-18 message
++    /// whose balance lies between `V + S` and `V + F` succeeds, which the fee
++    /// comparison would refuse. A value above the balance carries both
++    /// amounts. The default preview at the same balances keeps its fee
++    /// comparison and reports no spend. A skipped operation's composite
++    /// spend draws the same line: one nanogram short refuses, and where the
++    /// spend fits the skip stays the emulation refusal. The chain cannot
++    /// produce these answers at these balances, so the rows check the
++    /// classifier against the protocol's boundary, not chain behaviour.
 +    #[test]
-+    fn the_engine_equality_boundary_refuses_with_the_fee() {
++    fn the_engine_equality_boundary_is_the_spend() {
++        let value = 100_000_000;
 +        let fee = W4_CREATED_EMPTY.total_fees;
-+        let above = 1_000_000_000;
-+        let (result, scripted) = run(W4, single(above, None, Shape::Empty, true), |address| {
-+            vec![answer(address, W4_CREATED_EMPTY)]
-+        });
-+        assert_eq!(result, Err(short(W4, above, Some(fee))));
-+        assert_eq!(scripted.http.calls(), UNTIL_OPERATION);
-+
-+        // Value and whether the engine refuses it: `B = V + F - 1`, `B = V + F`
-+        // and `B = V + F + 1`.
-+        let rows = [
-+            (W4.balance - fee + 1, true),
-+            (W4.balance - fee, true),
-+            (W4.balance - fee - 1, false),
++        // The spends that the captured 1e8 answers debited: 600614258 after
++        // for modes 3 and 19, 600687592 for modes 2 and 18.
++        let pays = debit_spend(value, 701_082_553, 600_614_258);
++        let kept = debit_spend(value, 701_082_553, 600_687_592);
++        assert_eq!((pays, kept), (468_295, 394_961));
++        assert!(kept < fee && fee < pays);
++        // Balance, whether the opt-in and the default previews succeed.
++        let paying = [
++            (value - 1, false, false),
++            (value + fee - 1, false, false),
++            (value + fee, false, false),
++            (value + fee + 1, false, true),
++            (value + pays - 1, false, true),
++            (value + pays, true, true),
++            (value + pays + 1, true, true),
 +        ];
-+        for (value, refused) in rows {
-+            let (opted, scripted) = run(W4, single(value, None, Shape::Empty, true), |address| {
-+                vec![answer(address, W4_CREATED_EMPTY)]
-+            });
-+            assert_eq!(scripted.http.calls(), UNTIL_OPERATION, "{value}");
-+            let (default, _) = run(W4, single(value, None, Shape::Empty, false), |address| {
-+                vec![answer(address, W4_CREATED_EMPTY)]
-+            });
-+            if refused {
++        let keeping = [
++            (value - 1, false, false),
++            (value + kept - 1, false, false),
++            (value + kept, true, false),
++            (value + kept + 1, true, false),
++            (value + fee - 1, true, false),
++            (value + fee, true, false),
++            (value + fee + 1, true, true),
++        ];
++        let modes = [
++            (None, pays, &paying),
++            (Some(3), pays, &paying),
++            (Some(19), pays, &paying),
++            (Some(2), kept, &keeping),
++            (Some(18), kept, &keeping),
++        ];
++        for (mode, spend, rows) in modes {
++            for &(balance, opted_succeeds, default_succeeds) in rows {
++                let label = format!("{mode:?} {balance}");
++                let account = Account { balance, ..W4 };
++                let request = single(value, mode, Shape::Empty, true);
++                let (opted, scripted) = run(account, request.clone(), |address| {
++                    vec![answer(address, W4_CREATED_EMPTY)]
++                });
++                assert_eq!(scripted.http.calls(), UNTIL_OPERATION, "{label}");
++                if opted_succeeds {
++                    assert_eq!(
++                        opted,
++                        Ok(expected_quote(&request, account, W4_CREATED_EMPTY, spend)),
++                        "{label}"
++                    );
++                } else {
++                    assert_eq!(
++                        opted,
++                        Err(spend_refusal(account, value, fee, spend)),
++                        "{label}"
++                    );
++                }
++
++                let default = single(value, mode, Shape::Empty, false);
++                let above = balance < value;
++                let (result, _) = run(account, default.clone(), |address| {
++                    if above {
++                        Vec::new()
++                    } else {
++                        vec![answer(address, W4_CREATED_EMPTY)]
++                    }
++                });
++                let expected = if default_succeeds {
++                    Ok(expected_preview(&default, account, W4_CREATED_EMPTY))
++                } else if above {
++                    Err(short(account, value, None, None))
++                } else {
++                    Err(short_for_fees(account, value, fee, None, None))
++                };
++                assert_eq!(result, expected, "{label}");
++            }
++        }
++
++        // Skipped operations priced by their composite, with the spend of
++        // the same block's created answer: (wallet, mode, shape, value,
++        // operation, companion, spend).
++        let composites = [
++            (
++                W4,
++                Some(19),
++                Shape::Empty,
++                1_000_000_000,
++                W4_SKIPPED_EMPTY,
++                W4_ZERO_EMPTY,
++                pays,
++            ),
++            (
++                W4,
++                Some(2),
++                Shape::StateInit,
++                1_000_000_000,
++                W4_SKIPPED_INIT,
++                W4_ZERO_INIT,
++                debit_spend(value, 701_082_553, 600_626_925),
++            ),
++            (
++                W5,
++                Some(18),
++                Shape::Comment,
++                500_000_000_000,
++                W5_SKIPPED_COMMENT,
++                W5_ZERO_COMMENT,
++                debit_spend(5_000_000_000, 100_006_637_868, 95_006_230_127),
++            ),
++        ];
++        for (wallet, mode, shape, value, operation, companion, spend) in composites {
++            let fee = operation.composite(companion);
++            let mut balances = vec![
++                (value + spend - 1, false),
++                (value + spend, true),
++                (value + spend + 1, true),
++            ];
++            if spend < fee {
++                // Between `V + S` and `V + F`, where the fee would refuse.
++                balances.extend([(value + fee - 1, true), (value + fee, true)]);
++            }
++            for (balance, fits) in balances {
++                let label = format!("{mode:?} {shape:?} {balance}");
++                let account = Account { balance, ..wallet };
++                let (result, scripted) =
++                    run(account, single(value, mode, shape, true), |address| {
++                        vec![answer(address, operation), answer(address, companion)]
++                    });
++                let expected = if fits {
++                    rejected(NONE_CREATED)
++                } else {
++                    spend_refusal(account, value, fee, spend)
++                };
++                assert_eq!(result, Err(expected), "{label}");
 +                assert_eq!(
-+                    opted,
-+                    Err(short_for_fees(W4, value, fee, Some(fee))),
-+                    "{value}"
++                    scripted.http.calls(),
++                    with_companion(operation.block),
++                    "{label}"
 +                );
-+                assert_eq!(
-+                    default,
-+                    Err(short_for_fees(W4, value, fee, None)),
-+                    "{value}"
-+                );
-+            } else {
-+                let opted = opted.expect("one nanogram above the boundary succeeds");
-+                assert_eq!(opted.emulation.wallet_fees_nanograms, decimal(fee));
-+                assert_eq!(default, Ok(opted));
 +            }
 +        }
 +    }
 +
-+    /// A created affordable operation is the default preview: the same
-+    /// result, fee and requests, with no companion.
++    /// A created affordable operation is the default preview with its spend:
++    /// the same emulation, fee and requests, with no companion, and the
++    /// spend that the captured answer debited from the wallet beyond the
++    /// value, for every fee kind, message shape, wallet and value length.
 +    #[test]
 +    fn a_created_affordable_operation_is_the_default_preview() {
++        // Wallet, mode, shape, value, answer, and the answer's captured
++        // balances before and after.
 +        let rows = [
-+            (None, Shape::Empty, 100_000_000, W4_CREATED_EMPTY),
-+            (Some(2), Shape::Empty, 100_000_000, W4_CREATED_EMPTY),
-+            (Some(18), Shape::Empty, 100_000_000, W4_CREATED_EMPTY),
-+            (Some(19), Shape::Empty, 100_000_000, W4_CREATED_EMPTY),
-+            (None, Shape::Empty, 10_000_000, W4_CREATED_EMPTY_3B),
-+            (None, Shape::Comment, 100_000_000, W4_CREATED_COMMENT),
-+            (None, Shape::Payload, 100_000_000, W4_CREATED_PAYLOAD),
-+            (None, Shape::StateInit, 100_000_000, W4_CREATED_INIT),
-+            (Some(2), Shape::StateInit, 100_000_000, W4_CREATED_INIT),
++            (
++                W4,
++                None,
++                Shape::Empty,
++                100_000_000,
++                W4_CREATED_EMPTY,
++                (701_082_553, 600_614_258),
++            ),
++            (
++                W4,
++                Some(3),
++                Shape::Empty,
++                100_000_000,
++                W4_CREATED_EMPTY,
++                (701_082_553, 600_614_258),
++            ),
++            (
++                W4,
++                Some(2),
++                Shape::Empty,
++                100_000_000,
++                W4_CREATED_EMPTY,
++                (701_082_553, 600_687_592),
++            ),
++            (
++                W4,
++                Some(18),
++                Shape::Empty,
++                100_000_000,
++                W4_CREATED_EMPTY,
++                (701_082_553, 600_687_592),
++            ),
++            (
++                W4,
++                Some(19),
++                Shape::Empty,
++                100_000_000,
++                W4_CREATED_EMPTY,
++                (701_082_553, 600_614_258),
++            ),
++            (
++                W4,
++                None,
++                Shape::Empty,
++                10_000_000,
++                W4_CREATED_EMPTY_3B,
++                (701_082_553, 690_614_791),
++            ),
++            (
++                W4,
++                None,
++                Shape::Comment,
++                100_000_000,
++                W4_CREATED_COMMENT,
++                (701_082_553, 600_589_724),
++            ),
++            (
++                W4,
++                None,
++                Shape::Payload,
++                100_000_000,
++                W4_CREATED_PAYLOAD,
++                (701_082_553, 600_567_858),
++            ),
++            (
++                W4,
++                None,
++                Shape::StateInit,
++                100_000_000,
++                W4_CREATED_INIT,
++                (701_082_553, 600_493_324),
++            ),
++            (
++                W4,
++                Some(2),
++                Shape::StateInit,
++                100_000_000,
++                W4_CREATED_INIT,
++                (701_082_553, 600_626_925),
++            ),
++            (
++                W4,
++                None,
++                Shape::Empty,
++                100_000_000,
++                W4_EARLIER_CREATED,
++                (701_082_553, 600_614_283),
++            ),
++            (
++                W5,
++                None,
++                Shape::Empty,
++                5_000_000_000,
++                W5_CREATED_EMPTY_5B,
++                (100_006_637_868, 95_006_169_060),
++            ),
++            (
++                W5,
++                Some(18),
++                Shape::Comment,
++                5_000_000_000,
++                W5_CREATED_COMMENT,
++                (100_006_637_868, 95_006_230_127),
++            ),
++            (
++                W5,
++                Some(2),
++                Shape::StateInit,
++                5_000_000_000,
++                W5_CREATED_INIT,
++                (100_006_637_868, 95_006_181_727),
++            ),
 +        ];
-+        for (mode, shape, value, root) in rows {
-+            let (opted, opted_run) = run(W4, single(value, mode, shape, true), |address| {
++        for (account, mode, shape, value, root, (before, after)) in rows {
++            let label = format!("{mode:?} {shape:?} {value}");
++            let spend = debit_spend(value, before, after);
++            let opted_request = single(value, mode, shape, true);
++            let (opted, opted_run) = run(account, opted_request.clone(), |address| {
 +                vec![answer(address, root)]
 +            });
-+            let (default, default_run) = run(W4, single(value, mode, shape, false), |address| {
++            let default_request = single(value, mode, shape, false);
++            let (default, default_run) = run(account, default_request.clone(), |address| {
 +                vec![answer(address, root)]
 +            });
-+            let opted = opted.expect("affordable preview succeeds");
-+            assert_eq!(Ok(opted.clone()), default, "{mode:?} {shape:?}");
 +            assert_eq!(
-+                opted.emulation.wallet_fees_nanograms,
-+                decimal(root.total_fees)
++                opted,
++                Ok(expected_quote(&opted_request, account, root, spend)),
++                "{label}"
++            );
++            assert_eq!(
++                default,
++                Ok(expected_preview(&default_request, account, root)),
++                "{label}"
++            );
++            let opted = opted.expect("affordable preview succeeds");
++            assert_eq!(
++                Ok(SendPreview {
++                    operation_spend_nanograms: None,
++                    ..opted
++                }),
++                default,
++                "{label}"
 +            );
 +            let requests = |scripted: &Scripted| {
 +                scripted
@@ -4292,8 +5572,8 @@ index 4a91f8a..6428893 100644
 +                    .map(|request| (request.id.value, request.url, request.body))
 +                    .collect::<Vec<_>>()
 +            };
-+            assert_eq!(requests(&opted_run), requests(&default_run));
-+            assert_eq!(opted_run.http.calls(), UNTIL_OPERATION);
++            assert_eq!(requests(&opted_run), requests(&default_run), "{label}");
++            assert_eq!(opted_run.http.calls(), UNTIL_OPERATION, "{label}");
 +        }
 +    }
 +
@@ -4308,11 +5588,16 @@ index 4a91f8a..6428893 100644
 +            intent: single(1_000_000_000, Some(2), Shape::Empty, true).intent,
 +        };
 +        let result = block_on(scripted.client.preview_ton_connect(request));
-+        assert_eq!(result, Err(short(W4, 1_000_000_000, None)));
++        assert_eq!(result, Err(short(W4, 1_000_000_000, None, None)));
 +        assert_eq!(scripted.http.calls(), [Call::Account]);
 +    }
 +
-+    /// An intent that sends the whole balance ignores the flag.
++    /// An intent that sends the whole balance ignores the flag and takes the
++    /// default route in mode 130 with its delivery check: a created answer
++    /// succeeds with its fee and no spend, and a skipped one, which used to
++    /// succeed too, is the emulation refusal, with the same requests and no
++    /// companion either way. The captured mode-3 answers stand in for the
++    /// whole-balance message (synthetic reuse).
 +    #[test]
 +    fn a_whole_balance_intent_ignores_the_flag() {
 +        let whole = |estimate_shortfall| {
@@ -4320,19 +5605,344 @@ index 4a91f8a..6428893 100644
 +            message.amount = SendAmount::All;
 +            request(vec![message], estimate_shortfall)
 +        };
-+        let (opted, opted_run) = run(W4, whole(true), |address| {
-+            vec![answer(address, W4_EARLIER_SKIPPED)]
++        let rows = [
++            (W4_EARLIER_CREATED, None),
++            (W4_EARLIER_SKIPPED, Some(rejected(NONE_CREATED))),
++        ];
++        for (root, refusal) in rows {
++            let (opted, opted_run) = run(W4, whole(true), |address| vec![answer(address, root)]);
++            let (default, default_run) =
++                run(W4, whole(false), |address| vec![answer(address, root)]);
++            assert_eq!(opted, default);
++            match refusal {
++                None => {
++                    let preview = opted.expect("a created whole-balance preview succeeds");
++                    assert_eq!(
++                        preview.emulation.wallet_fees_nanograms,
++                        decimal(root.total_fees)
++                    );
++                    assert_eq!(preview.operation_spend_nanograms, None);
++                }
++                Some(error) => assert_eq!(opted, Err(error)),
++            }
++            assert_eq!(
++                opted_run.http.requests(),
++                default_run.http.requests(),
++                "same requests"
++            );
++            assert_eq!(opted_run.http.calls(), UNTIL_OPERATION);
++            assert_eq!(
++                decode(&opted_run.http.emulations()[0]).wallet.msgs_modes,
++                [130]
++            );
++        }
++    }
++
++    /// Every value of the measured skip window, from the first skipped value
++    /// to the last one below the raw-fee refusal, sampled at a fixed stride
++    /// together with the captured interior values, passes the unchanged funds
++    /// check and is now the emulation refusal without a fee, after the same
++    /// three requests and identifiers. The neighbours keep their outcomes:
++    /// the largest created value previews exactly as before, and `B - raw`
++    /// keeps the raw-fee funds refusal.
++    #[test]
++    fn default_previews_refuse_the_captured_skip_window() {
++        let raw = W4_EARLIER_SKIPPED.total_fees;
++        let first = 700_614_284;
++        let last = W4.balance - raw - 1;
++        assert_eq!(last, 700_685_950);
++        let values = (first..=last)
++            .step_by(7_166)
++            .chain([700_663_172, 700_663_173, 700_663_174, last])
++            .collect::<Vec<_>>();
++        assert_eq!(values.len(), 15);
++        for value in values {
++            // The funds check that runs first lets the value pass.
++            assert_eq!(
++                funds_refusal(
++                    &decimal(W4.balance),
++                    &decimal(value),
++                    &decimal(raw),
++                    None,
++                    None
++                ),
++                None,
++                "{value}"
++            );
++            let request = single(value, None, Shape::Empty, false);
++            let (result, scripted) = run(W4, request.clone(), |address| {
++                vec![answer(address, W4_EARLIER_SKIPPED)]
++            });
++            assert_eq!(result, Err(rejected(NONE_CREATED)), "{value}");
++            assert_eq!(
++                scripted.http.requests(),
++                expected_requests(&request, W4),
++                "{value}"
++            );
++        }
++
++        let created = single(first - 1, None, Shape::Empty, false);
++        let (result, scripted) = run(W4, created.clone(), |address| {
++            vec![answer(address, W4_EARLIER_CREATED)]
 +        });
-+        let (default, default_run) = run(W4, whole(false), |address| {
-+            vec![answer(address, W4_EARLIER_SKIPPED)]
-+        });
-+        assert_eq!(opted, default);
-+        assert!(opted.is_ok(), "{opted:?}");
 +        assert_eq!(
-+            opted_run.http.requests(),
-+            default_run.http.requests(),
-+            "same requests"
++            result,
++            Ok(expected_preview(&created, W4, W4_EARLIER_CREATED))
 +        );
++        assert_eq!(scripted.http.requests(), expected_requests(&created, W4));
++
++        let value = last + 1;
++        let request = single(value, None, Shape::Empty, false);
++        let (result, scripted) = run(W4, request.clone(), |address| {
++            vec![answer(address, W4_EARLIER_SKIPPED)]
++        });
++        assert_eq!(result, Err(short_for_fees(W4, value, raw, None, None)));
++        assert_eq!(scripted.http.requests(), expected_requests(&request, W4));
++    }
++
++    /// A default preview needs every message created: a partial delivery of
++    /// one or two messages is refused with the opt-in route's diagnostic, a
++    /// batch with none created like a single skipped message, and a created
++    /// batch succeeds. The two-message answers are synthetic.
++    #[test]
++    fn default_previews_refuse_a_partial_delivery() {
++        let one = Root {
++            delivery: (1, 1, 1),
++            ..W4_CREATED_EMPTY
++        };
++        for estimate_shortfall in [false, true] {
++            let (result, scripted) = run(
++                W4,
++                single(100_000_000, None, Shape::Empty, estimate_shortfall),
++                |address| vec![answer(address, one)],
++            );
++            assert_eq!(result, Err(rejected(ONLY_SOME)), "{estimate_shortfall}");
++            assert_eq!(scripted.http.calls(), UNTIL_OPERATION);
++        }
++
++        let two = batch();
++        let rows = [
++            ((2, 1, 1), Err(rejected(ONLY_SOME))),
++            ((2, 0, 1), Err(rejected(ONLY_SOME))),
++            ((2, 2, 0), Err(rejected(NONE_CREATED))),
++            ((2, 0, 2), Ok(expected_preview(&two, W4, W4_CREATED_TWO))),
++        ];
++        for (delivery, expected) in rows {
++            let root = Root {
++                delivery,
++                ..W4_CREATED_TWO
++            };
++            let (result, scripted) = run(W4, two.clone(), |address| vec![answer(address, root)]);
++            assert_eq!(result, expected, "{delivery:?}");
++            assert_eq!(
++                scripted.http.requests(),
++                expected_requests(&two, W4),
++                "{delivery:?}"
++            );
++        }
++    }
++
++    /// A TON Connect batch takes the default route: it succeeds only when the
++    /// wallet created every message, and the same client previews again
++    /// after each refusal. The two-message answers are synthetic.
++    #[test]
++    fn ton_connect_batches_need_every_message_created() {
++        let rows = [
++            ((2, 0, 2), None),
++            ((2, 1, 1), Some(rejected(ONLY_SOME))),
++            ((2, 0, 2), None),
++            ((2, 2, 0), Some(rejected(NONE_CREATED))),
++            ((2, 0, 2), None),
++        ];
++        let scripted = Scripted::new(W4, |address| {
++            rows.iter()
++                .map(|(delivery, _)| {
++                    answer(
++                        address,
++                        Root {
++                            delivery: *delivery,
++                            ..W4_CREATED_TWO
++                        },
++                    )
++                })
++                .collect()
++        });
++        let intent = request(
++            vec![
++                message(100_000_000, None, Shape::Empty),
++                message(200_000_000, Some(3), Shape::Payload),
++            ],
++            false,
++        );
++        for (index, (delivery, refusal)) in rows.into_iter().enumerate() {
++            let result = block_on(scripted.client.preview_ton_connect(SendRequest {
++                operation_id: NonEmptyString::try_from("ton-connect").expect("operation ID"),
++                force: false,
++                intent: intent.intent.clone(),
++            }));
++            assert!(
++                scripted
++                    .client
++                    .lock()
++                    .expect("state")
++                    .active_preview
++                    .is_none(),
++                "the preview slot is finished"
++            );
++            match refusal {
++                None => assert_eq!(
++                    result,
++                    Ok(expected_preview(&intent, W4, W4_CREATED_TWO)),
++                    "{index}"
++                ),
++                Some(error) => assert_eq!(result, Err(error), "{index} {delivery:?}"),
++            }
++            let calls = scripted.http.calls();
++            assert_eq!(calls.len(), (index + 1) * 3);
++            assert_eq!(calls[index * 3..], UNTIL_OPERATION);
++        }
++        assert_eq!(scripted.unused_answers(), 0);
++    }
++
++    /// Without usable counters the root's `out_msgs` list decides: a list
++    /// with the request's length is the unchanged preview, an empty or short
++    /// one is refused, and neither record usable fails. Usable counters
++    /// decide alone, whatever the list holds. The edited rows are synthetic.
++    #[test]
++    fn default_previews_read_the_output_list_only_without_usable_counters() {
++        type Edit = fn(&mut serde_json::Value);
++        let request = || single(100_000_000, None, Shape::Empty, false);
++        let base = Ok(expected_preview(&request(), W4, W4_CREATED_EMPTY));
++        let keep: Edit = |_| {};
++        let counters: [Edit; 7] = [
++            |root| {
++                let action = root["description"]["action"]
++                    .as_object_mut()
++                    .expect("action");
++                for field in ["tot_actions", "skipped_actions", "msgs_created"] {
++                    let _ = action.remove(field);
++                }
++            },
++            |root| root["description"]["action"]["msgs_created"] = (-1).into(),
++            |root| root["description"]["action"]["tot_actions"] = "one".into(),
++            |root| root["description"]["action"]["msgs_created"] = 1.5.into(),
++            |root| root["description"]["action"]["skipped_actions"] = 65_536.into(),
++            |root| {
++                root["description"]["action"]["skipped_actions"] = "18446744073709551616".into();
++            },
++            |root| root["description"]["action"]["msgs_created"] = serde_json::Value::Null,
++        ];
++        let empty: Edit = |root| root["out_msgs"] = serde_json::json!([]);
++        let unusable: [Edit; 5] = [
++            |root| {
++                let _ = root.as_object_mut().expect("root").remove("out_msgs");
++            },
++            |root| root["out_msgs"] = serde_json::Value::Null,
++            |root| root["out_msgs"] = serde_json::json!({ "0": {} }),
++            |root| root["out_msgs"] = "[{}]".into(),
++            |root| root["out_msgs"] = 1.into(),
++        ];
++        let reply = |root: Root, counters: Edit, list: Edit| {
++            move |address: &str| {
++                let mut body = answer_json(address, root);
++                counters(&mut body["transactions"]["root"]);
++                list(&mut body["transactions"]["root"]);
++                vec![Reply::Json(200, body)]
++            }
++        };
++
++        for (index, counters) in counters.into_iter().enumerate() {
++            let (result, _) = run(W4, request(), reply(W4_CREATED_EMPTY, counters, keep));
++            assert_eq!(result, base, "counters {index}, created list");
++            let (result, _) = run(W4, request(), reply(W4_CREATED_EMPTY, counters, empty));
++            assert_eq!(
++                result,
++                Err(rejected(NONE_CREATED)),
++                "counters {index}, empty list"
++            );
++            for (list_index, list) in unusable.into_iter().enumerate() {
++                let (result, scripted) =
++                    run(W4, request(), reply(W4_CREATED_EMPTY, counters, list));
++                assert_eq!(
++                    result,
++                    Err(unreported()),
++                    "counters {index}, list {list_index}"
++                );
++                assert_eq!(scripted.http.requests(), expected_requests(&request(), W4));
++            }
++        }
++
++        // A two-message list one entry short is partial; the full one is
++        // the created batch.
++        let short_list: Edit = |root| {
++            let _ = root["out_msgs"].as_array_mut().expect("list").pop();
++        };
++        let (result, _) = run(W4, batch(), reply(W4_CREATED_TWO, counters[0], short_list));
++        assert_eq!(result, Err(rejected(ONLY_SOME)));
++        let (result, _) = run(W4, batch(), reply(W4_CREATED_TWO, counters[0], keep));
++        assert_eq!(result, Ok(expected_preview(&batch(), W4, W4_CREATED_TWO)));
++
++        // Usable counters decide, with no new veto from an unusable or
++        // disagreeing list.
++        for list in unusable.into_iter().chain([empty]) {
++            let (result, _) = run(W4, request(), reply(W4_CREATED_EMPTY, keep, list));
++            assert_eq!(result, base);
++        }
++        let skipped = Root {
++            delivery: SKIPPED,
++            ..W4_CREATED_EMPTY
++        };
++        let one_entry: Edit = |root| {
++            root["out_msgs"] = serde_json::json!([{ "destination": DESTINATION }]);
++        };
++        for list in unusable.into_iter().chain([keep, one_entry]) {
++            let (result, _) = run(W4, request(), reply(skipped, keep, list));
++            assert_eq!(result, Err(rejected(NONE_CREATED)));
++        }
++    }
++
++    /// Each new refusal finishes the preview: the same client previews a
++    /// created operation right after it.
++    #[test]
++    fn a_preview_after_each_new_refusal_succeeds() {
++        let missing: fn(&mut serde_json::Value) = |root| {
++            let action = root["description"]["action"]
++                .as_object_mut()
++                .expect("action");
++            for field in ["tot_actions", "skipped_actions", "msgs_created"] {
++                let _ = action.remove(field);
++            }
++            let _ = root.as_object_mut().expect("root").remove("out_msgs");
++        };
++        let scripted = Scripted::new(W4, |address| {
++            vec![
++                answer(address, W4_EARLIER_SKIPPED),
++                answer(address, W4_CREATED_EMPTY),
++                answer(
++                    address,
++                    Root {
++                        delivery: (1, 1, 1),
++                        ..W4_CREATED_EMPTY
++                    },
++                ),
++                answer(address, W4_CREATED_EMPTY),
++                edited(address, W4_CREATED_EMPTY, missing),
++                answer(address, W4_CREATED_EMPTY),
++            ]
++        });
++        let created = single(100_000_000, None, Shape::Empty, false);
++        for refusal in [rejected(NONE_CREATED), rejected(ONLY_SOME), unreported()] {
++            assert_eq!(scripted.preview(created.clone()), Err(refusal.clone()));
++            let next = scripted
++                .preview(created.clone())
++                .unwrap_or_else(|error| panic!("after {refusal:?}: {error:?}"));
++            assert_eq!(
++                next.emulation.wallet_fees_nanograms,
++                decimal(W4_CREATED_EMPTY.total_fees)
++            );
++        }
++        assert_eq!(scripted.http.calls().len(), 18);
++        assert_eq!(scripted.unused_answers(), 0);
 +    }
 +
 +    /// A never-deployed zero wallet sends its own `StateInit` with seqno 0
@@ -4351,7 +5961,7 @@ index 4a91f8a..6428893 100644
 +                run(account, request.clone(), |address| vec![rejection(address)]);
 +            assert_eq!(
 +                result,
-+                Err(short(account, 1_000_000_000, None)),
++                Err(short(account, 1_000_000_000, None, None)),
 +                "{status:?}"
 +            );
 +            assert_eq!(
@@ -4394,7 +6004,7 @@ index 4a91f8a..6428893 100644
 +    fn a_deployed_zero_wallet_is_refused_without_a_fee() {
 +        let request = single(1_000_000_000, None, Shape::Empty, true);
 +        let (result, scripted) = run(DEPLOYED_ZERO, request, |address| vec![rejection(address)]);
-+        assert_eq!(result, Err(short(DEPLOYED_ZERO, 1_000_000_000, None)));
++        assert_eq!(result, Err(short(DEPLOYED_ZERO, 1_000_000_000, None, None)));
 +        assert_eq!(scripted.http.calls(), UNTIL_OPERATION);
 +        let operation = decode(&scripted.http.emulations()[0]);
 +        assert!(operation.external.init.is_none());
@@ -4441,14 +6051,14 @@ index 4a91f8a..6428893 100644
 +            single(1_000_000_000, None, Shape::Empty, true),
 +            |address| vec![rejection(address)],
 +        );
-+        assert_eq!(result, Err(short(DUST, 1_000_000_000, None)));
++        assert_eq!(result, Err(short(DUST, 1_000_000_000, None, None)));
 +        assert_eq!(scripted.http.calls(), UNTIL_OPERATION);
 +        let (result, scripted) = run(
 +            starved,
 +            single(1_000_000_000, None, Shape::Empty, true),
 +            |address| vec![edited(address, W4_EARLIER_SKIPPED, out_of_gas)],
 +        );
-+        assert_eq!(result, Err(short(starved, 1_000_000_000, None)));
++        assert_eq!(result, Err(short(starved, 1_000_000_000, None, None)));
 +        assert_eq!(scripted.http.calls(), UNTIL_OPERATION);
 +        let (result, scripted) = run(
 +            accepted,
@@ -4460,7 +6070,7 @@ index 4a91f8a..6428893 100644
 +                ]
 +            },
 +        );
-+        assert_eq!(result, Err(short(accepted, 1_000_000_000, None)));
++        assert_eq!(result, Err(short(accepted, 1_000_000_000, None, None)));
 +        assert_eq!(
 +            scripted.http.calls(),
 +            with_companion(W4_EARLIER_SKIPPED.block)
@@ -4516,7 +6126,8 @@ index 4a91f8a..6428893 100644
 +    /// delivery never carries a fee or succeeds. Above the balance it is the
 +    /// fee-less funds refusal; otherwise it is the default preview's own error
 +    /// where that fails, and an emulation error where the default preview
-+    /// would accept an answer that does not prove delivery.
++    /// accepts an answer whose counters do not prove delivery but whose
++    /// output list does.
 +    #[test]
 +    fn failed_or_malformed_operation_emulations_never_carry_a_fee() {
 +        type Case = (&'static str, fn(&str) -> Reply, Option<WalletClientError>);
@@ -4675,9 +6286,9 @@ index 4a91f8a..6428893 100644
 +                        },
 +                    )
 +                },
-+                Some(rejected(
-+                    "emulated wallet created only some of the messages",
-+                )),
++                // The default preview used to accept this answer; both
++                // previews now give the emulation refusal.
++                None,
 +            ),
 +        ];
 +        for (label, reply, below) in cases {
@@ -4686,7 +6297,7 @@ index 4a91f8a..6428893 100644
 +                single(1_000_000_000, None, Shape::Empty, true),
 +                |address| vec![reply(address)],
 +            );
-+            assert_eq!(result, Err(short(W4, 1_000_000_000, None)), "{label}");
++            assert_eq!(result, Err(short(W4, 1_000_000_000, None, None)), "{label}");
 +            assert_eq!(scripted.http.calls(), UNTIL_OPERATION, "{label}");
 +
 +            let (opted, scripted) = run(
@@ -4892,7 +6503,7 @@ index 4a91f8a..6428893 100644
 +                    replies
 +                },
 +            );
-+            assert_eq!(result, Err(short(W4, 1_000_000_000, None)), "{label}");
++            assert_eq!(result, Err(short(W4, 1_000_000_000, None, None)), "{label}");
 +            let expected = if companion.is_some() {
 +                with_companion(W4_SKIPPED_EMPTY.block)
 +            } else {
@@ -4908,7 +6519,7 @@ index 4a91f8a..6428893 100644
 +            (700_663_173, rejected(NONE_CREATED)),
 +            (
 +                W4.balance - raw,
-+                short_for_fees(W4, W4.balance - raw, raw, None),
++                short_for_fees(W4, W4.balance - raw, raw, None, None),
 +            ),
 +        ];
 +        for (value, expected) in rows {
@@ -4924,9 +6535,9 @@ index 4a91f8a..6428893 100644
 +    }
 +
 +    /// A root fee that is zero or below its own action fee never composes a
-+    /// fee, while the valid answers of the same operation do: a zero
-+    /// companion total, a companion action fee above its total, and a zero
-+    /// operation total and action fee. Each refusal keeps its existing
++    /// fee or a spend, while the valid answers of the same operation do: a
++    /// zero companion total, a companion action fee above its total, and a
++    /// zero operation total and action fee. Each refusal keeps its existing
 +    /// classification, comparing the raw skipped fee like any unproved
 +    /// companion. The edited rows are synthetic; the captured 1e9 answers
 +    /// are reused at the other values, which have the same value length.
@@ -4934,14 +6545,16 @@ index 4a91f8a..6428893 100644
 +    fn inconsistent_root_fees_never_compose_a_fee() {
 +        let fee = W4_SKIPPED_EMPTY.composite(W4_ZERO_EMPTY);
 +        assert_eq!(fee, W4_CREATED_EMPTY.total_fees, "the valid control");
++        // The mode-3 spend of the same block's created 1e8 answer.
++        let spend = debit_spend(100_000_000, 701_082_553, 600_614_258);
 +        let raw = W4_SKIPPED_EMPTY.total_fees;
 +        let above = 1_000_000_000;
 +        // Above the balance, the balance itself and the valid fee's boundary.
 +        let values = [above, W4.balance, W4.balance - fee];
 +        let unproved = |raw: u64| {
 +            [
-+                short(W4, above, None),
-+                short_for_fees(W4, W4.balance, raw, None),
++                short(W4, above, None, None),
++                short_for_fees(W4, W4.balance, raw, None, None),
 +                rejected(NONE_CREATED),
 +            ]
 +        };
@@ -4951,9 +6564,9 @@ index 4a91f8a..6428893 100644
 +                W4_SKIPPED_EMPTY,
 +                W4_ZERO_EMPTY,
 +                [
-+                    short(W4, above, Some(fee)),
-+                    short_for_fees(W4, W4.balance, fee, Some(fee)),
-+                    short_for_fees(W4, W4.balance - fee, fee, Some(fee)),
++                    short(W4, above, Some(fee), Some(spend)),
++                    short_for_fees(W4, W4.balance, fee, Some(fee), Some(spend)),
++                    short_for_fees(W4, W4.balance - fee, fee, Some(fee), Some(spend)),
 +                ],
 +            ),
 +            (
@@ -5003,7 +6616,9 @@ index 4a91f8a..6428893 100644
 +
 +    /// Synthetic two-message answers: the composite needs every message
 +    /// skipped by the operation and created by the companion; a partial
-+    /// delivery on either side is never priced.
++    /// delivery on either side is never priced. The two messages pay their
++    /// forwarding fees in different ways (modes 2 and 3), so the composite
++    /// fee stands without a spend.
 +    #[test]
 +    fn a_short_multi_message_operation_needs_full_delivery_on_both_sides() {
 +        let operation = Root {
@@ -5016,6 +6631,7 @@ index 4a91f8a..6428893 100644
 +            total_fees: 441_716,
 +            delivery: (2, 0, 2),
 +            action_fees: 48_888,
++            forwarding: 146_668,
 +            ..W4_ZERO_EMPTY
 +        };
 +        let two = |values: [u64; 2]| {
@@ -5036,7 +6652,8 @@ index 4a91f8a..6428893 100644
 +            Err(short(
 +                W4,
 +                1_200_000_000,
-+                Some(operation.composite(companion))
++                Some(operation.composite(companion)),
++                None
 +            ))
 +        );
 +        let emulations = scripted.http.emulations();
@@ -5053,7 +6670,11 @@ index 4a91f8a..6428893 100644
 +                    },
 +                )]
 +            });
-+            assert_eq!(result, Err(short(W4, 1_200_000_000, None)), "{partial:?}");
++            assert_eq!(
++                result,
++                Err(short(W4, 1_200_000_000, None, None)),
++                "{partial:?}"
++            );
 +            assert_eq!(scripted.http.calls(), UNTIL_OPERATION, "{partial:?}");
 +
 +            let (result, scripted) = run(W4, short_request.clone(), |address| {
@@ -5068,7 +6689,11 @@ index 4a91f8a..6428893 100644
 +                    ),
 +                ]
 +            });
-+            assert_eq!(result, Err(short(W4, 1_200_000_000, None)), "{partial:?}");
++            assert_eq!(
++                result,
++                Err(short(W4, 1_200_000_000, None, None)),
++                "{partial:?}"
++            );
 +            assert_eq!(
 +                scripted.http.calls(),
 +                with_companion(operation.block),
@@ -5093,6 +6718,347 @@ index 4a91f8a..6428893 100644
 +        );
 +    }
 +
++    /// A created operation whose answer does not establish its spend is no
++    /// quote: never a success, and neither zero nor the root fee stands in
++    /// for the spend. The forwarding fees are missing or malformed, below the
++    /// action fee, the action fee is missing, the root fee is below the
++    /// action fee, or the spend is zero. The created operation's root fee
++    /// still decides the fee comparison's funds refusals, above the balance
++    /// and at `V + F >= B`, reported without a spend. The default preview of
++    /// the same answer is unchanged. A usable forwarding record prices the
++    /// created operation without gas or storage fees, which only the
++    /// composite needs. The edited rows are synthetic.
++    #[test]
++    fn an_unestablished_spend_is_never_a_quote() {
++        type Edit = fn(&mut serde_json::Value);
++        let keep: Edit = |_| {};
++        let at_action_fee = Root {
++            total_fees: W4_CREATED_EMPTY.action_fees,
++            ..W4_CREATED_EMPTY
++        };
++        let below_action_fee = Root {
++            total_fees: W4_CREATED_EMPTY.action_fees - 1,
++            ..W4_CREATED_EMPTY
++        };
++        // Label, mode, answer and the edit of its root transaction.
++        let cases: [(&str, Option<i32>, Root, Edit); 12] = [
++            ("forwarding fees absent", None, W4_CREATED_EMPTY, |root| {
++                let _ = root["description"]["action"]
++                    .as_object_mut()
++                    .expect("action")
++                    .remove("total_fwd_fees");
++            }),
++            (
++                "forwarding fees null, mode 2",
++                Some(2),
++                W4_CREATED_EMPTY,
++                |root| {
++                    root["description"]["action"]["total_fwd_fees"] = serde_json::Value::Null;
++                },
++            ),
++            ("forwarding fees negative", None, W4_CREATED_EMPTY, |root| {
++                root["description"]["action"]["total_fwd_fees"] = "-73334".into();
++            }),
++            (
++                "forwarding fees fractional",
++                None,
++                W4_CREATED_EMPTY,
++                |root| {
++                    root["description"]["action"]["total_fwd_fees"] = 73_334.5.into();
++                },
++            ),
++            (
++                "forwarding fees not decimal",
++                None,
++                W4_CREATED_EMPTY,
++                |root| {
++                    root["description"]["action"]["total_fwd_fees"] = "0x11e76".into();
++                },
++            ),
++            ("forwarding fees a list", None, W4_CREATED_EMPTY, |root| {
++                root["description"]["action"]["total_fwd_fees"] = serde_json::json!([73_334]);
++            }),
++            (
++                "forwarding fees below the action fee",
++                None,
++                W4_CREATED_EMPTY,
++                |root| {
++                    root["description"]["action"]["total_fwd_fees"] = "24443".into();
++                },
++            ),
++            ("action fee absent", None, W4_CREATED_EMPTY, |root| {
++                let _ = root["description"]["action"]
++                    .as_object_mut()
++                    .expect("action")
++                    .remove("total_action_fees");
++            }),
++            ("action fee malformed", Some(18), W4_CREATED_EMPTY, |root| {
++                root["description"]["action"]["total_action_fees"] = "x".into();
++            }),
++            (
++                "action phase without fees",
++                Some(19),
++                W4_CREATED_EMPTY,
++                |root| {
++                    root["description"]["action"] = serde_json::json!({
++                        "success": true,
++                        "result_code": 0,
++                        "tot_actions": 1,
++                        "skipped_actions": 0,
++                        "msgs_created": 1,
++                    });
++                },
++            ),
++            (
++                "root fee below the action fee",
++                None,
++                below_action_fee,
++                keep,
++            ),
++            ("zero spend", Some(2), at_action_fee, keep),
++        ];
++        let value = 100_000_000;
++        for (label, mode, root, edit) in cases {
++            let fee = root.total_fees;
++            let (opted, scripted) = run(W4, single(value, mode, Shape::Empty, true), |address| {
++                vec![edited(address, root, edit)]
++            });
++            assert_eq!(opted, Err(unproved_spend()), "{label}");
++            assert_eq!(scripted.http.calls(), UNTIL_OPERATION, "{label}");
++            let default = single(value, mode, Shape::Empty, false);
++            let (result, _) = run(W4, default.clone(), |address| {
++                vec![edited(address, root, edit)]
++            });
++            assert_eq!(result, Ok(expected_preview(&default, W4, root)), "{label}");
++
++            // The fee comparison with the created root fee, no spend.
++            let above = 1_000_000_000;
++            let (result, _) = run(W4, single(above, mode, Shape::Empty, true), |address| {
++                vec![edited(address, root, edit)]
++            });
++            assert_eq!(result, Err(short(W4, above, Some(fee), None)), "{label}");
++            let at_fee = W4.balance - fee;
++            let (result, _) = run(W4, single(at_fee, mode, Shape::Empty, true), |address| {
++                vec![edited(address, root, edit)]
++            });
++            assert_eq!(
++                result,
++                Err(short_for_fees(W4, at_fee, fee, Some(fee), None)),
++                "{label}"
++            );
++        }
++
++        // Usable forwarding fees without gas or storage fees still price
++        // the created operation.
++        let spend = debit_spend(value, 701_082_553, 600_614_258);
++        let edits: [Edit; 3] = [
++            |root| {
++                let _ = root["description"]["compute_ph"]
++                    .as_object_mut()
++                    .expect("compute phase")
++                    .remove("gas_used");
++            },
++            |root| {
++                let _ = root["description"]
++                    .as_object_mut()
++                    .expect("description")
++                    .remove("storage_ph");
++            },
++            |root| root["description"]["storage_ph"] = "26".into(),
++        ];
++        for (index, edit) in edits.into_iter().enumerate() {
++            let request = single(value, None, Shape::Empty, true);
++            let (result, _) = run(W4, request.clone(), |address| {
++                vec![edited(address, W4_CREATED_EMPTY, edit)]
++            });
++            assert_eq!(
++                result,
++                Ok(expected_quote(&request, W4, W4_CREATED_EMPTY, spend)),
++                "edit {index}"
++            );
++        }
++
++        // A proved composite fee whose companion does not establish the
++        // spend keeps the fee comparison with that fee, without a spend.
++        let fee = W4_SKIPPED_EMPTY.composite(W4_ZERO_EMPTY);
++        let companions: [Edit; 3] = [
++            |root| {
++                let _ = root["description"]["action"]
++                    .as_object_mut()
++                    .expect("action")
++                    .remove("total_fwd_fees");
++            },
++            |root| root["description"]["action"]["total_fwd_fees"] = "x".into(),
++            |root| root["description"]["action"]["total_fwd_fees"] = "24443".into(),
++        ];
++        for (index, edit) in companions.into_iter().enumerate() {
++            let rows = [
++                (1_000_000_000, short(W4, 1_000_000_000, Some(fee), None)),
++                (
++                    W4.balance - fee,
++                    short_for_fees(W4, W4.balance - fee, fee, Some(fee), None),
++                ),
++                (W4.balance - fee - 1, rejected(NONE_CREATED)),
++            ];
++            for (value, expected) in rows {
++                let (result, scripted) =
++                    run(W4, single(value, None, Shape::Empty, true), |address| {
++                        vec![
++                            answer(address, W4_SKIPPED_EMPTY),
++                            edited(address, W4_ZERO_EMPTY, edit),
++                        ]
++                    });
++                assert_eq!(result, Err(expected), "companion {index}: {value}");
++                assert_eq!(
++                    scripted.http.calls(),
++                    with_companion(W4_SKIPPED_EMPTY.block)
++                );
++            }
++        }
++    }
++
++    /// Synthetic two-message answers: messages that share one fee kind are
++    /// priced together from the aggregate action and forwarding fees, both
++    /// when the batch was created and when its composite prices a skipped
++    /// one. Messages whose fee kinds differ get no spend, so their opt-in
++    /// preview is no quote, while their default preview succeeds as before.
++    #[test]
++    fn a_uniform_batch_spends_its_aggregate_forwarding_fees() {
++        let two = |modes: [Option<i32>; 2], value: u64, estimate_shortfall: bool| {
++            request(
++                vec![
++                    message(value, modes[0], Shape::Empty),
++                    message(value, modes[1], Shape::Empty),
++                ],
++                estimate_shortfall,
++            )
++        };
++        // `W4_CREATED_TWO`: F 443849, A 48888, T 146668, so F - A + T with
++        // +1 and F - A without it.
++        let rows = [
++            ([None, Some(3)], Some(541_629)),
++            ([Some(3), Some(19)], Some(541_629)),
++            ([Some(2), Some(18)], Some(394_961)),
++            ([Some(2), None], None),
++            ([Some(18), Some(19)], None),
++        ];
++        for (modes, spend) in rows {
++            let opted = two(modes, 100_000_000, true);
++            let (result, _) = run(W4, opted.clone(), |address| {
++                vec![answer(address, W4_CREATED_TWO)]
++            });
++            let expected = spend.map_or_else(
++                || Err(unproved_spend()),
++                |spend| Ok(expected_quote(&opted, W4, W4_CREATED_TWO, spend)),
++            );
++            assert_eq!(result, expected, "{modes:?}");
++            let default = two(modes, 100_000_000, false);
++            let (result, _) = run(W4, default.clone(), |address| {
++                vec![answer(address, W4_CREATED_TWO)]
++            });
++            assert_eq!(
++                result,
++                Ok(expected_preview(&default, W4, W4_CREATED_TWO)),
++                "{modes:?}"
++            );
++        }
++
++        // Skipped batch, its companion created with the fees above.
++        let operation = Root {
++            total_fees: 398_293,
++            delivery: (2, 2, 0),
++            action_fees: 3_332,
++            ..W4_SKIPPED_EMPTY
++        };
++        let companion = Root {
++            delivery: (2, 0, 2),
++            ..W4_CREATED_TWO
++        };
++        let fee = operation.composite(companion);
++        assert_eq!(fee, W4_CREATED_TWO.total_fees);
++        for (modes, spend) in rows {
++            let opted = two(modes, 600_000_000, true);
++            let (result, scripted) = run(W4, opted.clone(), |address| {
++                vec![answer(address, operation), answer(address, companion)]
++            });
++            assert_eq!(
++                result,
++                Err(short(W4, 1_200_000_000, Some(fee), spend)),
++                "{modes:?}"
++            );
++            let emulations = scripted.http.emulations();
++            assert_operation_and_companion(&opted, W4, &emulations[0], &emulations[1]);
++        }
++    }
++
++    /// Modes 2 and 18 take the forwarding fee from the message value, so the
++    /// wallet skips a value below that fee whatever its balance: with the
++    /// captured zero-value answers at `W4`'s block, the companion prices the
++    /// operation's spend, yet the preview stays the fee-less emulation refusal
++    /// where that spend fits, never a success or a funds refusal. Only a
++    /// (synthetic) balance below the spend makes it the funds refusal. The
++    /// one-nanogram value reuses the zero-value answers (synthetic).
++    #[test]
++    fn a_value_below_its_forwarding_fee_is_never_a_quote() {
++        let fee = W4_ZERO_EMPTY_KEPT_MODE.composite(W4_ZERO_EMPTY);
++        assert_eq!(fee, W4_ZERO_EMPTY.total_fees);
++        // F - A for a message without +1.
++        let spend = 392_828;
++        for mode in [Some(2), Some(18)] {
++            for value in [0, 1] {
++                let label = format!("{mode:?} {value}");
++                let rows = [
++                    (W4, rejected(NONE_CREATED)),
++                    (
++                        Account {
++                            balance: value + spend,
++                            ..W4
++                        },
++                        rejected(NONE_CREATED),
++                    ),
++                    (
++                        Account {
++                            balance: value + spend - 1,
++                            ..W4
++                        },
++                        spend_refusal(
++                            Account {
++                                balance: value + spend - 1,
++                                ..W4
++                            },
++                            value,
++                            fee,
++                            spend,
++                        ),
++                    ),
++                ];
++                for (account, expected) in rows {
++                    let request = single(value, mode, Shape::Empty, true);
++                    let (result, scripted) = run(account, request.clone(), |address| {
++                        vec![
++                            answer(address, W4_ZERO_EMPTY_KEPT_MODE),
++                            answer(address, W4_ZERO_EMPTY),
++                        ]
++                    });
++                    assert_eq!(result, Err(expected), "{label} {}", account.balance);
++                    let emulations = scripted.http.emulations();
++                    assert_operation_and_companion(
++                        &request,
++                        account,
++                        &emulations[0],
++                        &emulations[1],
++                    );
++                }
++                let (result, scripted) =
++                    run(W4, single(value, mode, Shape::Empty, false), |address| {
++                        vec![answer(address, W4_ZERO_EMPTY_KEPT_MODE)]
++                    });
++                assert_eq!(result, Err(rejected(NONE_CREATED)), "{label}");
++                assert_eq!(scripted.http.calls(), UNTIL_OPERATION);
++            }
++        }
++    }
++
 +    /// The new fields are read leniently: without them, or with unusable
 +    /// values, a default preview gives exactly the preview it gave before.
 +    #[test]
@@ -5102,7 +7068,7 @@ index 4a91f8a..6428893 100644
 +            vec![answer(address, W4_CREATED_EMPTY)]
 +        });
 +        let base = base.expect("the default preview succeeds");
-+        let edits: [fn(&mut serde_json::Value); 6] = [
++        let edits: [fn(&mut serde_json::Value); 8] = [
 +            |root| {
 +                let action = root["description"]["action"]
 +                    .as_object_mut()
@@ -5112,6 +7078,7 @@ index 4a91f8a..6428893 100644
 +                    "skipped_actions",
 +                    "msgs_created",
 +                    "total_action_fees",
++                    "total_fwd_fees",
 +                ] {
 +                    let _ = action.remove(field);
 +                }
@@ -5122,6 +7089,8 @@ index 4a91f8a..6428893 100644
 +                }
 +            },
 +            |root| root["description"]["action"]["total_action_fees"] = 1.5.into(),
++            |root| root["description"]["action"]["total_fwd_fees"] = "-73334".into(),
++            |root| root["description"]["action"]["total_fwd_fees"] = serde_json::json!([]),
 +            |root| root["description"]["compute_ph"]["gas_used"] = serde_json::json!([3560]),
 +            |root| {
 +                let _ = root["description"]
@@ -5213,7 +7182,7 @@ index 4a91f8a..6428893 100644
 +            );
 +            assert_eq!(
 +                result,
-+                Err(short(account, 1_000_000_000, None)),
++                Err(short(account, 1_000_000_000, None, None)),
 +                "{status:?}"
 +            );
 +            assert_eq!(scripted.http.calls(), [Call::Account]);
@@ -5231,7 +7200,7 @@ index 4a91f8a..6428893 100644
 +    }
 +}
 diff --git a/src/engine/send.rs b/src/engine/send.rs
-index 09d374f..744b9a3 100644
+index 09d374f..6ca9bf7 100644
 --- a/src/engine/send.rs
 +++ b/src/engine/send.rs
 @@ -184,10 +184,13 @@ impl WalletClient {
@@ -5252,11 +7221,12 @@ index 09d374f..744b9a3 100644
          };
          if let Some(nanograms) = &requested
              && nanograms > available
-@@ -195,6 +198,7 @@ impl WalletClient {
+@@ -195,6 +198,8 @@ impl WalletClient {
              let error = WalletClientError::InsufficientBalance {
                  available_nanograms: available.clone(),
                  requested_nanograms: nanograms.clone(),
 +                operation_fee_nanograms: None,
++                operation_spend_nanograms: None,
              };
              self.fail_send(generation, error.to_string())?;
              return Err(error);
@@ -9181,49 +11151,88 @@ index 2737a9e..74a51c2 100644
      }
  }
 diff --git a/tests/scenarios/send.rs b/tests/scenarios/send.rs
-index 86292f7..5ee353f 100644
+index 86292f7..c64046e 100644
 --- a/tests/scenarios/send.rs
 +++ b/tests/scenarios/send.rs
-@@ -216,6 +216,7 @@ fn preview_rejects_an_amount_larger_than_the_fresh_balance() {
+@@ -216,6 +216,8 @@ fn preview_rejects_an_amount_larger_than_the_fresh_balance() {
              WalletClientError::InsufficientBalance {
                  available_nanograms: decimal(grams(1).as_nanograms()),
                  requested_nanograms: decimal(grams(100).as_nanograms()),
 +                operation_fee_nanograms: None,
++                operation_spend_nanograms: None,
              },
          ))
          .then(protected_secret_was_not_read())
-@@ -530,6 +531,7 @@ fn exact_preview_rejects_a_value_that_leaves_no_balance_for_fees() {
+@@ -530,6 +532,8 @@ fn exact_preview_rejects_a_value_that_leaves_no_balance_for_fees() {
                  available_nanograms: decimal("1000000000"),
                  requested_nanograms: decimal("1000000000"),
                  estimated_fee_nanograms: decimal("1000000"),
 +                operation_fee_nanograms: None,
++                operation_spend_nanograms: None,
              },
          ))
          .then(protected_secret_was_not_read())
-@@ -555,6 +557,7 @@ fn exact_preview_requires_a_positive_remainder_after_the_estimated_fee() {
+@@ -555,6 +559,8 @@ fn exact_preview_requires_a_positive_remainder_after_the_estimated_fee() {
                  available_nanograms: decimal("1000000000"),
                  requested_nanograms: decimal("999000000"),
                  estimated_fee_nanograms: decimal("1000000"),
 +                operation_fee_nanograms: None,
++                operation_spend_nanograms: None,
              },
          ))
          .then(protected_secret_was_not_read())
-@@ -1433,6 +1436,7 @@ fn zero_balance_is_reported_as_insufficient_for_a_positive_transfer() {
+@@ -1433,6 +1439,8 @@ fn zero_balance_is_reported_as_insufficient_for_a_positive_transfer() {
              WalletClientError::InsufficientBalance {
                  available_nanograms: decimal("0"),
                  requested_nanograms: decimal("1"),
 +                operation_fee_nanograms: None,
++                operation_spend_nanograms: None,
              },
          ))
          .run();
-@@ -1526,6 +1530,7 @@ fn amount_larger_than_the_fresh_balance_fails_before_signing() {
+@@ -1526,6 +1534,8 @@ fn amount_larger_than_the_fresh_balance_fails_before_signing() {
              WalletClientError::InsufficientBalance {
                  available_nanograms: decimal(grams(1).as_nanograms()),
                  requested_nanograms: decimal(grams(100).as_nanograms()),
 +                operation_fee_nanograms: None,
++                operation_spend_nanograms: None,
              },
          ))
          .then(snapshot().send_phase(SendPhase::Failed))
+diff --git a/tests/support/host.rs b/tests/support/host.rs
+index 8bc0f85..f8c977e 100644
+--- a/tests/support/host.rs
++++ b/tests/support/host.rs
+@@ -496,6 +496,17 @@ impl ScenarioHttpHost {
+         }
+         let rejected = state.emulation_rejected;
+         drop(state);
++        let mut action = json!({
++            "success": !rejected,
++            "result_code": if rejected { 34 } else { 0 }
++        });
++        if !rejected {
++            // A created transfer reports the delivery of its message; every
++            // scenario preview sends exactly one.
++            action["tot_actions"] = json!(1);
++            action["skipped_actions"] = json!(0);
++            action["msgs_created"] = json!(1);
++        }
+         Ok(response(
+             request,
+             json!({
+@@ -512,10 +523,7 @@ impl ScenarioHttpHost {
+                                 "success": !rejected,
+                                 "exit_code": if rejected { 33 } else { 0 }
+                             },
+-                            "action": {
+-                                "success": !rejected,
+-                                "result_code": if rejected { 34 } else { 0 }
+-                            }
++                            "action": action
+                         }
+                     }
+                 },
 diff --git a/tests/support/scenario.rs b/tests/support/scenario.rs
 index 67d7e7d..e91dbd9 100644
 --- a/tests/support/scenario.rs
