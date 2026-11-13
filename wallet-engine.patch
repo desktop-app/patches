@@ -2862,3 +2862,670 @@ index 0000000..c280bb4
 +        })
 +    }
 +}
+diff --git a/vendor/ton/src/block_tlb/state_init.rs b/vendor/ton/src/block_tlb/state_init.rs
+index 43f7877..856afa4 100644
+--- a/vendor/ton/src/block_tlb/state_init.rs
++++ b/vendor/ton/src/block_tlb/state_init.rs
+@@ -4,12 +4,22 @@ use crate::tlb_adapters::TLBHashMapE;
+ use crate::ton_core::types::tlb_core::adapters::ConstLen;
+ use std::collections::HashMap;
+ use ton_core::TLB;
+-use ton_core::cell::{TonCell, TonHash};
++use ton_core::bail_ton_core_data;
++use ton_core::cell::{CellBuilder, CellParser, TonCell, TonHash};
+ use ton_core::errors::TonCoreError;
+ use ton_core::traits::tlb::TLB;
+ use ton_core::types::TonAddress;
+ use ton_core::types::tlb_core::TLBRef;
+ 
++/// Libraries a `StateInit` may carry when it is written.
++///
++/// Reading is bound by the dictionary walk budget alone, chain data is parsed whatever it
++/// carries. Writing builds the dictionary again from the parsed map, a new cell tree per
++/// entry (about 3.7 KB and 3.4 us each), and a wallet request attaches a caller-supplied
++/// `StateInit` to each of up to 255 messages: a 97-byte dictionary of shared cells would be
++/// written back as 32768 entries per message. A deployment carries none, rarely a few.
++pub const STATE_INIT_MAX_WRITTEN_LIBS: usize = 16;
++
+ // https://github.com/ton-blockchain/ton/blob/59a8cf0ae5c3062d14ec4c89a04fee80b5fd05c1/crypto/block/block.tlb#L281
+ #[derive(Debug, Clone, PartialEq, TLB)]
+ pub struct StateInit {
+@@ -18,10 +28,37 @@ pub struct StateInit {
+     pub tick_tock: Option<TickTock>,
+     pub code: Option<TLBRef<TonCell>>,
+     pub data: Option<TLBRef<TonCell>>,
+-    #[tlb(adapter = "TLBHashMapE::<DictKeyAdapterTonHash, DictValAdapterTLB<_>>::new(256)")]
++    #[tlb(adapter = "StateInitLibs")]
+     pub library: HashMap<TonHash, SimpleLib>,
+ }
+ 
++/// `library:(HashmapE 256 SimpleLib)` that refuses to write more than the limit above.
++struct StateInitLibs;
++
++impl StateInitLibs {
++    fn dict() -> TLBHashMapE<DictKeyAdapterTonHash, DictValAdapterTLB<SimpleLib>> {
++        TLBHashMapE::new(256)
++    }
++
++    fn read(&self, parser: &mut CellParser) -> Result<HashMap<TonHash, SimpleLib>, TonCoreError> {
++        Self::dict().read(parser)
++    }
++
++    fn write(
++        &self,
++        builder: &mut CellBuilder,
++        libs: &HashMap<TonHash, SimpleLib>,
++    ) -> Result<(), TonCoreError> {
++        if libs.len() > STATE_INIT_MAX_WRITTEN_LIBS {
++            bail_ton_core_data!(
++                "StateInit with {} libraries can't be written: limit is {STATE_INIT_MAX_WRITTEN_LIBS}",
++                libs.len()
++            );
++        }
++        Self::dict().write(builder, libs)
++    }
++}
++
+ #[derive(Debug, Clone, PartialEq, TLB)]
+ pub struct SimpleLib {
+     pub public: bool,
+@@ -57,8 +94,10 @@ impl StateInit {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use crate::block_tlb::{CommonMsgInfoInt, Msg};
+     use std::str::FromStr;
+     use ton_core::cell::TonCell;
++    use ton_core::types::tlb_core::{EitherRefLayout, TLBEitherRef};
+ 
+     #[test]
+     fn test_state_init_regular_contract() -> anyhow::Result<()> {
+@@ -96,4 +135,67 @@ mod tests {
+         assert_eq!(address, exp_addr);
+         Ok(())
+     }
++
++    fn state_init_with_libs(count: usize) -> anyhow::Result<StateInit> {
++        let mut state_init = StateInit::new(TonCell::empty().clone(), TonCell::empty().clone());
++        for index in 0..count as u32 {
++            let mut builder = TonCell::builder();
++            builder.write_num(&index, 32)?;
++            let root = builder.build()?;
++            let lib = SimpleLib {
++                public: index % 2 == 0,
++                root: root.clone().into(),
++            };
++            assert!(
++                state_init
++                    .library
++                    .insert(root.hash()?.clone(), lib)
++                    .is_none()
++            );
++        }
++        Ok(state_init)
++    }
++
++    #[test]
++    fn test_state_init_written_libs_limit() -> anyhow::Result<()> {
++        let at_limit = state_init_with_libs(STATE_INIT_MAX_WRITTEN_LIBS)?;
++        assert_eq!(StateInit::from_boc(at_limit.to_boc()?)?, at_limit);
++
++        let over_limit = state_init_with_libs(STATE_INIT_MAX_WRITTEN_LIBS + 1)?;
++        let err = over_limit.to_cell().unwrap_err().to_string();
++        assert!(err.contains("17 libraries can't be written"), "{err}");
++        assert!(over_limit.to_boc().is_err());
++        assert!(over_limit.cell_hash().is_err());
++
++        // the message that would carry it is refused as a whole, inline or by reference
++        let mut msg = Msg::new(CommonMsgInfoInt::default(), TonCell::empty().clone());
++        msg.init = Some(TLBEitherRef::new(over_limit.clone()));
++        assert!(msg.to_cell().is_err());
++        msg.init = Some(TLBEitherRef::new_with_layout(
++            over_limit.clone(),
++            EitherRefLayout::ToRef,
++        ));
++        assert!(msg.to_cell().is_err());
++        msg.init = Some(TLBEitherRef::new(at_limit));
++        assert_eq!(Msg::<TonCell>::from_cell(&msg.to_cell()?)?.init, msg.init);
++        Ok(())
++    }
++
++    #[test]
++    fn test_state_init_reads_more_libs_than_it_writes() -> anyhow::Result<()> {
++        // chain data: _ split_depth:(Maybe (## 5)) special:(Maybe TickTock) code:(Maybe ^Cell)
++        // data:(Maybe ^Cell) library:(HashmapE 256 SimpleLib), written without the limit
++        let expected = state_init_with_libs(300)?;
++        let mut builder = TonCell::builder();
++        builder.write_num(&0b0011u8, 4)?;
++        builder.write_ref(TonCell::empty().clone())?;
++        builder.write_ref(TonCell::empty().clone())?;
++        StateInitLibs::dict().write(&mut builder, &expected.library)?;
++        let cell = builder.build()?;
++
++        let parsed = StateInit::from_cell(&cell)?;
++        assert_eq!(parsed, expected);
++        assert!(parsed.to_cell().is_err());
++        Ok(())
++    }
+ }
+diff --git a/vendor/ton/src/tlb_adapters.rs b/vendor/ton/src/tlb_adapters.rs
+index a17be18..b00a7bc 100644
+--- a/vendor/ton/src/tlb_adapters.rs
++++ b/vendor/ton/src/tlb_adapters.rs
+@@ -1,5 +1,6 @@
+ mod bin_tree;
+ mod dict;
++mod node_budget;
+ 
+ pub use bin_tree::*;
+ pub use dict::*;
+diff --git a/vendor/ton/src/tlb_adapters/bin_tree.rs b/vendor/ton/src/tlb_adapters/bin_tree.rs
+index 3170e67..4ab7bdd 100644
+--- a/vendor/ton/src/tlb_adapters/bin_tree.rs
++++ b/vendor/ton/src/tlb_adapters/bin_tree.rs
+@@ -1,5 +1,6 @@
+ use crate::block_tlb::ShardPfx;
+ use crate::tlb_adapters::DictValAdapter;
++use crate::tlb_adapters::node_budget::WalkBudget;
+ use std::collections::HashMap;
+ use std::marker::PhantomData;
+ use ton_core::bail_ton_core_data;
+@@ -22,8 +23,10 @@ impl<VA: DictValAdapter> BinTree<VA> {
+     }
+ 
+     pub fn read(parser: &mut CellParser) -> Result<HashMap<ShardPfx, VA::ValType>, TonCoreError> {
++        // the depth limit alone leaves 2^60 paths over cells that share subtrees
++        let budget = WalkBudget::enter();
+         let mut val = HashMap::new();
+-        Self::read_impl(parser, ShardPfx::default(), &mut val)?;
++        Self::read_impl(parser, ShardPfx::default(), &mut val, &budget)?;
+         Ok(val)
+     }
+ 
+@@ -31,7 +34,9 @@ impl<VA: DictValAdapter> BinTree<VA> {
+         parser: &mut CellParser,
+         cur_key: ShardPfx,
+         cur_val: &mut HashMap<ShardPfx, VA::ValType>,
++        budget: &WalkBudget,
+     ) -> Result<(), TonCoreError> {
++        budget.visit_node()?;
+         if cur_key.bits_len > TON_MAX_SPLIT_DEPTH as u32 {
+             bail_ton_core_data!(
+                 "[read] BinTree depth exceeded: {} > {TON_MAX_SPLIT_DEPTH}",
+@@ -48,13 +53,23 @@ impl<VA: DictValAdapter> BinTree<VA> {
+             value: cur_key.value,
+             bits_len: new_bits_len,
+         };
+-        Self::read_impl(&mut parser.read_next_ref()?.parser(), left_key, cur_val)?;
++        Self::read_impl(
++            &mut parser.read_next_ref()?.parser(),
++            left_key,
++            cur_val,
++            budget,
++        )?;
+ 
+         let right_key = ShardPfx {
+             value: cur_key.value | (1 << (64 - new_bits_len)),
+             bits_len: new_bits_len,
+         };
+-        Self::read_impl(&mut parser.read_next_ref()?.parser(), right_key, cur_val)?;
++        Self::read_impl(
++            &mut parser.read_next_ref()?.parser(),
++            right_key,
++            cur_val,
++            budget,
++        )?;
+         Ok(())
+     }
+ 
+@@ -169,4 +184,23 @@ mod tests {
+         assert_eq!(data, parsed_data);
+         Ok(())
+     }
++
++    #[test]
++    fn test_bin_tree_shared_cells_walk_is_bounded() -> anyhow::Result<()> {
++        // bt_leaf$0 under 60 levels of bt_fork$1 whose two references are one cell: 2^60 paths
++        let mut builder = TonCell::builder();
++        builder.write_bit(false)?;
++        builder.write_num(&7u32, 32)?;
++        let mut node = builder.build()?;
++        for _ in 0..TON_MAX_SPLIT_DEPTH {
++            let mut builder = TonCell::builder();
++            builder.write_bit(true)?;
++            builder.write_ref(node.clone())?;
++            builder.write_ref(node)?;
++            node = builder.build()?;
++        }
++        let result = BinTree::<DictValAdapterNum<u32, 32>>::read(&mut node.parser());
++        assert!(result.is_err_and(|err| err.to_string().contains("Too many nodes")));
++        Ok(())
++    }
+ }
+diff --git a/vendor/ton/src/tlb_adapters/dict/data_parser.rs b/vendor/ton/src/tlb_adapters/dict/data_parser.rs
+index fee4250..0637811 100644
+--- a/vendor/ton/src/tlb_adapters/dict/data_parser.rs
++++ b/vendor/ton/src/tlb_adapters/dict/data_parser.rs
+@@ -2,8 +2,10 @@ use std::collections::HashMap;
+ 
+ use super::label_type::DictLabelType;
+ use crate::tlb_adapters::DictValAdapter;
++use crate::tlb_adapters::node_budget::WalkBudget;
+ use num_bigint::BigUint;
+ use num_traits::One;
++use ton_core::bail_ton_core_data;
+ use ton_core::cell::CellParser;
+ use ton_core::errors::TonCoreError;
+ use ton_core::traits::tlb::TLB;
+@@ -29,8 +31,10 @@ impl DictDataParser {
+         // reset state in case of reusing
+         self.cur_key_prefix = BigUint::one();
+ 
++        // the cells are untrusted and may share subtrees: the walk is bounded, not the BoC
++        let budget = WalkBudget::enter();
+         let mut result = HashMap::new();
+-        self.parse_impl::<VA>(parser, &mut result)?;
++        self.parse_impl::<VA>(parser, &mut result, &budget)?;
+         Ok(result)
+     }
+ 
+@@ -38,16 +42,21 @@ impl DictDataParser {
+         &mut self,
+         parser: &mut CellParser,
+         dst: &mut HashMap<BigUint, VA::ValType>,
++        budget: &WalkBudget,
+     ) -> Result<(), TonCoreError> {
++        budget.visit_node()?;
++
+         // will rollback prefix to original value at the end of the function
+         let origin_key_prefix_len = self.cur_key_prefix.bits();
+ 
++        // a label is never longer than the key bits not consumed yet (HmLabel ~n m, n <= m):
++        // every length below is checked against it before it sizes a shift or an allocation
++        let key_bits_left = self.key_bits_left()?;
+         let label_type = self.detect_label_type(parser)?;
+         match label_type {
+             DictLabelType::Same => {
+                 let prefix_val = parser.read_bit()?;
+-                let prefix_len_len = self.remain_suffix_bit_len();
+-                let prefix_len = parser.read_num::<usize>(prefix_len_len)?;
++                let prefix_len = Self::read_label_len(parser, key_bits_left)?;
+                 if prefix_val {
+                     self.cur_key_prefix += 1u32;
+                     self.cur_key_prefix <<= prefix_len;
+@@ -57,35 +66,36 @@ impl DictDataParser {
+                 }
+             }
+             DictLabelType::Short => {
+-                let prefix_len = UnaryLen::read(parser)?;
+-                if *prefix_len != 0 {
+-                    let val = parser.read_num::<BigUint>(*prefix_len)?;
+-                    self.cur_key_prefix <<= *prefix_len;
++                let prefix_len = *UnaryLen::read(parser)?;
++                Self::check_label_len(prefix_len, key_bits_left)?;
++                if prefix_len != 0 {
++                    let val = parser.read_num::<BigUint>(prefix_len)?;
++                    self.cur_key_prefix <<= prefix_len;
+                     self.cur_key_prefix |= val;
+                 }
+             }
+             DictLabelType::Long => {
+-                let prefix_len_len = self.remain_suffix_bit_len();
+-                let prefix_len: usize = parser.read_num(prefix_len_len)?;
+-                if prefix_len_len != 0 {
++                let prefix_len = Self::read_label_len(parser, key_bits_left)?;
++                if prefix_len != 0 {
+                     let val: BigUint = parser.read_num(prefix_len)?;
+                     self.cur_key_prefix <<= prefix_len;
+                     self.cur_key_prefix |= val;
+                 }
+             }
+         }
+-        if self.cur_key_prefix.bits() as usize == (self.key_bits_len + 1) {
++        // the label fits the key, so the prefix is the whole key (a leaf) or shorter (a fork)
++        if self.key_bits_left()? == 0 {
+             let mut key = BigUint::one() << self.key_bits_len;
+             key ^= &self.cur_key_prefix;
+             dst.insert(key, VA::read(parser)?);
+         } else {
+             let left_ref = parser.read_next_ref()?;
+             self.cur_key_prefix <<= 1;
+-            self.parse_impl::<VA>(&mut left_ref.parser(), dst)?;
++            self.parse_impl::<VA>(&mut left_ref.parser(), dst, budget)?;
+ 
+             let right_ref = parser.read_next_ref()?;
+             self.cur_key_prefix += BigUint::one();
+-            self.parse_impl::<VA>(&mut right_ref.parser(), dst)?;
++            self.parse_impl::<VA>(&mut right_ref.parser(), dst, budget)?;
+         }
+         self.cur_key_prefix >>= self.cur_key_prefix.bits() - origin_key_prefix_len;
+         Ok(())
+@@ -104,9 +114,218 @@ impl DictDataParser {
+         Ok(label)
+     }
+ 
+-    fn remain_suffix_bit_len(&self) -> usize {
+-        // add 2 because cur_prefix contains leading bit
+-        let prefix_len_left = self.key_bits_len - self.cur_key_prefix.bits() as usize + 2;
+-        (prefix_len_left as f32).log2().ceil() as usize
++    /// Key bits not consumed yet on the path to the current node.
++    fn key_bits_left(&self) -> Result<usize, TonCoreError> {
++        // cur_key_prefix contains leading bit
++        let consumed = self.cur_key_prefix.bits().saturating_sub(1);
++        match (self.key_bits_len as u64).checked_sub(consumed) {
++            Some(left) => Ok(left as usize),
++            None => bail_ton_core_data!(
++                "Dict key prefix is longer than the key: {consumed} > {}",
++                self.key_bits_len
++            ),
++        }
++    }
++
++    /// Reads `n:(#<= m)` of a long or same label, `m` being the key bits left.
++    fn read_label_len(
++        parser: &mut CellParser,
++        key_bits_left: usize,
++    ) -> Result<usize, TonCoreError> {
++        let label_len = parser.read_num::<usize>(Self::label_len_bits(key_bits_left))?;
++        Self::check_label_len(label_len, key_bits_left)?;
++        Ok(label_len)
++    }
++
++    /// Width of `#<= m`: as many bits as `m` itself takes, that is ceil(log2(m + 1)).
++    fn label_len_bits(key_bits_left: usize) -> usize {
++        (usize::BITS - key_bits_left.leading_zeros()) as usize
++    }
++
++    fn check_label_len(label_len: usize, key_bits_left: usize) -> Result<(), TonCoreError> {
++        if label_len > key_bits_left {
++            bail_ton_core_data!(
++                "Dict label is longer than the key bits left: {label_len} > {key_bits_left}"
++            );
++        }
++        Ok(())
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::block_tlb::{AccountState, MaybeAccount, ShardAccount, StateInit};
++    use crate::tlb_adapters::DictValAdapterNum;
++    use crate::tlb_adapters::node_budget::MAX_WALK_NODES;
++    use std::time::{Duration, Instant};
++    use ton_core::cell::TonCell;
++
++    // WC-2b: the library dictionary of a StateInit whose `same` label is longer than the key,
++    // followed by a fork: the next length was sized from a wrapped subtraction (2^61 bytes).
++    const WC2B_STATE_INIT: &str = "te6ccgEBAwEAXwABAQwBApd/////////////////////////////////////////////////+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAgIAEd//////////8A==";
++    // WC-2: a well-formed library dictionary of 27 cells, 24 forks deep, both references of
++    // every fork being the same cell: 2^24 keys.
++    const WC2_STATE_INIT: &str = "te6ccgEBGwEAtgABAQwBAgFIAgICAUgDAwIBSAQEAgFIBQUCAUgGBgIBSAcHAgFICAgCAUgJCQIBSAoKAgFICwsCAUgMDAIBSA0NAgFIDg4CAUgPDwIBSBAQAgFIERECAUgSEgIBSBMTAgFIFBQCAUgVFQIBSBYWAgFIFxcCAUgYGAIBSBkZAWl//////////////////////////////////4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEBoAAA==";
++    // far above what the refused inputs take, far below what they took before
++    const FAIL_FAST: Duration = Duration::from_secs(5);
++
++    type U8Val = DictValAdapterNum<u8, 8>;
++
++    fn read_u8_dict(
++        key_bits_len: usize,
++        root: &TonCell,
++    ) -> Result<HashMap<BigUint, u8>, TonCoreError> {
++        DictDataParser::new(key_bits_len).read::<U8Val>(&mut root.parser())
++    }
++
++    fn cell(bits: &str, refs: &[&TonCell]) -> anyhow::Result<TonCell> {
++        let mut builder = TonCell::builder();
++        for bit in bits.chars().filter(|bit| !bit.is_whitespace()) {
++            builder.write_bit(bit == '1')?;
++        }
++        for cell_ref in refs {
++            builder.write_ref((*cell_ref).clone())?;
++        }
++        Ok(builder.build()?)
++    }
++
++    /// A dictionary of `depth`-bit keys made of `depth + 1` cells: every fork has an empty
++    /// label and points twice at the next cell, the single leaf holds 0xAB.
++    fn shared_tree(depth: usize) -> anyhow::Result<TonCell> {
++        let mut node = cell("00 10101011", &[])?;
++        for _ in 0..depth {
++            node = cell("00", &[&node, &node])?;
++        }
++        Ok(node)
++    }
++
++    fn assert_refused<T>(result: Result<T, TonCoreError>, expected: &str) {
++        match result {
++            Ok(_) => panic!("must be refused: {expected}"),
++            Err(err) => assert!(
++                err.to_string().contains(expected),
++                "unexpected error: {err}"
++            ),
++        }
++    }
++
++    #[test]
++    fn test_dict_wc2b_label_longer_than_key_is_refused() {
++        let started = Instant::now();
++        let result = StateInit::from_boc_base64(WC2B_STATE_INIT);
++        assert_refused(
++            result,
++            "Dict label is longer than the key bits left: 300 > 256",
++        );
++        assert!(started.elapsed() < FAIL_FAST);
++    }
++
++    #[test]
++    fn test_dict_wc2_shared_cells_walk_is_bounded() {
++        let started = Instant::now();
++        let result = StateInit::from_boc_base64(WC2_STATE_INIT);
++        assert_refused(result, "Too many nodes on the paths of a dict");
++        assert!(started.elapsed() < FAIL_FAST);
++    }
++
++    #[test]
++    fn test_dict_label_len_is_bound_for_every_label_type() -> anyhow::Result<()> {
++        // hml_same$11 v:Bit n:(#<= 8): n = 9
++        assert_refused(read_u8_dict(8, &cell("11 0 1001", &[])?), "9 > 8");
++        // hml_long$10 n:(#<= 8) s:(n * Bit): n = 15, the bits are there
++        let long = cell("10 1111 111111111111111 00000000", &[])?;
++        assert_refused(read_u8_dict(8, &long), "15 > 8");
++        // hml_short$0 len:(Unary ~n) s:(n * Bit): n = 9
++        let short = cell("0 1111111110 000000000 00000000", &[])?;
++        assert_refused(read_u8_dict(8, &short), "9 > 8");
++
++        // below a fork one key bit is gone: the label is checked against what is left
++        let leaf = cell("11 0 1001 00000000", &[])?;
++        assert_refused(read_u8_dict(9, &cell("00", &[&leaf, &leaf])?), "9 > 8");
++        let leaf = cell("0 111111110 00000000 00000000", &[])?;
++        assert_refused(read_u8_dict(8, &cell("00", &[&leaf, &leaf])?), "8 > 7");
++        let leaf = cell("11 0 111 00000000", &[])?;
++        assert_eq!(read_u8_dict(8, &cell("00", &[&leaf, &leaf])?)?.len(), 2);
++
++        // the whole key in one label of each type is a leaf
++        let expected = HashMap::from([(BigUint::from(0xFFu32), 0x5Au8)]);
++        for bits in [
++            "11 1 1000 01011010",
++            "10 1000 11111111 01011010",
++            "0 111111110 11111111 01011010",
++        ] {
++            assert_eq!(read_u8_dict(8, &cell(bits, &[])?)?, expected, "{bits}");
++        }
++        // a label that ends before the key does needs a fork
++        assert!(read_u8_dict(8, &cell("11 1 0111 01011010", &[])?).is_err());
++        Ok(())
++    }
++
++    #[test]
++    fn test_dict_label_len_width_matches_the_builder() {
++        // data_builder.rs: (key_bits_len_left as f32 + 1.0).log2().ceil()
++        for key_bits_left in 0..=4096usize {
++            let expected = (key_bits_left as f32 + 1.0).log2().ceil() as usize;
++            assert_eq!(
++                DictDataParser::label_len_bits(key_bits_left),
++                expected,
++                "{key_bits_left}"
++            );
++        }
++    }
++
++    #[test]
++    fn test_dict_walk_budget() -> anyhow::Result<()> {
++        // a complete 15-bit dictionary is 2^16 - 1 nodes: the largest one inside the budget
++        assert_eq!(MAX_WALK_NODES, 1 << 16);
++        let dict = read_u8_dict(15, &shared_tree(15)?)?;
++        assert_eq!(dict.len(), 1 << 15);
++        assert!(dict.values().all(|value| *value == 0xAB));
++
++        for depth in [16, 24, 64, 256] {
++            let started = Instant::now();
++            assert_refused(read_u8_dict(depth, &shared_tree(depth)?), "Too many nodes");
++            assert!(started.elapsed() < FAIL_FAST, "depth {depth}");
++        }
++
++        // nothing is left over for the next dictionary on this thread
++        assert_eq!(read_u8_dict(15, &shared_tree(15)?)?.len(), 1 << 15);
++        Ok(())
++    }
++
++    #[test]
++    fn test_dict_state_init_without_library() -> anyhow::Result<()> {
++        // state_init for UQCJ7Quj9gM_SE3uwOk3gEJC2JFQcgg0s7CSpLr7B_2yiHPG (see state_init.rs)
++        let boc_hex = "b5ee9c720102160100030400020134020100510000082f29a9a31738dd3a33f904d35e2f4f6f9af2d2f9c563c05faa6bb0b12648d5632083ea3f89400114ff00f4a413f4bcf2c80b03020120090404f8f28308d71820d31fd31fd31f02f823bbf264ed44d0d31fd31fd3fff404d15143baf2a15151baf2a205f901541064f910f2a3f80024a4c8cb1f5240cb1f5230cbff5210f400c9ed54f80f01d30721c0009f6c519320d74a96d307d402fb00e830e021c001e30021c002e30001c0039130e30d03a4c8cb1f12cb1fcbff08070605000af400c9ed54006c810108d718fa00d33f305224810108f459f2a782106473747270748018c8cb05cb025005cf165003fa0213cb6acb1f12cb3fc973fb000070810108d718fa00d33fc8542047810108f451f2a782106e6f746570748018c8cb05cb025006cf165004fa0214cb6a12cb1fcb3fc973fb0002006ed207fa00d4d422f90005c8ca0715cbffc9d077748018c8cb05cb0222cf165005fa0214cb6b12ccccc973fb00c84014810108f451f2a702020148130a0201200c0b0059bd242b6f6a2684080a06b90fa0218470d4080847a4937d29910ce6903e9ff9837812801b7810148987159f31840201200e0d0011b8c97ed44d0d70b1f8020158120f02012011100019af1df6a26840106b90eb858fc00019adce76a26840206b90eb85ffc0003db29dfb513420405035c87d010c00b23281f2fff274006040423d029be84c6002e6d001d0d3032171b0925f04e022d749c120925f04e002d31f218210706c7567bd22821064737472bdb0925f05e003fa403020fa4401c8ca07cbffc9d0ed44d0810140d721f404305c810108f40a6fa131b3925f07e005d33fc8258210706c7567ba923830e30d03821064737472ba925f06e30d1514008a5004810108f45930ed44d0810140d720c801cf16f400c9ed540172b08e23821064737472831eb17080185005cb055003cf1623fa0213cb6acb1fcb3fc98040fb00925f03e2007801fa00f40430f8276f2230500aa121bef2e0508210706c7567831eb17080185004cb0526cf1658fa0219f400cb6917cb1f5260cb3f20c98040fb0006";
++        let source = TonCell::from_boc_hex(boc_hex)?;
++        let state_init = StateInit::from_boc_hex(boc_hex)?;
++        assert!(state_init.code.is_some() && state_init.data.is_some());
++        assert!(state_init.library.is_empty());
++        assert_eq!(state_init.to_cell()?, source);
++        Ok(())
++    }
++
++    #[test]
++    fn test_dict_state_init_with_library() -> anyhow::Result<()> {
++        // the masterchain account of test_block_tlb_shard_account_tick_tock (shard_account.rs)
++        let account_boc_hex = "b5ee9c7201020d0100017500015099602ce40fd84286bddb06f8bcc9fceb7e3027f9826c8985017f16cba12363cc000016e2cc89c18101036fcff34517c7bdf5187c55af4f8b61fdc321588c7ab768dee24b006df29106458d7cf21881f4800000000000005b8b322706090311d3e017f009080202016206030142bf412429205ea66d6f2004edfa570f6f56b3e85e59baa1befbc73b7da5d55bdc61040104123405000456780142bf5a2eef5056775f5b9572ff3ad63dd2a71d1fb281ca177a5e1c74730eccb2e51307000fabacabadabacaba8004811fd096c00000000000000000000000000000000000000000000000000000000000000000114ff00f4a413f4a0f2c80b0a0201200c0b00dfa5ffff76a268698fe9ffe8e42c5267858f90e785ffe4f6aa6467c444ffb365ffc10802faf0807d014035e7a064b87d804077e7857fc10803dfd2407d014035e7a064b86467cd8903a32b9ba4410803ade68afd014035e7a045ea432b6363796103bb7b9363210c678b64b87d807d80400002d2";
++        let shard_account = ShardAccount::from_boc_hex(account_boc_hex)?;
++        let MaybeAccount::Account(account) = &*shard_account.account else {
++            panic!("the account must exist");
++        };
++        let AccountState::Active(active) = &account.storage.state else {
++            panic!("the account must be active");
++        };
++        let state_init = &active.state_init;
++        assert_eq!(state_init.library.len(), 2);
++
++        // the same StateInit on its own, as a message carries it
++        let state_init_boc = state_init.to_boc()?;
++        let parsed = StateInit::from_boc(state_init_boc.clone())?;
++        assert_eq!(&parsed, state_init);
++        assert_eq!(parsed.to_boc()?, state_init_boc);
++
++        Ok(())
+     }
+ }
+diff --git a/vendor/ton/src/tlb_adapters/node_budget.rs b/vendor/ton/src/tlb_adapters/node_budget.rs
+new file mode 100644
+index 0000000..7a1a981
+--- /dev/null
++++ b/vendor/ton/src/tlb_adapters/node_budget.rs
+@@ -0,0 +1,100 @@
++//! Work bound for the recursive readers of untrusted cell trees (`Hashmap`, `BinTree`).
++//!
++//! Cells form a DAG: a few dozen cells whose two references point at the same child
++//! describe a tree with 2^depth distinct paths. A reader that follows every path has to
++//! bound its own work, the size of the BoC it was given bounds nothing.
++
++use std::cell::Cell;
++use ton_core::bail_ton_core_data;
++use ton_core::errors::TonCoreError;
++
++/// Nodes (forks and leaves) that one outermost read may visit, dictionaries nested in its
++/// values included. A complete 15-bit dictionary (the widest key space of the fixed-size
++/// dictionaries in a transaction, `out_msgs`) has 2^16 - 1 nodes.
++pub(crate) const MAX_WALK_NODES: usize = 1 << 16;
++
++thread_local! {
++    // (reads active on this thread, nodes left for the outermost of them)
++    static WALK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
++}
++
++/// Scope of one read. A read started inside another one (a dictionary in a dictionary
++/// value) draws from the budget of the outermost read, so nesting can't multiply it.
++pub(crate) struct WalkBudget(());
++
++impl WalkBudget {
++    pub(crate) fn enter() -> Self {
++        WALK.with(|walk| {
++            let (depth, left) = walk.get();
++            walk.set(if depth == 0 {
++                (1, MAX_WALK_NODES)
++            } else {
++                (depth + 1, left)
++            });
++        });
++        Self(())
++    }
++
++    /// Accounts one visited node, fails when the budget of the outermost read is spent.
++    pub(crate) fn visit_node(&self) -> Result<(), TonCoreError> {
++        WALK.with(|walk| {
++            let (depth, left) = walk.get();
++            let Some(left) = left.checked_sub(1) else {
++                bail_ton_core_data!(
++                    "Too many nodes on the paths of a dict: limit is {MAX_WALK_NODES}"
++                );
++            };
++            walk.set((depth, left));
++            Ok(())
++        })
++    }
++}
++
++impl Drop for WalkBudget {
++    fn drop(&mut self) {
++        WALK.with(|walk| {
++            let (depth, left) = walk.get();
++            walk.set((depth.saturating_sub(1), left));
++        });
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn spend(budget: &WalkBudget, nodes: usize) -> Result<(), TonCoreError> {
++        (0..nodes).try_for_each(|_| budget.visit_node())
++    }
++
++    #[test]
++    fn test_walk_budget_is_per_outermost_read() -> anyhow::Result<()> {
++        for _ in 0..2 {
++            let budget = WalkBudget::enter();
++            spend(&budget, MAX_WALK_NODES)?;
++            assert!(budget.visit_node().is_err());
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn test_walk_budget_is_shared_with_nested_reads() -> anyhow::Result<()> {
++        let outer = WalkBudget::enter();
++        spend(&outer, MAX_WALK_NODES - 10)?;
++        {
++            let nested = WalkBudget::enter();
++            spend(&nested, 7)?;
++        }
++        {
++            let nested = WalkBudget::enter();
++            spend(&nested, 3)?;
++            assert!(nested.visit_node().is_err());
++        }
++        assert!(outer.visit_node().is_err());
++        drop(outer);
++
++        let next = WalkBudget::enter();
++        spend(&next, MAX_WALK_NODES)?;
++        Ok(())
++    }
++}
