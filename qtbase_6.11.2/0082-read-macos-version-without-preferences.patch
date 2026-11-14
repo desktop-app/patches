@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Sat, 14 Nov 2026 12:00:00
+Subject: [PATCH] QOperatingSystemVersion: read the macOS version without preferences
+
+NSProcessInfo.operatingSystemVersion builds the system version
+dictionary, which looks up a localized version key in the SystemVersion
+bundle. Finding that bundle's language reads the user's language
+preferences, so the first call connects the process to cfprefsd and
+looks up the user record in opendirectoryd. qt_apple_check_os_version()
+makes that call as a static constructor of every executable that links
+QtCore statically, before main(). A process that restricts itself with a
+sandbox profile later cannot drop those connections.
+
+On macOS read the version from the kern.osproductversion sysctl, which
+holds the same numbers, and fall back to NSProcessInfo only when that
+fails. The compatibility version handling stays as it was.
+
+Origin: desktop-app; based on Qt 6.11.2.
+---
+
+diff --git a/src/corelib/global/qoperatingsystemversion_darwin.mm b/src/corelib/global/qoperatingsystemversion_darwin.mm
+index f14a339..779ad94 100644
+--- a/src/corelib/global/qoperatingsystemversion_darwin.mm
++++ b/src/corelib/global/qoperatingsystemversion_darwin.mm
+@@ -12,14 +12,30 @@
+ #include <QtCore/qprocess.h>
+ #endif
+ 
++#include <sys/sysctl.h>
++
+ QT_BEGIN_NAMESPACE
+ 
+ using namespace Qt::StringLiterals;
+ 
+-QOperatingSystemVersionBase QOperatingSystemVersionBase::current_impl()
++static QVersionNumber systemVersionNumber()
+ {
++#if defined(Q_OS_MACOS)
++    char version[32] = {};
++    size_t size = sizeof(version) - 1;
++    if (sysctlbyname("kern.osproductversion", version, &size, nullptr, 0) == 0) {
++        const auto versionNumber = QVersionNumber::fromString(QLatin1StringView(version));
++        if (!versionNumber.isNull())
++            return versionNumber;
++    }
++#endif
+     NSOperatingSystemVersion osv = NSProcessInfo.processInfo.operatingSystemVersion;
+-    QVersionNumber versionNumber(osv.majorVersion, osv.minorVersion, osv.patchVersion);
++    return QVersionNumber(osv.majorVersion, osv.minorVersion, osv.patchVersion);
++}
++
++QOperatingSystemVersionBase QOperatingSystemVersionBase::current_impl()
++{
++    QVersionNumber versionNumber = systemVersionNumber();
+ 
+     if (versionNumber.majorVersion() == 10 && versionNumber.minorVersion() >= 16) {
+         // The process is running in system version compatibility mode,
