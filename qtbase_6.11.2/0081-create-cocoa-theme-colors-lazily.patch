@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Sat, 14 Nov 2026 12:00:00
+Subject: [PATCH] QCocoaTheme: create the role palette colors lazily
+
+The table of role palette text colors was a namespace-scope array whose
+initializer calls +[NSColor controlTextColor] and three similar class
+methods, so it ran as a static initializer of every executable that links
+the cocoa plugin statically, before main(), even in a process that never
+creates the theme or a window. Initializing the dynamic system colors
+there connects the process to the window server, the render server,
+LaunchServices, tccd and distnoted, and reads preferences. A process that
+restricts itself with a sandbox profile later cannot drop those
+connections.
+
+Build the table in qt_mac_createRolePalettes(), its only user, which runs
+when the theme first builds its role palettes. The colors are dynamic and
+are resolved when converted, under the same drawing appearance as before,
+so the palettes stay the same.
+
+Origin: desktop-app; based on Qt 6.11.2.
+---
+
+diff --git a/src/plugins/platforms/cocoa/qcocoatheme.mm b/src/plugins/platforms/cocoa/qcocoatheme.mm
+index a5d45ef..7b61cc0 100644
+--- a/src/plugins/platforms/cocoa/qcocoatheme.mm
++++ b/src/plugins/platforms/cocoa/qcocoatheme.mm
+@@ -113,29 +113,29 @@ inline QMacPaletteMap(QPlatformTheme::Palette p, NSColor *a, NSColor *i) :
+     QPlatformTheme::Palette paletteRole;
+ };
+ 
++static QHash<QPlatformTheme::Palette, QPalette*> qt_mac_createRolePalettes()
++{
+ #define MAC_PALETTE_ENTRY(pal, active, inactive) \
+     QMacPaletteMap(pal, [NSColor active], [NSColor inactive])
+-static QMacPaletteMap mac_widget_colors[] = {
+-    MAC_PALETTE_ENTRY(QPlatformTheme::ToolButtonPalette, controlTextColor, disabledControlTextColor),
+-    MAC_PALETTE_ENTRY(QPlatformTheme::ButtonPalette, controlTextColor, disabledControlTextColor),
+-    MAC_PALETTE_ENTRY(QPlatformTheme::HeaderPalette, headerTextColor, disabledControlTextColor),
+-    MAC_PALETTE_ENTRY(QPlatformTheme::ComboBoxPalette, controlTextColor, disabledControlTextColor),
+-    MAC_PALETTE_ENTRY(QPlatformTheme::ItemViewPalette, textColor, disabledControlTextColor),
+-    MAC_PALETTE_ENTRY(QPlatformTheme::MessageBoxLabelPalette, textColor, disabledControlTextColor),
+-    MAC_PALETTE_ENTRY(QPlatformTheme::TabBarPalette, controlTextColor, disabledControlTextColor),
+-    MAC_PALETTE_ENTRY(QPlatformTheme::LabelPalette, textColor, disabledControlTextColor),
+-    MAC_PALETTE_ENTRY(QPlatformTheme::GroupBoxPalette, textColor, disabledControlTextColor),
+-    MAC_PALETTE_ENTRY(QPlatformTheme::MenuPalette, controlTextColor, disabledControlTextColor),
+-    MAC_PALETTE_ENTRY(QPlatformTheme::MenuBarPalette, controlTextColor, disabledControlTextColor),
+-    MAC_PALETTE_ENTRY(QPlatformTheme::TextEditPalette, textColor, disabledControlTextColor),
+-    MAC_PALETTE_ENTRY(QPlatformTheme::TextLineEditPalette, textColor, disabledControlTextColor)
+-};
++    QMacPaletteMap mac_widget_colors[] = {
++        MAC_PALETTE_ENTRY(QPlatformTheme::ToolButtonPalette, controlTextColor, disabledControlTextColor),
++        MAC_PALETTE_ENTRY(QPlatformTheme::ButtonPalette, controlTextColor, disabledControlTextColor),
++        MAC_PALETTE_ENTRY(QPlatformTheme::HeaderPalette, headerTextColor, disabledControlTextColor),
++        MAC_PALETTE_ENTRY(QPlatformTheme::ComboBoxPalette, controlTextColor, disabledControlTextColor),
++        MAC_PALETTE_ENTRY(QPlatformTheme::ItemViewPalette, textColor, disabledControlTextColor),
++        MAC_PALETTE_ENTRY(QPlatformTheme::MessageBoxLabelPalette, textColor, disabledControlTextColor),
++        MAC_PALETTE_ENTRY(QPlatformTheme::TabBarPalette, controlTextColor, disabledControlTextColor),
++        MAC_PALETTE_ENTRY(QPlatformTheme::LabelPalette, textColor, disabledControlTextColor),
++        MAC_PALETTE_ENTRY(QPlatformTheme::GroupBoxPalette, textColor, disabledControlTextColor),
++        MAC_PALETTE_ENTRY(QPlatformTheme::MenuPalette, controlTextColor, disabledControlTextColor),
++        MAC_PALETTE_ENTRY(QPlatformTheme::MenuBarPalette, controlTextColor, disabledControlTextColor),
++        MAC_PALETTE_ENTRY(QPlatformTheme::TextEditPalette, textColor, disabledControlTextColor),
++        MAC_PALETTE_ENTRY(QPlatformTheme::TextLineEditPalette, textColor, disabledControlTextColor)
++    };
+ #undef MAC_PALETTE_ENTRY
+ 
+-static const int mac_widget_colors_count = sizeof(mac_widget_colors) / sizeof(mac_widget_colors[0]);
++    const int mac_widget_colors_count = sizeof(mac_widget_colors) / sizeof(mac_widget_colors[0]);
+ 
+-static QHash<QPlatformTheme::Palette, QPalette*> qt_mac_createRolePalettes()
+-{
+     QHash<QPlatformTheme::Palette, QPalette*> palettes;
+     QColor qc;
+     for (int i = 0; i < mac_widget_colors_count; i++) {
