@@ -1,0 +1,28 @@
+diff --git a/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp b/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
+index 2ee1d6e96b1..0b18dc780fc 100644
+--- a/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
++++ b/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
+@@ -169,11 +169,7 @@ static QFont::HintingPreference determineHinting(const QFontDef &fontDef)
+     QFont::HintingPreference hintingPreference = QFont::HintingPreference(fontDef.hintingPreference);
+     if (hintingPreference == QFont::PreferDefaultHinting) {
+         if (!qFuzzyCompare(qApp->devicePixelRatio(), 1.0)) {
+-            // Microsoft documentation recommends using asymmetric rendering for small fonts
+-            // at pixel size 16 and less, and symmetric for larger fonts.
+-            hintingPreference = fontDef.pixelSize > 16.0
+-                                    ? QFont::PreferNoHinting
+-                                    : QFont::PreferVerticalHinting;
++            hintingPreference = QFont::PreferVerticalHinting;
+         } else {
+             hintingPreference = QFont::PreferFullHinting;
+         }
+@@ -236,9 +232,8 @@ DWRITE_RENDERING_MODE QWindowsFontEngineDirectWrite::hintingPreferenceToRenderin
+     QFont::HintingPreference hintingPreference = determineHinting(fontDef);
+     switch (hintingPreference) {
+     case QFont::PreferNoHinting:
+-        return DWRITE_RENDERING_MODE_CLEARTYPE_NATURAL_SYMMETRIC;
+     case QFont::PreferVerticalHinting:
+-        return DWRITE_RENDERING_MODE_CLEARTYPE_NATURAL;
++        return DWRITE_RENDERING_MODE_CLEARTYPE_NATURAL_SYMMETRIC;
+     default:
+         if (useSymmetricAntialiasing())
+             return DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC;
