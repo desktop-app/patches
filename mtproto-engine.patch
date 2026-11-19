@@ -13,8 +13,10 @@ code a connection gets (ABI 10), let the host set a fake-TLS hello's
 time apart from the session's, telling it when a dropped connection's
 hello never verified (ABI 11), ask the server about a query left
 without an answer on a connection that stays up, never running one it
-may have run again, and check a route through a proxy with one
-unauthenticated request, outside any session (ABI 12).
+may have run again, check a route through a proxy with one
+unauthenticated request, outside any session (ABI 12), and give up a
+connection that answers nothing within Telegram Desktop's receive wait
+after a send that needs an answer.
 
 Upstream: https://github.com/TelegramMessenger/mtproto-engine
 Branch: main
@@ -25,7 +27,7 @@ Apply with `git apply` right after checking out that revision.
 Builds for i686-win7-windows-msvc and x86_64-win7-windows-msvc (std built
 from source with -Z build-std and +crt-static) and aarch64-pc-windows-msvc.
 Every hunk is Windows-gated, or moves a test helper unchanged off Windows,
-except fourteen changes, made for every platform. First, the engine's threads
+except fifteen changes, made for every platform. First, the engine's threads
 (mtproto-main, mtproto-worker-N, mtproto-resolver) run under an
 abort-on-panic guard, so a host built with panic = "unwind" ends the
 process on a panic there, as the engine's own panic = "abort" profile does,
@@ -627,6 +629,96 @@ mtproto-ffi ffi_abi12::a_cancelled_route_check_reports_nothing,
 mtproto-ffi ffi_abi12::the_setup_is_copied_during_the_call,
 mtproto-ffi ffi::c_header_layout_matches_rust,
 mtproto-ffi tests::every_entry_point_runs_as_engine_code.
+
+Fifteenth, a session gives up a connection that answers nothing within
+Telegram Desktop's receive wait after a packet that needs an answer. A
+connection that had answered and then took the session's bytes and sent
+nothing back, as a link held through an outage does, was cut first by
+the probe after an unanswered ping, which a send-queue reading of zero
+arms just as one of bytes in flight does, or by the read or ping
+timeout, the only ones without a reading. Without a proxy or the
+WebSocket, and with addresses to race, the runtime then held every such
+cut for 30 s from the first while fresh connections raced the silent
+one, the session reporting connected meanwhile, and gave the connection
+up only when the hold ran out, unless a racer verified first; Telegram
+Desktop gives it up 4 s after a small send. Now each packet that needs
+an answer going out on a stream connection, one with a query, a ping,
+get_future_salts, msgs_state_req, msg_resend_req, rpc_drop_answer or
+destroy_auth_key (not one with only acks, pongs or msgs_state_info),
+starts the receive wait when none runs, as Telegram Desktop's
+_waitForReceived does: the current wait, RECEIVE_WAIT_MIN (4 s) at
+first, or that wait for every RECEIVE_WAIT_BYTES (8192 bytes) of the
+packet when that is longer, at most RECEIVE_WAIT_MAX (64 s). A later
+packet whose size makes its own wait longer than the current one moves
+the end to the end of its own wait when that is later; no packet brings
+the end forward. Pings start it too, and the engine pings on every
+session, so on an idle session a connection that answered and then went
+silent is given up the wait after its next ping. A fresh packet, a
+matched quick ack or a frame arriving fast enough to count as progress
+ends the wait, as the connection opening or closing does. Past its end,
+on a stream connection that has answered, Session::handle_timeout
+returns SessionError::ReceiveTimeout, after its ping, read and probe
+checks and, unlike them, also while the runtime holds the connection for
+a race (hold_liveness_until). The cut doubles the wait, up to 64 s, for
+the session's later packets and connections, and a connection's first
+answer, when it comes in less than half the wait after the connection
+opened, shrinks the wait to twice that time, at least 4 s, once per
+connection. As a ping, read or probe cut does, it lowers the measured
+uplink peak to a quarter for two minutes when the connection's oldest
+packet, an upload part, was refused a stretch of its transmit grace. The
+end comes later by the uplink queue, what other sessions' uploads may
+hold the connection's exchanges up (half again as long as their bytes
+not yet confirmed take at the measured uplink rate, at most 16 s), and
+never before the connection's transmit grace ends while its own large
+packets may still be crossing the uplink. A connection that has not
+answered keeps the fresh allowance, the probe and the classic timeouts,
+and HTTP its own timers; the fresh allowance is now at least the current
+wait, within its 16 s cap, so the doubled wait after a cut also covers
+the next connection's first exchange. Kernel-acknowledged progress,
+which the runtime counts while at least 16 KiB were queued, still moves
+the read and ping clocks, now through
+Session::note_outbound_acknowledged, but does not stand in for received
+bytes in the wait, as a hop that terminates TCP acknowledges bytes for a
+server that may be gone; Session::note_bytes_received, which the runtime
+calls for a frame still arriving, ends the wait. The bytes of a fake-TLS
+record whose end has not arrived count as bytes arriving too, as
+Telegram Desktop counts them: TransportStream::pending_record_len
+reports them, the record header included, and
+SessionRuntime::frame_is_progressing adds them, through
+Connection::pending_record_len, to those of the frame under way, under
+the same grace and minimum rate. A proxy may write records of 16 KB,
+whose bytes the frame decoder sees only once a record ends; uncounted,
+they would leave a connection through such a proxy on a downlink below
+about 4 KB/s to be given up by the wait while its bytes keep arriving.
+They also move the clock of the probe and the read timeout, which missed
+them before. The test server can write fake-TLS records up to a given
+size (ServerOptions::tls_record_size; MAX_TLS_PACKET_LENGTH when not
+given). The runtime drops the connection as DropReason::ReceiveTimeout,
+named receive_timeout, which it does not count as silence, so it neither
+holds the connection nor races it: the connection closes with any racer
+and, as it answered, the session reconnects at once. The tunnel test,
+engine::a_connection_that_falls_silent_in_a_tunnel_is_kept_and_resumes,
+now rides out 3 s tunnels every 3 s, shorter than the wait, with every
+call under 4.5 s, instead of 7 s tunnels with calls under 8.5 s: a 7 s
+silence with a call pending is now given up, not waited out.
+coverage_gaps::drop_reasons_have_distinct_stable_names lists the new
+reason, and docs/protocol-coverage.md rows L02, L08 and L18 follow. The
+new reason's name reaches the host as MTEventKindConnectionDropped's
+text. No C ABI change. Tests:
+mtproto-core session::tests::receive_wait_tests::a_small_request_on_a_connection_that_answers_nothing_is_given_up_after_the_receive_wait_whatever_the_reading_and_mode,
+mtproto-core session::tests::receive_wait_tests::an_unanswered_ping_on_an_idle_connection_is_given_up_after_the_receive_wait,
+mtproto-core session::tests::receive_wait_tests::bytes_still_arriving_keep_the_connection_and_the_next_packet_starts_the_wait_again,
+mtproto-core session::tests::receive_wait_tests::pongs_keep_a_connection_whose_query_goes_unanswered_and_the_answer_wait_still_asks,
+mtproto-core session::tests::receive_wait_tests::an_answer_to_a_large_request_within_its_scaled_wait_keeps_the_connection,
+mtproto-core session::tests::receive_wait_tests::a_request_behind_other_sessions_uploads_gets_the_uplink_queue_on_top_of_the_wait,
+mtproto-core session::tests::receive_wait_tests::a_failed_wait_doubles_covers_the_next_connections_first_exchange_and_a_fast_first_answer_brings_it_back,
+mtproto-core session::tests::receive_wait_tests::a_connection_that_never_answered_and_http_keep_their_own_timers,
+mtproto-core transport::stream::tests::a_fake_tls_record_still_arriving_is_pending_until_its_end_arrives,
+mtproto-engine silent_connection::a_request_on_a_connection_that_takes_its_bytes_and_answers_nothing_reconnects_after_the_receive_wait,
+mtproto-engine silent_connection::a_connection_still_receiving_a_slow_answer_stays_up,
+mtproto-engine silent_connection::a_connection_still_receiving_a_large_fake_tls_record_stays_up,
+mtproto-engine engine::a_connection_that_falls_silent_in_a_tunnel_is_kept_and_resumes,
+mtproto-engine coverage_gaps::drop_reasons_have_distinct_stable_names.
 
 Test gated off on Windows, with its reason in the source:
 - mtproto-engine interface::tests::loopback_resolves_to_lo0 (Windows):
@@ -2389,10 +2481,10 @@ index 0000000..7372d07
 +    run.nothing_more();
 +}
 diff --git a/crates/mtproto-core/src/session/mod.rs b/crates/mtproto-core/src/session/mod.rs
-index 1b999e8..bcb29b6 100644
+index 1b999e8..9a2ac98 100644
 --- a/crates/mtproto-core/src/session/mod.rs
 +++ b/crates/mtproto-core/src/session/mod.rs
-@@ -25,6 +25,13 @@ pub const FUTURE_SALTS_RETRY: f64 = 60.0;
+@@ -25,6 +25,23 @@ pub const FUTURE_SALTS_RETRY: f64 = 60.0;
  pub const FUTURE_SALTS_COUNT: i32 = 64;
  pub const MAX_IDS_PER_SERVICE_MESSAGE: usize = 8192;
  pub const STATE_REQUEST_RETRY: f64 = 20.0;
@@ -2403,10 +2495,20 @@ index 1b999e8..bcb29b6 100644
 +/// did not come goes again under its msg_id to fetch the answer, which the server never runs twice and
 +/// answers from what it has; one it still runs, or has not started, waits.
 +pub const ANSWER_WAIT: f64 = 10.0;
++/// After a packet that needs an answer goes out on a stream connection that has answered, the connection is
++/// given up when nothing arrives from the server within the receive wait, as with Telegram Desktop's own
++/// sessions (`_waitForReceived`): `RECEIVE_WAIT_MIN` at first, or that wait for every `RECEIVE_WAIT_BYTES`
++/// of the packet when that is longer, at most `RECEIVE_WAIT_MAX`. A cut doubles the wait, up to the maximum,
++/// for the next packets and connections; a connection's first answer shrinks it to twice the time that
++/// answer took, never below the minimum, when that is shorter. Unlike the ping, read and probe timeouts it
++/// is not held while the host races a fresh connection against the silent one (`hold_liveness_until`).
++pub const RECEIVE_WAIT_MIN: f64 = 4.0;
++pub const RECEIVE_WAIT_MAX: f64 = 64.0;
++pub const RECEIVE_WAIT_BYTES: usize = 8192;
  pub const DEFAULT_CONTAINER_BYTES: usize = 1 << 15;
  pub const DEFAULT_CONTAINER_QUERIES: usize = 1000;
  pub const MAX_RECENT_QUICK_ACKS: usize = 256;
-@@ -64,18 +71,29 @@ pub const PROTOCOL_ERROR_PREFIX: &str = "PROTOCOL_ERROR_BAD_MSG_";
+@@ -64,18 +81,29 @@ pub const PROTOCOL_ERROR_PREFIX: &str = "PROTOCOL_ERROR_BAD_MSG_";
  pub const PROTOCOL_REJECTED: &str = "PROTOCOL_ERROR_REJECTED";
  /// A call whose answer the server announced (so it executed the call) and then said it no longer has.
  /// The call fails with this rather than going again under a new msg_id, which would execute it a second
@@ -2443,7 +2545,7 @@ index 1b999e8..bcb29b6 100644
  pub const TCP_ASK_BACKSTOP: f64 = 120.0;
  pub const MAX_QUERY_REJECTIONS: u32 = 12;
  pub const MAX_SERVER_RESENDS: u32 = 8;
-@@ -160,6 +178,8 @@ impl Default for SessionConfig {
+@@ -160,6 +188,8 @@ impl Default for SessionConfig {
      }
  }
  
@@ -2452,7 +2554,7 @@ index 1b999e8..bcb29b6 100644
  #[derive(Debug, Clone, PartialEq)]
  pub enum SessionEvent {
      Result { id: QueryId, body: Vec<u8>, response_msg_id: i64, original_size: usize },
-@@ -167,7 +187,7 @@ pub enum SessionEvent {
+@@ -167,7 +197,7 @@ pub enum SessionEvent {
      Acknowledged { id: QueryId },
      Update { body: Vec<u8>, msg_id: i64 },
      UpdatesLost,
@@ -2461,7 +2563,16 @@ index 1b999e8..bcb29b6 100644
      LocalSessionReset { previous_session_id: i64 },
      TimeDifferenceUpdated { difference: f64, forced: bool },
      SaltsUpdated { salts: Vec<ServerSalt> },
-@@ -333,9 +353,18 @@ struct Query {
+@@ -211,6 +241,8 @@ pub enum SessionError {
+     ReadTimeout,
+     #[error("probe timeout: no reply to a ping and the transport made no progress")]
+     ProbeTimeout,
++    #[error("receive timeout: nothing arrived within the receive wait after a packet that needs an answer")]
++    ReceiveTimeout,
+     #[error("server reported a fatal session error {0}")]
+     BadMessage(i32),
+     #[error("too many dropped answers")]
+@@ -333,9 +365,18 @@ struct Query {
      /// Sticky, for a handover (`Session::may_have_run`).
      maybe_ran_before: bool,
      retransmit_refused: bool,
@@ -2480,7 +2591,7 @@ index 1b999e8..bcb29b6 100644
  }
  
  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-@@ -346,7 +375,8 @@ enum FailureKind {
+@@ -346,7 +387,8 @@ enum FailureKind {
  
  #[derive(Debug, Clone)]
  enum ServiceRequest {
@@ -2490,8 +2601,26 @@ index 1b999e8..bcb29b6 100644
      ResendRequest { msg_ids: Vec<i64>, sent_at: f64 },
  }
  
-@@ -515,6 +545,8 @@ pub struct Session {
+@@ -473,7 +515,8 @@ pub struct Session {
+     first_answer_peak: f64,
+     /// Connections in a row cut by a liveness check before they ever answered.
+     silent_cuts: u32,
+-    /// How long other connections' uploads may hold up this connection's first exchange.
++    /// How long other connections' uploads may hold up this connection's exchanges: its first one and each
++    /// receive wait.
+     uplink_queue: f64,
+     /// The lowered peak and the time of the cut, applied when this connection closes: a liveness
+     /// check cut it while its grace was refused a stretch, see `note_refused_stretch`.
+@@ -513,8 +556,16 @@ pub struct Session {
+     delivered_at: f64,
+     /// The host keeps a silent connection while a fresh one races it, until then.
      liveness_hold_until: f64,
++    /// The receive wait a packet that needs an answer gets before its size scales it (`RECEIVE_WAIT_MIN`):
++    /// it outlives the connection, as a cut doubles it for the next one.
++    receive_wait: f64,
++    /// When the connection is given up unless something arrives from the server first: set by a packet that
++    /// needs an answer, cleared by whatever the server sends and when the connection opens or closes.
++    receive_deadline: Option<f64>,
      last_future_salts_at: Option<f64>,
      unknown_since: Option<f64>,
 +    /// The earliest `Query::answer_check_at` of the queries the session may ask about.
@@ -2499,15 +2628,84 @@ index 1b999e8..bcb29b6 100644
      dropped_answer_bytes: usize,
      dropped_answer_window_start: f64,
  
-@@ -634,6 +666,7 @@ impl Session {
+@@ -632,8 +683,11 @@ impl Session {
+             delivered: 0,
+             delivered_at: 0.0,
              liveness_hold_until: 0.0,
++            receive_wait: RECEIVE_WAIT_MIN,
++            receive_deadline: None,
              last_future_salts_at: None,
              unknown_since: None,
 +            next_answer_check: None,
              dropped_answer_bytes: 0,
              dropped_answer_window_start: now.mono,
              need_destroy_auth_key: false,
-@@ -1407,7 +1440,10 @@ impl Session {
+@@ -1215,14 +1269,44 @@ impl Session {
+     /// its first round trip also carries the connection setup behind proxies and the resent backlog,
+     /// which the round-trip estimate of earlier connections does not cover. Half again as long as
+     /// recent connections took to answer, and twice as long after each one cut silent in a row, as a
+-    /// link where no connection answers in time needs more of it.
++    /// link where no connection answers in time needs more of it, and at least the current receive wait.
+     fn fresh_allowance(&self) -> f64 {
+         (PROBE_TIMEOUT_INITIAL * f64::from(1u32 << self.silent_cuts.min(2)))
+             .max(self.first_answer_peak * 1.5)
+             .max(self.uplink_queue)
++            .max(self.receive_wait)
+             .min(FRESH_ALLOWANCE_MAX)
+     }
+ 
++    /// The receive wait of a packet of `bytes`: the current wait, or that wait for every `RECEIVE_WAIT_BYTES`
++    /// of the packet when that is longer, at most `RECEIVE_WAIT_MAX`.
++    fn scaled_receive_wait(&self, bytes: usize) -> f64 {
++        (bytes as f64 * self.receive_wait / RECEIVE_WAIT_BYTES as f64).clamp(self.receive_wait, RECEIVE_WAIT_MAX)
++    }
++
++    /// A packet of `bytes` that needs an answer went out: the first one starts the receive wait, and a
++    /// larger one whose own wait ends later moves its end there. A smaller one never brings it forward.
++    fn arm_receive_wait(&mut self, bytes: usize, now: Now) {
++        let wait = self.scaled_receive_wait(bytes);
++        let until = now.mono + wait;
++        self.receive_deadline = match self.receive_deadline {
++            None => Some(until),
++            Some(current) if wait > self.receive_wait => Some(current.max(until)),
++            current => current,
++        };
++    }
++
++    /// When the receive wait gives the connection up: only a stream connection that has answered, later by
++    /// what other connections' uploads may hold its exchanges up, and never while its own large packets may
++    /// still be crossing the uplink.
++    fn receive_deadline_at(&self, now: Now) -> Option<f64> {
++        if self.http || !self.received_on_connection {
++            return None;
++        }
++        let at = self.receive_deadline? + self.uplink_queue;
++        Some(if self.is_transmitting(now) { at.max(self.transmit_grace_until()) } else { at })
++    }
++
+     fn note_silent_cut(&mut self, now: Now) {
+         if !self.received_on_connection {
+             self.silent_cuts = self.silent_cuts.saturating_add(1);
+@@ -1287,7 +1371,18 @@ impl Session {
+         self.fresh_packets
+     }
+ 
++    /// Bytes from the server are arriving, such as a frame still being read: the connection is alive
++    /// however long its answer takes.
+     pub fn note_bytes_received(&mut self, now: Now) {
++        if self.connected {
++            self.last_read_at = self.last_read_at.max(now.mono);
++            self.receive_deadline = None;
++        }
++    }
++
++    /// The kernel saw queued bytes acknowledged. That counts for the read and ping clocks and not for the
++    /// receive wait: a hop that terminates TCP acknowledges bytes for a server that may be gone.
++    pub fn note_outbound_acknowledged(&mut self, now: Now) {
+         if self.connected {
+             self.last_read_at = self.last_read_at.max(now.mono);
+         }
+@@ -1407,7 +1502,10 @@ impl Session {
                  may_have_arrived: false,
                  maybe_ran_before: false,
                  retransmit_refused: false,
@@ -2518,7 +2716,15 @@ index 1b999e8..bcb29b6 100644
              },
          );
          self.pending_queries += 1;
-@@ -1486,6 +1522,9 @@ impl Session {
+@@ -1454,6 +1552,7 @@ impl Session {
+         self.connection_epoch += 1;
+         self.connected_at = now.mono;
+         self.liveness_hold_until = 0.0;
++        self.receive_deadline = None;
+         self.last_read_at = now.mono;
+         self.last_pong_at = now.mono;
+         self.last_ping_at = None;
+@@ -1486,6 +1585,9 @@ impl Session {
              self.unknown_since.get_or_insert(now.mono);
              self.send_before(now.mono);
          }
@@ -2528,7 +2734,7 @@ index 1b999e8..bcb29b6 100644
          let queued: HashSet<i64> = self.to_resend_answer.iter().copied().collect();
          let awaited: Vec<i64> =
              self.awaited_answers.keys().copied().filter(|answer| !queued.contains(answer)).collect();
-@@ -1518,6 +1557,7 @@ impl Session {
+@@ -1518,6 +1620,7 @@ impl Session {
          self.service_containers.clear();
          self.future_salts_requests.clear();
          self.last_future_salts_at = None;
@@ -2536,7 +2742,15 @@ index 1b999e8..bcb29b6 100644
          self.quick_acks.clear();
          self.pending_pings.clear();
          self.to_pong.clear();
-@@ -1591,6 +1631,7 @@ impl Session {
+@@ -1529,6 +1632,7 @@ impl Session {
+         self.transmit_grace_until = 0.0;
+         self.unconfirmed_large.clear();
+         self.liveness_hold_until = 0.0;
++        self.receive_deadline = None;
+         if let Some(lowered) = self.peak_after_close.take() {
+             self.lowered_peak = Some(lowered);
+             if let Some(rate) = self.rate_before_stretch {
+@@ -1591,6 +1695,7 @@ impl Session {
          self.received.clear();
          self.updates.clear();
          self.unknown_since = None;
@@ -2544,7 +2758,7 @@ index 1b999e8..bcb29b6 100644
          self.last_ping_at = None;
          self.last_ping_msg_id = 0;
          self.last_ping_container_id = 0;
-@@ -1640,6 +1681,7 @@ impl Session {
+@@ -1640,6 +1745,7 @@ impl Session {
          query.acknowledged = false;
          query.may_have_arrived = false;
          query.retransmit_refused = false;
@@ -2552,7 +2766,7 @@ index 1b999e8..bcb29b6 100644
          self.by_msg_id.remove(&released.0);
          self.detach_from_container(released.1, released.0);
          self.to_retransmit.retain(|other| *other != id);
-@@ -1843,19 +1885,21 @@ impl Session {
+@@ -1843,19 +1949,21 @@ impl Session {
          }
      }
  
@@ -2577,7 +2791,7 @@ index 1b999e8..bcb29b6 100644
          if let Some(query) = self.queries.get_mut(&id) {
              if query.state == QueryState::Pending {
                  return;
-@@ -1863,6 +1907,9 @@ impl Session {
+@@ -1863,6 +1971,9 @@ impl Session {
              if query.state == QueryState::Unknown {
                  query.state = QueryState::Sent;
                  self.unknown_queries -= 1;
@@ -2587,16 +2801,37 @@ index 1b999e8..bcb29b6 100644
              }
              query.acknowledged = true;
              query.rejections = 0;
-@@ -1900,7 +1947,7 @@ impl Session {
+@@ -1900,11 +2011,9 @@ impl Session {
          };
          let (_, ids, seq) = self.quick_acks.remove(position).expect("position is valid");
          for id in ids {
 -            self.mark_acknowledged(id);
+-        }
+-        if self.connected {
+-            self.last_read_at = self.last_read_at.max(now.mono);
 +            self.mark_acknowledged(id, now);
          }
-         if self.connected {
-             self.last_read_at = self.last_read_at.max(now.mono);
-@@ -2279,11 +2326,11 @@ impl Session {
++        self.note_bytes_received(now);
+         self.note_arrived(seq, now);
+         true
+     }
+@@ -2006,11 +2115,15 @@ impl Session {
+                 let took = (now.mono - self.connected_at).max(0.0);
+                 self.first_answer_peak = took.max(self.first_answer_peak * 0.9);
+                 self.silent_cuts = 0;
++                if 2.0 * took < self.receive_wait {
++                    self.receive_wait = (2.0 * took).max(RECEIVE_WAIT_MIN);
++                }
+             }
+             self.peak_after_close = None;
+             self.last_read_at = now.mono;
+             self.last_pong_at = now.mono;
+             self.received_on_connection = true;
++            self.receive_deadline = None;
+             self.fresh_packets += 1;
+         }
+         let mut context = PacketContext::new(mode, budget);
+@@ -2279,11 +2392,11 @@ impl Session {
                  self.on_bad_msg_notification(msg_id, bad_msg_id, error_code, now)
              }
              ServiceMessage::NewSessionCreated { first_msg_id, unique_id, server_salt } => {
@@ -2610,7 +2845,7 @@ index 1b999e8..bcb29b6 100644
                  }
              }
              ServiceMessage::MsgDetailedInfo { msg_id: query_msg_id, answer_msg_id, bytes, status } => {
-@@ -2294,14 +2341,17 @@ impl Session {
+@@ -2294,14 +2407,17 @@ impl Session {
                  self.on_message_info(msg_id, None, 0, Some(answer_msg_id).filter(|id| *id != 0), bytes, now);
              }
              ServiceMessage::MsgsStateInfo { req_msg_id, info } => match self.service_requests.remove(&req_msg_id) {
@@ -2630,7 +2865,7 @@ index 1b999e8..bcb29b6 100644
              }
              ServiceMessage::MsgsStateReq(msg_ids) => {
                  let info: Vec<u8> = msg_ids.iter().map(|id| self.received_state(*id)).collect();
-@@ -2591,6 +2641,7 @@ impl Session {
+@@ -2591,6 +2707,7 @@ impl Session {
          self.refresh_unknown_tracking();
      }
  
@@ -2638,7 +2873,7 @@ index 1b999e8..bcb29b6 100644
      fn on_new_session_created(
          &mut self,
          context: &mut PacketContext,
-@@ -2598,6 +2649,7 @@ impl Session {
+@@ -2598,6 +2715,7 @@ impl Session {
          unique_id: i64,
          first_msg_id: i64,
          server_salt: i64,
@@ -2646,7 +2881,7 @@ index 1b999e8..bcb29b6 100644
          now: Now,
      ) {
          if context.mode == Mode::Replay || self.recent_unique_ids.contains(&unique_id) {
-@@ -2640,7 +2692,7 @@ impl Session {
+@@ -2640,7 +2758,7 @@ impl Session {
              self.withdraw_asks_for(answer);
          }
          context.deferred_resends.extend(resend.into_iter().map(|(msg_id, id)| (id, msg_id)));
@@ -2655,7 +2890,7 @@ index 1b999e8..bcb29b6 100644
      }
  
      fn on_message_info(
-@@ -2670,7 +2722,7 @@ impl Session {
+@@ -2670,7 +2788,7 @@ impl Session {
                      return;
                  }
                  _ => {
@@ -2664,7 +2899,7 @@ index 1b999e8..bcb29b6 100644
                  }
              }
              answered_query = Some(id);
-@@ -2816,27 +2868,119 @@ impl Session {
+@@ -2816,27 +2934,119 @@ impl Session {
          }
      }
  
@@ -2795,7 +3030,14 @@ index 1b999e8..bcb29b6 100644
      fn on_future_salts(&mut self, salts: &[FutureSalt], now: Now) {
          let converted: Vec<ServerSalt> = salts
              .iter()
-@@ -2978,6 +3122,12 @@ impl Session {
+@@ -2974,10 +3184,19 @@ impl Session {
+             let grace = grace.max(self.liveness_hold_until).max(self.fresh_hold_until());
+             deadline = deadline.min((self.liveness_at() + self.ping_disconnect_delay() + 0.002).max(grace));
+             deadline = deadline.min((self.last_read_at + self.read_disconnect_delay() + 0.002).max(grace));
++            if let Some(at) = self.receive_deadline_at(now) {
++                deadline = deadline.min(at + 0.002);
++            }
+         }
          if let Some(since) = self.unknown_since {
              deadline = deadline.min(since + STATE_REQUEST_RETRY);
          }
@@ -2808,7 +3050,22 @@ index 1b999e8..bcb29b6 100644
          if let Some(at) = self.drain_reset_at {
              deadline = deadline.min(at);
          }
-@@ -3057,10 +3207,61 @@ impl Session {
+@@ -3028,6 +3247,14 @@ impl Session {
+             self.note_silent_cut(now);
+             return Err(SessionError::ProbeTimeout);
+         }
++        if let Some(at) = self.receive_deadline_at(now)
++            && at < now.mono
++        {
++            self.receive_deadline = None;
++            self.receive_wait = (self.receive_wait * 2.0).min(RECEIVE_WAIT_MAX);
++            self.note_silent_cut(now);
++            return Err(SessionError::ReceiveTimeout);
++        }
+         if self.http {
+             self.resend_unacknowledged_http(now);
+         }
+@@ -3057,10 +3284,61 @@ impl Session {
                  self.send_before(now.mono);
              }
          }
@@ -2870,7 +3127,7 @@ index 1b999e8..bcb29b6 100644
      fn expire_state_requests(&mut self, now: Now) {
          let expired: Vec<i64> = self
              .service_requests
-@@ -3218,7 +3419,10 @@ impl Session {
+@@ -3218,7 +3496,10 @@ impl Session {
                  may_have_arrived: false,
                  maybe_ran_before: false,
                  retransmit_refused: false,
@@ -2881,7 +3138,7 @@ index 1b999e8..bcb29b6 100644
              },
          );
          self.pending_queries += 1;
-@@ -3380,6 +3584,8 @@ impl Session {
+@@ -3380,6 +3661,8 @@ impl Session {
                  query.connection_epoch = epoch;
                  query.may_have_arrived = true;
                  query.arrival_seq = None;
@@ -2890,7 +3147,7 @@ index 1b999e8..bcb29b6 100644
                  total += body.len();
                  wants_quick_ack |= query.options.quick_ack;
                  query_messages.push((id, messages.len()));
-@@ -3452,6 +3658,8 @@ impl Session {
+@@ -3452,6 +3735,8 @@ impl Session {
                  query.sent_at = now.mono;
                  query.connection_epoch = epoch;
                  query.arrival_seq = Some(packet_seq);
@@ -2899,7 +3156,7 @@ index 1b999e8..bcb29b6 100644
                  query.acknowledged = false;
                  self.by_msg_id.insert(msg_id, id);
                  sent_now.insert(id, msg_id);
-@@ -3459,6 +3667,9 @@ impl Session {
+@@ -3459,6 +3744,9 @@ impl Session {
                  messages.push(OutgoingMessage { msg_id, seq_no, body });
              }
          }
@@ -2909,7 +3166,7 @@ index 1b999e8..bcb29b6 100644
  
          let mut ping_msg_id = 0;
          if has_salt && self.may_ping(now) {
-@@ -3502,11 +3713,12 @@ impl Session {
+@@ -3502,11 +3790,12 @@ impl Session {
          if has_salt && !self.to_state_request.is_empty() {
              let queries = &self.queries;
              let by_msg_id = &self.by_msg_id;
@@ -2926,7 +3183,21 @@ index 1b999e8..bcb29b6 100644
              });
          }
          if has_salt && !self.to_state_request.is_empty() {
-@@ -3713,7 +3925,8 @@ impl Session {
+@@ -3555,10 +3844,12 @@ impl Session {
+             }
+         }
+ 
++        let mut drops_answer = false;
+         if has_salt {
+             let room = MAX_CONTAINER_MESSAGES_OUT.saturating_sub(messages.len() + CONTAINER_RESERVED_SLOTS);
+             let drops: Vec<i64> = self.to_drop_answer.drain(..room.min(self.to_drop_answer.len())).collect();
+-            wants_quick_ack |= !drops.is_empty() && !self.unconfirmed_large.is_empty();
++            drops_answer = !drops.is_empty();
++            wants_quick_ack |= drops_answer && !self.unconfirmed_large.is_empty();
+             for msg_id in drops {
+                 let mut writer = Writer::new();
+                 tlm::write_rpc_drop_answer(&mut writer, msg_id);
+@@ -3713,7 +4004,8 @@ impl Session {
          let mut service_ids: Vec<i64> = resend_requests.iter().map(|(msg_id, _)| *msg_id).collect();
          if let Some((msg_id, ids)) = state_request {
              service_ids.push(msg_id);
@@ -2936,8 +3207,604 @@ index 1b999e8..bcb29b6 100644
          }
          for (msg_id, ids) in resend_requests {
              self.service_requests.insert(msg_id, ServiceRequest::ResendRequest { msg_ids: ids, sent_at: now.mono });
+@@ -3745,6 +4037,15 @@ impl Session {
+                 packet_seq,
+             });
+         }
++        let needs_answer = !query_messages.is_empty()
++            || ping_msg_id != 0
++            || future_salts_msg_id.is_some()
++            || !service_ids.is_empty()
++            || destroys_auth_key
++            || drops_answer;
++        if needs_answer {
++            self.arm_receive_wait(packet.data.len(), now);
++        }
+         let large = packet.data.len() >= TRANSMIT_GRACE_MIN_SIZE;
+         if large {
+             if self.unconfirmed_large.is_empty() {
+diff --git a/crates/mtproto-core/src/session/receive_wait_tests.rs b/crates/mtproto-core/src/session/receive_wait_tests.rs
+new file mode 100644
+index 0000000..7ed5899
+--- /dev/null
++++ b/crates/mtproto-core/src/session/receive_wait_tests.rs
+@@ -0,0 +1,574 @@
++//! A packet that needs an answer, a query or a ping, gives a connection that has answered 4 s for something to
++//! arrive from the server, as Telegram Desktop's own sessions do (`_waitForReceived`): past it the connection is
++//! given up, whatever the kernel's send-queue reading says and online or not. A connection that went silent
++//! past the ping, read or probe timeout is kept by the runtime for up to 30 s while a fresh one races it
++//! (`hold_liveness_until`); the receive wait is not held so. The tests drive the session as the runtime does,
++//! holding the first silence cut for that long, and see which cut the runtime acts on and when. Bytes still
++//! arriving and pongs keep a connection, a large request gets its wait scaled by its size, other sessions'
++//! uploads lengthen the wait by the uplink queue, a cut doubles the wait for the next connection and that
++//! connection's fast first answer brings it back, and a connection that never answered and HTTP keep their own
++//! timers.
++use super::*;
++
++/// Telegram Desktop's receive wait after a small packet.
++const WAIT: f64 = 4.0;
++/// How long the runtime keeps a connection that went silent while a fresh one races it.
++const SUSPECT_HOLD: f64 = 30.0;
++/// The cuts the runtime counts as silence and holds.
++const SILENCE: [&str; 3] = ["PingTimeout", "ReadTimeout", "ProbeTimeout"];
++/// A cut is on time when it comes within this after its deadline: the session asks to be woken 2 ms after
++/// it, and a wake-up comes at least 1 ms after the one before.
++const ON_TIME: f64 = 0.01;
++
++/// What the runtime reads of the kernel's send queue while a ping is unanswered.
++#[derive(Debug, Clone, Copy, PartialEq)]
++enum Reading {
++    /// The bytes stay in flight, unacknowledged, as on a path that went dead past the first hop.
++    InFlight(usize),
++    /// Everything was acknowledged, as behind a hop that terminates TCP or a relay that holds the link.
++    Zero,
++    /// No reading, as on Linux and on Windows before 10.
++    None,
++}
++
++const READINGS: [Reading; 3] = [Reading::InFlight(65536), Reading::Zero, Reading::None];
++
++impl Reading {
++    fn backlog(self) -> Option<usize> {
++        match self {
++            Reading::InFlight(bytes) => Some(bytes),
++            Reading::Zero => Some(0),
++            Reading::None => None,
++        }
++    }
++}
++
++/// The session as the runtime drives it: woken only at the deadlines it gives (a timer fires a little late,
++/// at least 1 ms after the last wake-up), the send-queue `reading` sampled whenever the session wants one, and
++/// nothing from the server unless the test delivers it. The first ping, read or probe cut on a connection that
++/// answered is held for `SUSPECT_HOLD` from then on, as the runtime holds a connection a fresh one races, and
++/// a fresh packet delivered ends the hold; the runtime acts on any other error, and on a silence cut once the
++/// hold ran out.
++struct Runtime {
++    reading: Reading,
++    hold_since: Option<f64>,
++    /// The silence cuts the runtime held, each with when it came.
++    held: Vec<(f64, String)>,
++    /// The error the runtime acted on, with when it came.
++    acted: Option<(f64, String)>,
++    /// The packets the session sent, each with when it went out and its size.
++    sent: Vec<(f64, usize, DecodedPacket)>,
++    idle_wakes: Vec<f64>,
++}
++
++impl Runtime {
++    fn new(reading: Reading) -> Self {
++        Self { reading, hold_since: None, held: Vec::new(), acted: None, sent: Vec::new(), idle_wakes: Vec::new() }
++    }
++
++    /// Runs the session for `seconds`, or until the runtime acts on an error.
++    fn run_for(&mut self, h: &mut Harness, seconds: f64) {
++        let until = h.now.mono + seconds;
++        self.run(h, until);
++    }
++
++    /// Runs the session until `until`, or until the runtime acts on an error.
++    fn run(&mut self, h: &mut Harness, until: f64) {
++        while self.acted.is_none() {
++            let at = h.session.poll_timeout(h.now).expect("a live connection always has a deadline");
++            assert!(at >= h.now.mono, "asks to be woken {:.3} s in the past", h.now.mono - at);
++            if at > until {
++                break;
++            }
++            h.advance(at.max(h.now.mono + 0.001) - h.now.mono);
++            self.wake(h);
++        }
++        if self.acted.is_none() && until > h.now.mono {
++            h.advance(until - h.now.mono);
++        }
++    }
++
++    /// One wake-up of the runtime. A cut it holds leaves a deadline that is due, so it wakes again at once.
++    fn wake(&mut self, h: &mut Harness) {
++        self.sample(h);
++        let mut held = 0;
++        loop {
++            match h.session.handle_timeout(h.now) {
++                Ok(()) => break,
++                Err(error) => {
++                    let name = format!("{error:?}");
++                    if SILENCE.contains(&name.as_str()) && self.hold(h) {
++                        held += 1;
++                        assert!(held < 4, "the hold does not stop {name}");
++                        self.held.push((h.now.mono, name));
++                        continue;
++                    }
++                    self.acted = Some((h.now.mono, name));
++                    return;
++                }
++            }
++        }
++        let mut sent = false;
++        while let Some(transmit) = h.session.poll_transmit(h.now, &mut h.rng) {
++            let packet = h.server.decode(&transmit.data);
++            self.sent.push((h.now.mono, transmit.data.len(), packet));
++            sent = true;
++        }
++        self.sample(h);
++        if !sent {
++            self.idle_wakes.push(h.now.mono);
++            let storm = self.idle_wakes.iter().rev().take_while(|at| h.now.mono - **at < 1.0).count();
++            assert!(storm < 100, "{storm} idle wake-ups within a second at {}", h.now.mono);
++        }
++    }
++
++    fn sample(&self, h: &mut Harness) {
++        if h.session.wants_outbound_backlog() {
++            h.session.note_outbound_backlog(self.reading.backlog(), h.now);
++        }
++    }
++
++    /// The runtime keeps a connection that answered for `SUSPECT_HOLD` from its first silence cut. The hold
++    /// ends where the session's does, at `since + SUSPECT_HOLD`, which `now - since` can miss by a rounding.
++    fn hold(&mut self, h: &mut Harness) -> bool {
++        let now = h.now.mono;
++        if !h.session.received_on_connection || self.hold_since.is_some_and(|since| now >= since + SUSPECT_HOLD) {
++            return false;
++        }
++        let since = *self.hold_since.get_or_insert(now);
++        h.session.hold_liveness_until(since + SUSPECT_HOLD);
++        true
++    }
++
++    /// The server's `items` arrive as one fresh packet, which ends the runtime's hold.
++    fn deliver(&mut self, h: &mut Harness, items: Vec<Outgoing>) {
++        h.deliver(items).expect("the session takes the packet");
++        if self.hold_since.take().is_some() {
++            h.session.hold_liveness_until(0.0);
++        }
++    }
++
++    /// Runs the session for `seconds` with a server that answers every ping it sends, and nothing else.
++    fn serve_pings(&mut self, h: &mut Harness, seconds: f64) {
++        let until = h.now.mono + seconds;
++        let mut seen = self.sent.len();
++        while self.acted.is_none() && h.now.mono < until {
++            self.run_for(h, 0.25);
++            let replies: Vec<Outgoing> = self.sent[seen..].iter().flat_map(|(_, _, packet)| pongs(packet)).collect();
++            seen = self.sent.len();
++            if !replies.is_empty() {
++                self.deliver(h, replies);
++            }
++        }
++    }
++
++    /// The first copy of query `tag` that went out: when, the size of its packet and its msg_id.
++    fn query(&self, tag: u32) -> (f64, usize, i64) {
++        self.sent
++            .iter()
++            .find_map(|(at, bytes, packet)| {
++                let message = packet.messages.iter().find(|message| query_tag(&message.body) == Some(tag))?;
++                Some((*at, *bytes, message.msg_id))
++            })
++            .unwrap_or_else(|| panic!("query {tag} never went out"))
++    }
++
++    /// When the first ping went out.
++    fn first_ping(&self) -> Option<f64> {
++        self.sent.iter().find(|(_, _, packet)| !pongs(packet).is_empty()).map(|(at, _, _)| *at)
++    }
++
++    /// The held cuts and the acted-on one, in seconds after `since`.
++    fn describe(&self, since: f64) -> String {
++        let held: Vec<String> = self.held.iter().map(|(at, name)| format!("{name} {:.3}", at - since)).collect();
++        let acted = self.acted.as_ref().map_or("none".to_string(), |(at, name)| format!("{name} {:.3}", at - since));
++        format!("held [{}], acted on {acted}", held.join(", "))
++    }
++
++    /// The runtime acted on `name` within `ON_TIME` after `due`.
++    fn acted_at(&self, name: &str, due: f64) -> bool {
++        self.acted.as_ref().is_some_and(|(at, acted)| acted == name && *at >= due && *at <= due + ON_TIME)
++    }
++}
++
++/// The pongs for the pings in `packet`.
++fn pongs(packet: &DecodedPacket) -> Vec<Outgoing> {
++    packet
++        .messages
++        .iter()
++        .filter_map(|message| Some(Outgoing::Service(pong(message.msg_id, ping_id_of(message)?))))
++        .collect()
++}
++
++/// The session's first ping goes out and its pong comes back 50 ms later: the connection has answered, and
++/// the session has a round-trip sample.
++fn answered(h: &mut Harness) {
++    let packet = h.flush().expect("the first ping");
++    h.advance(0.05);
++    let replies = pongs(&packet);
++    assert!(!replies.is_empty(), "{:x?}", packet.constructors());
++    h.deliver(replies).unwrap();
++    assert!(h.session.received_on_connection);
++}
++
++/// A session, online or not, whose connection answered and has nothing outstanding.
++fn answered_session(online: bool) -> Harness {
++    let mut h = Harness::new();
++    h.session.set_online(online, h.now);
++    answered(&mut h);
++    h
++}
++
++fn mode(online: bool) -> &'static str {
++    if online { "online" } else { "offline" }
++}
++
++/// A query on a connection that takes its bytes and answers nothing: whatever the send-queue reading, and
++/// online or not, the runtime gives the connection up 4 s after the query went out. On a probe, ping or read
++/// cut before that, the runtime only holds it.
++#[test]
++fn a_small_request_on_a_connection_that_answers_nothing_is_given_up_after_the_receive_wait_whatever_the_reading_and_mode()
++ {
++    let mut rows = Vec::new();
++    let mut wrong = Vec::new();
++    for online in [false, true] {
++        for reading in READINGS {
++            let mut h = answered_session(online);
++            h.advance(1.0);
++            h.session.send(QueryId(1), query_body(1), QueryOptions::default(), h.now);
++            let mut runtime = Runtime::new(reading);
++            runtime.run_for(&mut h, 45.0);
++            let (sent, _, _) = runtime.query(1);
++            let row = format!("{} {reading:?}: {}", mode(online), runtime.describe(sent));
++            if !runtime.acted_at("ReceiveTimeout", sent + WAIT) {
++                wrong.push(row.clone());
++            }
++            rows.push(row);
++        }
++    }
++    eprintln!("a small request answered by nothing, seconds after it went out:\n{}", rows.join("\n"));
++    assert!(
++        wrong.is_empty(),
++        "not given up {WAIT} s after the request: {}\nall: {}",
++        wrong.join("; "),
++        rows.join("; ")
++    );
++}
++
++/// An idle connection that answers nothing: its own next ping is the packet that needs an answer, and 4 s
++/// after it the runtime gives the connection up.
++#[test]
++fn an_unanswered_ping_on_an_idle_connection_is_given_up_after_the_receive_wait() {
++    let mut rows = Vec::new();
++    let mut wrong = Vec::new();
++    for online in [false, true] {
++        for reading in READINGS {
++            let mut h = answered_session(online);
++            let start = h.now.mono;
++            let mut runtime = Runtime::new(reading);
++            while runtime.first_ping().is_none() && runtime.acted.is_none() {
++                assert!(h.now.mono - start < 120.0, "{} {reading:?}: no ping in 120 s", mode(online));
++                runtime.run_for(&mut h, 1.0);
++            }
++            let ping = runtime.first_ping().unwrap_or(h.now.mono);
++            runtime.run(&mut h, ping + 45.0);
++            let row = format!(
++                "{} {reading:?}: ping {:.3} s after the pong, {}",
++                mode(online),
++                ping - start,
++                runtime.describe(ping)
++            );
++            if !runtime.acted_at("ReceiveTimeout", ping + WAIT) {
++                wrong.push(row.clone());
++            }
++            rows.push(row);
++        }
++    }
++    eprintln!("an idle connection answered by nothing, seconds after its ping:\n{}", rows.join("\n"));
++    assert!(wrong.is_empty(), "not given up {WAIT} s after the ping: {}\nall: {}", wrong.join("; "), rows.join("; "));
++}
++
++/// Bytes of a frame still arriving keep the connection however long it takes; once they stop, the session's
++/// next packet that needs an answer starts the wait again. Bytes the kernel saw acknowledged do not keep it: a
++/// hop that terminates TCP acknowledges them for a server that may be gone.
++#[test]
++fn bytes_still_arriving_keep_the_connection_and_the_next_packet_starts_the_wait_again() {
++    let mut h = answered_session(false);
++    h.advance(1.0);
++    h.session.send(QueryId(1), query_body(1), QueryOptions::default(), h.now);
++    let mut runtime = Runtime::new(Reading::Zero);
++    for _ in 0..60 {
++        runtime.run_for(&mut h, 0.5);
++        h.session.note_bytes_received(h.now);
++    }
++    let (sent, _, _) = runtime.query(1);
++    assert!(runtime.acted.is_none() && runtime.held.is_empty(), "{}", runtime.describe(sent));
++    let read = h.now.mono;
++    let latest = read + h.session.ping_may_delay() + RECEIVE_WAIT_MIN + ON_TIME;
++    runtime.run(&mut h, read + 45.0);
++    let (at, name) = runtime.acted.clone().expect("given up once the bytes stopped");
++    assert_eq!(name, format!("{:?}", SessionError::ReceiveTimeout), "{}", runtime.describe(read));
++    assert!(at >= read + RECEIVE_WAIT_MIN && at <= latest, "{}", runtime.describe(read));
++
++    let mut h = answered_session(false);
++    h.advance(1.0);
++    h.session.send(QueryId(1), query_body(1), QueryOptions::default(), h.now);
++    let start = h.now.mono;
++    let mut runtime = Runtime::new(Reading::Zero);
++    while runtime.acted.is_none() && h.now.mono < start + 60.0 {
++        runtime.run_for(&mut h, 0.5);
++        h.session.note_outbound_acknowledged(h.now);
++    }
++    let (sent, _, _) = runtime.query(1);
++    assert!(runtime.acted_at("ReceiveTimeout", sent + RECEIVE_WAIT_MIN), "{}", runtime.describe(sent));
++}
++
++fn state_requests_in(packet: &DecodedPacket) -> Vec<Vec<i64>> {
++    packet
++        .messages
++        .iter()
++        .filter(|message| message.constructor() == ids::MSGS_STATE_REQ)
++        .map(|message| read_vector_after_constructor(&message.body))
++        .collect()
++}
++
++/// The server answers every ping and never the query: the pongs keep the connection, and the session asks
++/// about the query after `ANSWER_WAIT`.
++#[test]
++fn pongs_keep_a_connection_whose_query_goes_unanswered_and_the_answer_wait_still_asks() {
++    let mut h = answered_session(false);
++    h.advance(1.0);
++    h.session.send(QueryId(1), query_body(1), QueryOptions::default(), h.now);
++    let mut runtime = Runtime::new(Reading::Zero);
++    runtime.serve_pings(&mut h, 2.0 * ANSWER_WAIT);
++    let (sent, _, query) = runtime.query(1);
++    assert!(runtime.acted.is_none() && runtime.held.is_empty(), "{}", runtime.describe(sent));
++    let asked = runtime
++        .sent
++        .iter()
++        .find(|(_, _, packet)| state_requests_in(packet).iter().any(|ids| ids.contains(&query)))
++        .map(|(at, _, _)| *at)
++        .expect("asked about the query");
++    assert!(asked >= sent + ANSWER_WAIT, "asked {:.3} s after it went out", asked - sent);
++}
++
++/// The receive wait of a packet of `bytes`, from Telegram Desktop's rule: 4 s for every 8 KB, at least 4 s and
++/// at most 64 s.
++fn scaled(bytes: usize) -> f64 {
++    (bytes as f64 * WAIT / 8192.0).clamp(WAIT, 64.0)
++}
++
++/// One large request answered 50 ms after it went out: the session measured a fast uplink, so a large packet's
++/// transmit grace is short and its grace is not stretched far past it.
++fn measure_a_fast_uplink(h: &mut Harness) {
++    h.session.send(QueryId(99), large_query_body(99, 32 * 1024), QueryOptions::default(), h.now);
++    let packet = h.flush().expect("the large query");
++    h.advance(0.05);
++    let msg_id = h.sent_query(&packet, 99);
++    h.deliver(vec![Outgoing::Content(rpc_result(msg_id, &[1, 0, 0, 0]))]).unwrap();
++    h.events();
++    assert!(h.session.uplink_rate().is_some_and(|rate| rate > 256.0 * 1024.0), "{:?}", h.session.uplink_rate());
++}
++
++/// A large request gets the wait for its size: answered within it, the connection stays; never answered, it is
++/// given up when the wait ends, and a small query or a ping just before it does not bring that forward. The
++/// longest wait is 64 s, and the wait never ends while the transmit grace still holds.
++#[test]
++fn an_answer_to_a_large_request_within_its_scaled_wait_keeps_the_connection() {
++    let mut h = answered_session(false);
++    measure_a_fast_uplink(&mut h);
++    h.advance(1.0);
++    h.session.send(QueryId(1), large_query_body(1, 32 * 1024), QueryOptions::default(), h.now);
++    let mut runtime = Runtime::new(Reading::Zero);
++    runtime.run_for(&mut h, 0.1);
++    let (sent, bytes, query) = runtime.query(1);
++    let wait = scaled(bytes);
++    let grace = h.session.transmit_grace_until() - sent;
++    assert!(wait > 15.0 && grace < wait / 2.0, "a {wait:.3} s wait and a {grace:.3} s grace for {bytes} bytes");
++    runtime.run(&mut h, sent + 0.95 * wait);
++    assert!(runtime.acted.is_none(), "{}", runtime.describe(sent));
++    runtime.deliver(&mut h, vec![Outgoing::Content(rpc_result(query, &[1, 0, 0, 0]))]);
++    runtime.serve_pings(&mut h, 2.0 * wait);
++    assert!(runtime.acted.is_none(), "answered within its wait: {}", runtime.describe(sent));
++
++    let mut h = answered_session(false);
++    measure_a_fast_uplink(&mut h);
++    h.advance(1.0);
++    h.session.send(QueryId(1), large_query_body(1, 32 * 1024), QueryOptions::default(), h.now);
++    let mut runtime = Runtime::new(Reading::Zero);
++    runtime.run_for(&mut h, 2.0 * RECEIVE_WAIT_MAX);
++    let (sent, bytes, _) = runtime.query(1);
++    assert!(runtime.acted_at("ReceiveTimeout", sent + scaled(bytes)), "{}", runtime.describe(sent));
++
++    let mut h = answered_session(false);
++    measure_a_fast_uplink(&mut h);
++    h.advance(1.0);
++    h.session.send(QueryId(1), query_body(1), QueryOptions::default(), h.now);
++    let mut runtime = Runtime::new(Reading::Zero);
++    runtime.run_for(&mut h, 0.5);
++    h.session.send(QueryId(2), large_query_body(2, 32 * 1024), QueryOptions::default(), h.now);
++    runtime.run_for(&mut h, 2.0 * RECEIVE_WAIT_MAX);
++    let (small, _, _) = runtime.query(1);
++    let (sent, bytes, _) = runtime.query(2);
++    assert!(sent > small, "the small query went first");
++    assert!(runtime.acted_at("ReceiveTimeout", sent + scaled(bytes)), "{}", runtime.describe(sent));
++
++    let mut h = answered_session(false);
++    measure_a_fast_uplink(&mut h);
++    let mut runtime = Runtime::new(Reading::Zero);
++    while runtime.first_ping().is_none() {
++        assert!(runtime.acted.is_none(), "{}", runtime.describe(0.0));
++        runtime.run_for(&mut h, 0.5);
++    }
++    h.session.send(QueryId(2), large_query_body(2, 32 * 1024), QueryOptions::default(), h.now);
++    runtime.run_for(&mut h, 2.0 * RECEIVE_WAIT_MAX);
++    let ping = runtime.first_ping().unwrap();
++    let (sent, bytes, _) = runtime.query(2);
++    assert!(sent - ping < 1.0, "the query follows the ping");
++    assert!(runtime.acted_at("ReceiveTimeout", sent + scaled(bytes)), "{}", runtime.describe(sent));
++
++    let mut h = answered_session(false);
++    h.advance(1.0);
++    h.session.send(QueryId(1), large_query_body(1, 512 * 1024), QueryOptions::default(), h.now);
++    let mut runtime = Runtime::new(Reading::Zero);
++    runtime.run_for(&mut h, 0.1);
++    let (sent, bytes, _) = runtime.query(1);
++    assert_eq!(scaled(bytes), RECEIVE_WAIT_MAX);
++    runtime.run(&mut h, sent + RECEIVE_WAIT_MAX);
++    assert!(runtime.acted.is_none(), "cut within the longest wait: {}", runtime.describe(sent));
++
++    let mut h = answered_session(false);
++    h.advance(1.0);
++    h.session.send(QueryId(1), large_query_body(1, 32 * 1024), QueryOptions::default(), h.now);
++    let mut runtime = Runtime::new(Reading::Zero);
++    runtime.run_for(&mut h, 2.0 * RECEIVE_WAIT_MAX);
++    let (sent, bytes, _) = runtime.query(1);
++    let grace = h.session.transmit_grace_until();
++    assert!(grace > sent + scaled(bytes), "an unmeasured uplink's stretched grace outlasts the wait");
++    assert!(runtime.acted_at("ReceiveTimeout", grace), "grace {:.3}: {}", grace - sent, runtime.describe(sent));
++}
++
++/// Other sessions' uploads may hold a request up in the uplink behind them: the request is given up only the
++/// uplink queue after its own wait ends, not when the wait alone ends.
++#[test]
++fn a_request_behind_other_sessions_uploads_gets_the_uplink_queue_on_top_of_the_wait() {
++    const QUEUE: f64 = 6.0;
++    let mut h = answered_session(false);
++    h.session.set_uplink_queue(QUEUE);
++    h.advance(1.0);
++    h.session.send(QueryId(1), query_body(1), QueryOptions::default(), h.now);
++    let mut runtime = Runtime::new(Reading::Zero);
++    runtime.run_for(&mut h, 0.1);
++    let (sent, _, _) = runtime.query(1);
++    let due = sent + RECEIVE_WAIT_MIN + QUEUE;
++    runtime.run(&mut h, due - ON_TIME);
++    assert!(runtime.acted.is_none(), "cut before the uplink queue ran out: {}", runtime.describe(sent));
++    runtime.run_for(&mut h, 2.0 * RECEIVE_WAIT_MAX);
++    assert!(runtime.acted_at("ReceiveTimeout", due), "{}", runtime.describe(sent));
++}
++
++/// Cuts the connection of `h` with the receive wait, a query no one answers, and closes it.
++fn cut_by_the_receive_wait(h: &mut Harness, tag: u32) {
++    let wait = h.session.receive_wait;
++    h.session.send(QueryId(u64::from(tag)), query_body(tag), QueryOptions::default(), h.now);
++    let mut runtime = Runtime::new(Reading::Zero);
++    runtime.run_for(h, 2.0 * RECEIVE_WAIT_MAX);
++    let (sent, _, _) = runtime.query(tag);
++    assert!(runtime.acted_at("ReceiveTimeout", sent + wait), "{}", runtime.describe(sent));
++    h.session.connection_closed();
++}
++
++/// Opens a fresh connection on `h` and answers everything its first packets carry `after` seconds later.
++fn first_answer_after(h: &mut Harness, after: f64) {
++    h.session.connection_opened(h.now);
++    let opened = h.now.mono;
++    let mut runtime = Runtime::new(Reading::Zero);
++    runtime.run(h, opened + after);
++    assert!(runtime.acted.is_none(), "the fresh connection waits: {}", runtime.describe(opened));
++    let mut replies = Vec::new();
++    for (_, _, packet) in &runtime.sent {
++        replies.extend(pongs(packet));
++        for message in packet.messages.iter().filter(|message| query_tag(&message.body).is_some()) {
++            replies.push(Outgoing::Content(rpc_result(message.msg_id, &[1, 0, 0, 0])));
++        }
++    }
++    assert!(!replies.is_empty());
++    runtime.deliver(h, replies);
++    h.events();
++    assert!(!h.session.has_queries());
++}
++
++/// After a receive-wait cut the wait is twice as long: the next connection's first exchange gets that long
++/// before any liveness check cuts it, and the next request on it waits that long, unless the connection's first
++/// answer came in less than half of it, which brings the wait back.
++#[test]
++fn a_failed_wait_doubles_covers_the_next_connections_first_exchange_and_a_fast_first_answer_brings_it_back() {
++    let mut h = answered_session(false);
++    h.advance(1.0);
++    cut_by_the_receive_wait(&mut h, 1);
++    assert_eq!(h.session.receive_wait, 2.0 * RECEIVE_WAIT_MIN);
++    h.advance(0.5);
++    h.session.connection_opened(h.now);
++    let opened = h.now.mono;
++    let mut runtime = Runtime::new(Reading::Zero);
++    runtime.run(&mut h, opened + 2.0 * RECEIVE_WAIT_MAX);
++    let (at, name) = runtime.acted.clone().expect("a fresh connection that never answers is cut");
++    assert_ne!(name, format!("{:?}", SessionError::ReceiveTimeout));
++    assert!(at - opened >= 2.0 * RECEIVE_WAIT_MIN, "cut {:.3} s after it opened: {name}", at - opened);
++
++    for (after, wait) in [(0.1, RECEIVE_WAIT_MIN), (5.0, 2.0 * RECEIVE_WAIT_MIN)] {
++        let mut h = answered_session(false);
++        h.advance(1.0);
++        cut_by_the_receive_wait(&mut h, 1);
++        h.advance(0.5);
++        first_answer_after(&mut h, after);
++        assert_eq!(h.session.receive_wait, wait, "first answer after {after} s");
++        h.advance(1.0);
++        h.session.send(QueryId(2), query_body(2), QueryOptions::default(), h.now);
++        let mut runtime = Runtime::new(Reading::Zero);
++        runtime.run_for(&mut h, 2.0 * RECEIVE_WAIT_MAX);
++        let (sent, _, _) = runtime.query(2);
++        assert!(
++            runtime.acted_at("ReceiveTimeout", sent + wait),
++            "first answer after {after} s: {}",
++            runtime.describe(sent)
++        );
++    }
++}
++
++/// The receive wait is for connections that answered: a fresh one that never did keeps the fresh allowance, the
++/// probe and the classic timeouts, and HTTP, whose requests the host times, never has it.
++#[test]
++fn a_connection_that_never_answered_and_http_keep_their_own_timers() {
++    for reading in READINGS {
++        let mut h = Harness::new();
++        h.session.send(QueryId(1), query_body(1), QueryOptions::default(), h.now);
++        let mut runtime = Runtime::new(reading);
++        runtime.run_for(&mut h, 200.0);
++        let (sent, _, _) = runtime.query(1);
++        let (at, name) = runtime.acted.clone().expect("a connection that never answers is cut");
++        if reading == Reading::None {
++            assert!(name == "ReadTimeout" || name == "PingTimeout", "{reading:?}: {}", runtime.describe(sent));
++            assert!(at - sent >= h.session.read_disconnect_delay() - 0.5, "{reading:?}: {}", runtime.describe(sent));
++        } else {
++            assert_eq!(name, "ProbeTimeout", "{reading:?}: {}", runtime.describe(sent));
++            assert!(at - sent >= PROBE_TIMEOUT_INITIAL, "{reading:?}: {}", runtime.describe(sent));
++        }
++    }
++
++    let mut h = Harness::new();
++    h.session.set_http(true);
++    h.session.send(QueryId(1), query_body(1), QueryOptions::default(), h.now);
++    h.advance(0.002);
++    let transmit =
++        h.session.poll_http_transmit(h.now, &mut h.rng, HttpWait::IMMEDIATE, false, true).expect("the query");
++    let packet = h.server.decode(&transmit.data);
++    h.sent_query(&packet, 1);
++    h.deliver(vec![Outgoing::Content(update(0x0bad_cafe, &[0; 4]))]).unwrap();
++    assert!(h.session.received_on_connection);
++    for _ in 0..400 {
++        h.advance(0.25);
++        assert_ne!(h.session.handle_timeout(h.now), Err(SessionError::ReceiveTimeout));
++        assert!(h.session.receive_deadline.is_none());
++    }
++}
 diff --git a/crates/mtproto-core/src/session/tests.rs b/crates/mtproto-core/src/session/tests.rs
-index 9534f6b..34923d0 100644
+index 9534f6b..3a9b2b3 100644
 --- a/crates/mtproto-core/src/session/tests.rs
 +++ b/crates/mtproto-core/src/session/tests.rs
 @@ -331,6 +331,55 @@ fn new_session_created_resends_older_queries_and_reports_reset() {
@@ -2996,13 +3863,92 @@ index 9534f6b..34923d0 100644
  #[test]
  fn reconnect_without_ack_retransmits_with_original_msg_ids() {
      let mut h = Harness::new();
-@@ -4930,3 +4979,6 @@ fn a_far_future_msg_id_does_not_hide_a_later_update_loss() {
+@@ -4930,3 +4979,9 @@ fn a_far_future_msg_id_does_not_hide_a_later_update_loss() {
  
  #[path = "handover_tests.rs"]
  mod handover_tests;
 +
 +#[path = "answer_wait_tests.rs"]
 +mod answer_wait_tests;
++
++#[path = "receive_wait_tests.rs"]
++mod receive_wait_tests;
+diff --git a/crates/mtproto-core/src/transport/stream.rs b/crates/mtproto-core/src/transport/stream.rs
+index ba5de47..75b51df 100644
+--- a/crates/mtproto-core/src/transport/stream.rs
++++ b/crates/mtproto-core/src/transport/stream.rs
+@@ -201,6 +201,12 @@ impl TransportStream {
+         Some((payload, available))
+     }
+ 
++    /// The bytes of a fake-TLS record whose end has not arrived, its header included: they are arriving,
++    /// though the frame decoder sees none of them until the record completes. 0 without fake TLS.
++    pub fn pending_record_len(&self) -> usize {
++        if matches!(self.tls, TlsState::Established) { self.raw_input.len() } else { 0 }
++    }
++
+     pub fn shrink_buffers(&mut self) {
+         self.raw_input.shrink_if_idle(16 * 1024);
+         self.decrypted_input.shrink_if_idle(16 * 1024);
+@@ -360,6 +366,58 @@ mod tests {
+         });
+     }
+ 
++    #[test]
++    fn a_fake_tls_record_still_arriving_is_pending_until_its_end_arrives() {
++        let mut raw = vec![0xee];
++        raw.extend_from_slice(&[0x31; 16]);
++        raw.extend_from_slice(b"telegram.org");
++        let secret = ProxySecret::from_binary(&raw, false).unwrap();
++        let key = secret.proxy_key();
++        let config =
++            TransportConfig { framing: Framing::Abridged, dc_id: 1, secret: Some(secret), unix_time: 1_727_000_000 };
++        let mut rng = XorShiftRandom::new(5);
++        let mut client = TransportStream::new(&config, &mut rng);
++        client.send_packet(&encrypted_payload(1, 2), false, &mut rng);
++        let response = server_hello_for_tests(&client.take_outgoing(), &key, &mut rng);
++        client.receive(&response[..response.len() - 1]).unwrap();
++        assert_eq!(client.pending_record_len(), 0, "the server hello is not counted");
++        client.receive(&response[response.len() - 1..]).unwrap();
++        assert!(client.is_ready());
++        assert_eq!(client.pending_record_len(), 0);
++
++        let wire = client.take_outgoing();
++        let mut records = InputBuffer::new();
++        records.extend(&wire[6..]);
++        let mut unwrapped = Vec::new();
++        while TlsRecordReader::new().read(&mut records, &mut unwrapped).unwrap() {}
++        let header: [u8; 64] = unwrapped[..64].try_into().unwrap();
++        let mut server = accept_obfuscated_header(&header, Some(&key)).expect("header");
++        let answer = encrypted_payload(2, 1000);
++        let mut frame = Vec::new();
++        encode_frame(server.framing, &answer, false, &mut rng, &mut frame);
++        server.encryptor.apply(&mut frame);
++        let mut record = b"\x17\x03\x03".to_vec();
++        record.extend_from_slice(&(frame.len() as u16).to_be_bytes());
++        record.extend_from_slice(&frame);
++        assert!(record.len() > 16 * 1024 - 512, "a record as large as proxies write");
++
++        let part = 5 + 6000;
++        client.receive(&record[..part]).unwrap();
++        assert_eq!(client.pending_record_len(), part, "the header and the payload so far");
++        assert_eq!(client.pending_frame_head(), None, "none of it reached the frame decoder");
++        assert_eq!(client.next_incoming().unwrap(), None);
++        client.receive(&record[part..record.len() - 1]).unwrap();
++        assert_eq!(client.pending_record_len(), record.len() - 1);
++        client.receive(&record[record.len() - 1..]).unwrap();
++        assert_eq!(client.pending_record_len(), 0, "the record completed");
++        assert_eq!(client.next_incoming().unwrap(), Some(Incoming::Packet(answer)));
++
++        let plain = TransportConfig { framing: Framing::Abridged, dc_id: 1, secret: None, unix_time: 0 };
++        let mut client = TransportStream::new(&plain, &mut rng);
++        client.receive(&record[..part]).unwrap();
++        assert_eq!(client.pending_record_len(), 0, "no fake TLS, no record");
++    }
++
+     #[test]
+     fn mtproxy_fake_tls_secret() {
+         let mut raw = vec![0xee];
 diff --git a/crates/mtproto-core/tests/sec_rows_rpc.rs b/crates/mtproto-core/tests/sec_rows_rpc.rs
 index fac3787..4604b82 100644
 --- a/crates/mtproto-core/tests/sec_rows_rpc.rs
@@ -3280,7 +4226,7 @@ index 2315c16..a31c4cd 100644
 +    }
  }
 diff --git a/crates/mtproto-engine/src/connection.rs b/crates/mtproto-engine/src/connection.rs
-index 1e7ed2e..b7d2894 100644
+index 1e7ed2e..8947f63 100644
 --- a/crates/mtproto-engine/src/connection.rs
 +++ b/crates/mtproto-engine/src/connection.rs
 @@ -82,6 +82,8 @@ pub enum ChunkStatus {
@@ -3365,7 +4311,18 @@ index 1e7ed2e..b7d2894 100644
      pub fn acknowledged_bytes(&self) -> Option<u64> {
          self.pipe.send_queue().map(|queued| self.written_total.saturating_sub(queued as u64))
      }
-@@ -524,11 +548,38 @@ pub(crate) fn kernel_send_queue(socket: &mio::net::TcpStream) -> Option<usize> {
+@@ -491,6 +515,10 @@ impl Connection {
+         self.transport.pending_frame_head()
+     }
+ 
++    pub fn pending_record_len(&self) -> usize {
++        self.transport.pending_record_len()
++    }
++
+     pub fn shrink(&mut self) {
+         self.transport.shrink_buffers();
+     }
+@@ -524,11 +552,38 @@ pub(crate) fn kernel_send_queue(socket: &mio::net::TcpStream) -> Option<usize> {
      (result == 0 && value >= 0).then_some(value as usize)
  }
  
@@ -3405,7 +4362,7 @@ index 1e7ed2e..b7d2894 100644
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -567,4 +618,103 @@ mod tests {
+@@ -567,4 +622,103 @@ mod tests {
          compact_written_prefix(&mut small, &mut small_offset);
          assert_eq!((small.len(), small_offset), (1000, 10), "small prefixes are left alone");
      }
@@ -5293,7 +6250,7 @@ index 5eaf872..2aea1f5 100644
          fail_transmitted: bool,
          registry: &Registry,
 diff --git a/crates/mtproto-engine/src/session_runtime.rs b/crates/mtproto-engine/src/session_runtime.rs
-index 69a7dc6..ae5e54b 100644
+index 69a7dc6..55d619e 100644
 --- a/crates/mtproto-engine/src/session_runtime.rs
 +++ b/crates/mtproto-engine/src/session_runtime.rs
 @@ -1,5 +1,5 @@
@@ -5783,7 +6740,14 @@ index 69a7dc6..ae5e54b 100644
      pub fn share_route_hints(&mut self, hints: Arc<crate::route_hints::RouteHints>) {
          self.network_generation = hints.generation();
          self.hints = hints;
-@@ -848,7 +1119,7 @@ impl SessionRuntime {
+@@ -843,12 +1114,12 @@ impl SessionRuntime {
+ 
+     /// Counts what this session is uploading in the engine's uploads, the part the engine already
+     /// handed to the kernel, and tells it how long the others' may hold up its first exchange on a
+-    /// fresh connection. The kernel's queue counts too: it cannot be told apart from bytes in flight,
+-    /// and counting too much only lengthens the capped allowance.
++    /// fresh connection and each receive wait. The kernel's queue counts too: it cannot be told apart
++    /// from bytes in flight, and counting too much only lengthens the capped allowance and wait.
      fn refresh_uploads(&mut self, now: Now) {
          let mut own = self.rpc.as_ref().map_or(0, |rpc| rpc.session().upload_backlog(now));
          if own > 0 {
@@ -5978,16 +6942,47 @@ index 69a7dc6..ae5e54b 100644
              let reason = self.close_reason.take();
              let dropped = match reason {
                  Some(CloseReason::ServerRejected) => DropReason::KeyInvalid,
-@@ -1832,7 +2124,7 @@ impl SessionRuntime {
-     /// would hold a dead connection for ever.
+@@ -1825,17 +2117,22 @@ impl SessionRuntime {
+         more_readable
+     }
+ 
+-    /// A partial frame is arriving fast enough to count as the connection being alive. The grace runs
+-    /// from the first partial frame after the last packet that proved anything (a fresh packet, a
+-    /// matched quick ack, a handshake step): frames that complete without one (empty frames, unknown
+-    /// quick acks, packets of another session replayed) do not start it again, or a chain of them
+-    /// would hold a dead connection for ever.
++    /// A partial frame, or a fake-TLS record whose end has not arrived, is arriving fast enough to count
++    /// as the connection being alive: a proxy may write records of 16 KB, whose bytes the frame decoder
++    /// sees only once the record completes. The grace runs from the first such bytes after the last
++    /// packet that proved anything (a fresh packet, a matched quick ack, a handshake step): frames that
++    /// complete without one (empty frames, unknown quick acks, packets of another session replayed) do
++    /// not start it again, or a chain of them would hold a dead connection for ever.
      fn frame_is_progressing(&mut self, now: Now) -> bool {
-         let Some(received) =
+-        let Some(received) =
 -            self.connection.as_ref().and_then(Connection::pending_frame_head).map(|(_, head)| head.len())
-+            self.connection.as_deref().and_then(Connection::pending_frame_head).map(|(_, head)| head.len())
-         else {
+-        else {
++        let Some(connection) = self.connection.as_deref() else {
              return false;
          };
-@@ -2073,6 +2365,7 @@ impl SessionRuntime {
++        let frame = connection.pending_frame_head().map(|(_, head)| head.len());
++        let record = connection.pending_record_len();
++        if frame.is_none() && record == 0 {
++            return false;
++        }
++        let received = frame.unwrap_or(0) + record;
+         let watch = self.frame_watch.get_or_insert(FrameWatch { started_at: now.mono });
+         let elapsed = now.mono - watch.started_at;
+         elapsed <= FRAME_PROGRESS_GRACE || received as f64 >= elapsed * FRAME_MIN_RATE
+@@ -1860,7 +2157,7 @@ impl SessionRuntime {
+             if was_pushing {
+                 connection.last_progress_at = now.mono;
+                 if let Some(rpc) = &mut self.rpc {
+-                    rpc.note_bytes_received(now);
++                    rpc.session_mut().note_outbound_acknowledged(now);
+                 }
+             }
+         }
+@@ -2073,6 +2370,7 @@ impl SessionRuntime {
      }
  
      fn on_transport_error_with(&mut self, code: i32, proven: bool, now: Now, callbacks: &Arc<dyn EngineCallbacks>) {
@@ -5995,7 +6990,7 @@ index 69a7dc6..ae5e54b 100644
          let kind = TransportErrorKind::from_code(code);
          if self.handshake.is_some() {
              callbacks.on_event(
-@@ -2277,6 +2570,7 @@ impl SessionRuntime {
+@@ -2277,6 +2575,7 @@ impl SessionRuntime {
                  EngineEvent::ConnectionDropped {
                      reason,
                      answered: connection.received_packet,
@@ -6003,7 +6998,7 @@ index 69a7dc6..ae5e54b 100644
                      age: now.mono - connection.started_at,
                  },
              );
-@@ -2295,6 +2589,19 @@ impl SessionRuntime {
+@@ -2295,6 +2594,19 @@ impl SessionRuntime {
          config: &EngineConfig,
          callbacks: &Arc<dyn EngineCallbacks>,
          rng: &mut OsRandom,
@@ -6023,7 +7018,7 @@ index 69a7dc6..ae5e54b 100644
      ) {
          if self.drive_drain(now, registry, callbacks) {
              return;
-@@ -2411,7 +2718,7 @@ impl SessionRuntime {
+@@ -2411,7 +2723,7 @@ impl SessionRuntime {
          let mut silence = false;
          if failure.is_none()
              && let Some(rpc) = &mut self.rpc
@@ -6032,7 +7027,15 @@ index 69a7dc6..ae5e54b 100644
              && self.handshake.is_none()
              && let Err(error) = rpc.handle_timeout(now)
          {
-@@ -2524,8 +2831,8 @@ impl SessionRuntime {
+@@ -2421,6 +2733,7 @@ impl SessionRuntime {
+                 SessionError::PingTimeout => DropReason::PingTimeout,
+                 SessionError::ReadTimeout => DropReason::ReadTimeout,
+                 SessionError::ProbeTimeout => DropReason::ProbeTimeout,
++                SessionError::ReceiveTimeout => DropReason::ReceiveTimeout,
+                 _ => DropReason::SessionError,
+             });
+         }
+@@ -2524,8 +2837,8 @@ impl SessionRuntime {
          }
      }
  
@@ -6043,7 +7046,7 @@ index 69a7dc6..ae5e54b 100644
              || self.http.as_ref().is_some_and(HttpState::is_connected);
          let received = self.connection_received_packet() || self.http.as_ref().is_some_and(HttpState::answered);
          let key_unbound = self.rpc.is_some() && self.pfs.as_ref().is_some_and(|pfs| pfs.perm.is_some() && !pfs.bound);
-@@ -2540,15 +2847,25 @@ impl SessionRuntime {
+@@ -2540,15 +2853,25 @@ impl SessionRuntime {
                      || (self.http.is_some() && !received && (self.rejections >= 3 || self.open_failures() >= 3))),
              awaiting_key_binding: connected && received && key_unbound,
          };
@@ -6072,7 +7075,7 @@ index 69a7dc6..ae5e54b 100644
          }
      }
  
-@@ -2718,6 +3035,46 @@ pub(crate) fn http_credentials(
+@@ -2718,6 +3041,46 @@ pub(crate) fn http_credentials(
      }
  }
  
@@ -6119,7 +7122,7 @@ index 69a7dc6..ae5e54b 100644
  fn initialized_keys() -> &'static std::sync::Mutex<std::collections::HashSet<(u64, String)>> {
      static KEYS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<(u64, String)>>> =
          std::sync::OnceLock::new();
-@@ -2754,7 +3111,13 @@ impl Drop for SessionRuntime {
+@@ -2754,7 +3117,13 @@ impl Drop for SessionRuntime {
  #[cfg(test)]
  mod tests {
      use super::*;
@@ -6133,7 +7136,7 @@ index 69a7dc6..ae5e54b 100644
  
      struct ScriptedResolver {
          answers: VecDeque<Vec<SocketAddr>>,
-@@ -2820,6 +3183,1353 @@ mod tests {
+@@ -2820,6 +3189,1353 @@ mod tests {
          );
          assert_eq!(resolver.calls, 3);
      }
@@ -7487,7 +8490,7 @@ index 69a7dc6..ae5e54b 100644
  }
  
  #[cfg(test)]
-@@ -2833,3 +4543,7 @@ mod session_http_route_tests;
+@@ -2833,3 +4549,7 @@ mod session_http_route_tests;
  #[cfg(test)]
  #[path = "session_explorer_tests.rs"]
  mod session_explorer_tests;
@@ -7541,7 +8544,7 @@ index dac0431..c2adf8b 100644
          self.note_route_http_needed(now);
          self.note_websocket_adopted(now);
 diff --git a/crates/mtproto-engine/src/types.rs b/crates/mtproto-engine/src/types.rs
-index d97db54..025c64c 100644
+index d97db54..413d5d1 100644
 --- a/crates/mtproto-engine/src/types.rs
 +++ b/crates/mtproto-engine/src/types.rs
 @@ -32,6 +32,48 @@ impl core::fmt::Debug for DcAddress {
@@ -7738,7 +8741,24 @@ index d97db54..025c64c 100644
          }
      }
  }
-@@ -401,6 +539,15 @@ impl DropReason {
+@@ -351,6 +489,8 @@ pub enum DropReason {
+     ReadTimeout,
+     /// A ping sat unanswered after everything ahead of it had left the socket.
+     ProbeTimeout,
++    /// Nothing arrived within the receive wait after a packet that needs an answer.
++    ReceiveTimeout,
+     /// A request waited past its timeout with nothing arriving.
+     RequestTimeout,
+     /// The session could not take a packet that arrived (msg_key mismatch, malformed message), or
+@@ -387,6 +527,7 @@ impl DropReason {
+             DropReason::PingTimeout => "ping_timeout",
+             DropReason::ReadTimeout => "read_timeout",
+             DropReason::ProbeTimeout => "probe_timeout",
++            DropReason::ReceiveTimeout => "receive_timeout",
+             DropReason::RequestTimeout => "request_timeout",
+             DropReason::SessionError => "session_error",
+             DropReason::KeyInvalid => "key_invalid",
+@@ -401,6 +542,15 @@ impl DropReason {
      }
  }
  
@@ -7754,7 +8774,7 @@ index d97db54..025c64c 100644
  #[derive(Debug, Clone, PartialEq)]
  pub enum EngineEvent {
      Rpc(RpcEvent),
-@@ -412,6 +559,8 @@ pub enum EngineEvent {
+@@ -412,6 +562,8 @@ pub enum EngineEvent {
      ConnectionState {
          state: ConnectionState,
          proxy_address: Option<String>,
@@ -7763,7 +8783,7 @@ index d97db54..025c64c 100644
      },
      AuthKeyRequired,
      AuthKeyInvalid {
-@@ -450,6 +599,15 @@ pub enum EngineEvent {
+@@ -450,6 +602,15 @@ pub enum EngineEvent {
          key_id: i64,
      },
      TransportFlood,
@@ -7779,7 +8799,7 @@ index d97db54..025c64c 100644
      NetworkUsage {
          incoming: u64,
          outgoing: u64,
-@@ -460,18 +618,44 @@ pub enum EngineEvent {
+@@ -460,18 +621,44 @@ pub enum EngineEvent {
          success: bool,
      },
      /// The engine dropped a connection; `answered` when the session had taken a packet from it (the
@@ -7825,6 +8845,31 @@ index d97db54..025c64c 100644
  }
  
  pub trait EngineCallbacks: Send + Sync + 'static {
+diff --git a/crates/mtproto-engine/src/uploads.rs b/crates/mtproto-engine/src/uploads.rs
+index 54422fe..79b5567 100644
+--- a/crates/mtproto-engine/src/uploads.rs
++++ b/crates/mtproto-engine/src/uploads.rs
+@@ -4,8 +4,9 @@ use mtproto_core::session::{FRESH_ALLOWANCE_MAX, TRANSMIT_GRACE_RATE_INITIAL};
+ 
+ /// What the engine's sessions are uploading over connections that answered, handed to the kernel
+ /// but not confirmed by the server, and the uplink rate measured last: behind a first-in, first-out
+-/// bottleneck a fresh connection's first exchange queues behind it. Where the bottleneck shares the
+-/// link fairly it does not, and the estimate only lengthens the fresh allowance.
++/// bottleneck the other sessions' exchanges, a fresh connection's first one among them, queue behind
++/// it. Where the bottleneck shares the link fairly they do not, and the estimate only lengthens the
++/// fresh allowance and the receive wait.
+ #[derive(Debug, Default)]
+ pub struct Uploads {
+     bytes: AtomicU64,
+@@ -27,7 +28,7 @@ impl Uploads {
+         self.rate.store(rate.to_bits(), Ordering::Relaxed);
+     }
+ 
+-    /// How long the other sessions' uploads may hold up a first exchange, for a session uploading
++    /// How long the other sessions' uploads may hold up an exchange, for a session uploading
+     /// `own` bytes itself: half again what they need at the measured rate, at most
+     /// `FRESH_ALLOWANCE_MAX`.
+     pub fn queue_seconds(&self, own: u64) -> f64 {
 diff --git a/crates/mtproto-engine/src/wiped.rs b/crates/mtproto-engine/src/wiped.rs
 new file mode 100644
 index 0000000..c126127
@@ -8827,8 +9872,20 @@ index 0000000..5f27a6b
 +    }
 +    engine.shutdown();
 +}
+diff --git a/crates/mtproto-engine/tests/coverage_gaps.rs b/crates/mtproto-engine/tests/coverage_gaps.rs
+index 2224adc..ae85e25 100644
+--- a/crates/mtproto-engine/tests/coverage_gaps.rs
++++ b/crates/mtproto-engine/tests/coverage_gaps.rs
+@@ -262,6 +262,7 @@ fn drop_reasons_have_distinct_stable_names() {
+         DropReason::PingTimeout,
+         DropReason::ReadTimeout,
+         DropReason::ProbeTimeout,
++        DropReason::ReceiveTimeout,
+         DropReason::RequestTimeout,
+         DropReason::SessionError,
+         DropReason::KeyInvalid,
 diff --git a/crates/mtproto-engine/tests/engine.rs b/crates/mtproto-engine/tests/engine.rs
-index 38a9daa..1439a87 100644
+index 38a9daa..bbad246 100644
 --- a/crates/mtproto-engine/tests/engine.rs
 +++ b/crates/mtproto-engine/tests/engine.rs
 @@ -12,6 +12,14 @@ use mtproto_engine::{
@@ -8948,6 +10005,32 @@ index 38a9daa..1439a87 100644
  #[test]
  fn unresolvable_proxy_host_backs_off_instead_of_spinning() {
      let key = random_key(41);
+@@ -1434,6 +1471,7 @@ fn steady_calls(engine: &Engine, collector: &Collector, session: SessionHandle,
+     latencies
+ }
+ 
++/// Tunnels shorter than the receive wait: a silence past it with a call pending is given up, not waited out.
+ #[test]
+ fn a_connection_that_falls_silent_in_a_tunnel_is_kept_and_resumes() {
+     let key = random_key(82);
+@@ -1443,7 +1481,7 @@ fn a_connection_that_falls_silent_in_a_tunnel_is_kept_and_resumes() {
+     profile.tunnel = Some(mtproto_netsim::Tunnel {
+         every_min: Duration::from_secs(3),
+         every_max: Duration::from_secs(3),
+-        length: Duration::from_secs(7),
++        length: Duration::from_secs(3),
+     });
+     let sim = mtproto_netsim::NetSim::start(server.address, profile, 12).unwrap();
+     let collector = Arc::new(Collector::default());
+@@ -1455,7 +1493,7 @@ fn a_connection_that_falls_silent_in_a_tunnel_is_kept_and_resumes() {
+     assert!(sim.stats().refused > 0, "fresh connections were tried and refused in the tunnel");
+     assert_eq!(sim.stats().connections, 1, "the silent connection was dropped instead of waiting out the tunnel");
+     let worst = latencies.iter().copied().fold(0.0, f64::max);
+-    assert!(worst < 8.5, "a call waited {worst:.1} s for a 7 s tunnel");
++    assert!(worst < 4.5, "a call waited {worst:.1} s for a 3 s tunnel");
+     engine.shutdown();
+ }
+ 
 diff --git a/crates/mtproto-engine/tests/host_endpoints.rs b/crates/mtproto-engine/tests/host_endpoints.rs
 new file mode 100644
 index 0000000..d30c901
@@ -12034,6 +13117,284 @@ index 197202a..5e9d626 100644
  #[test]
  fn a_created_key_leaves_no_copy_in_freed_memory_when_the_engine_shuts_down() {
      let server = TestServer::start(
+diff --git a/crates/mtproto-engine/tests/silent_connection.rs b/crates/mtproto-engine/tests/silent_connection.rs
+new file mode 100644
+index 0000000..9e93b7c
+--- /dev/null
++++ b/crates/mtproto-engine/tests/silent_connection.rs
+@@ -0,0 +1,272 @@
++//! A connection that takes the session's bytes and answers nothing, as a relay holding a live link through an
++//! outage does: once a request goes out on it, the engine gives it up within Telegram Desktop's receive wait,
++//! 4 s, and reconnects at once, online or not, though every fresh connection meanwhile is refused and the race
++//! the engine starts against a connection that went silent never ends. Over real sockets against the test
++//! server, behind netsim's indefinite tunnel, which holds live connections and refuses new ones. A connection
++//! still receiving a slow answer is not given up, however long the answer takes, nor while a fake-TLS record
++//! of it is still arriving, though no byte of the frame is readable before the record ends.
++
++use std::sync::{Arc, Condvar, Mutex};
++use std::time::{Duration, Instant};
++
++use mtproto_engine::mtproto_core::auth_key::AuthKey;
++use mtproto_engine::mtproto_core::rpc::{RequestFlags, RequestId, RpcEvent, RpcRequest, SessionRole};
++use mtproto_engine::mtproto_core::session::ServerSalt;
++use mtproto_engine::{
++    AuthKeyMaterial, DcAddress, Engine, EngineCallbacks, EngineConfig, EngineEvent, SessionHandle, SessionSetup,
++    unix_seconds,
++};
++use mtproto_netsim::{NetSim, Profile};
++use mtproto_testserver::*;
++
++/// Telegram Desktop's receive wait after a small request, in seconds.
++const RECEIVE_WAIT: f64 = 4.0;
++/// How early the drop may come, a clock tick, and how late, scheduling on a loaded host that runs the tests
++/// one at a time; the core tests hold the exact wait.
++const EARLY: f64 = 0.1;
++const LATE: f64 = 1.0;
++/// An ordinary call, run and answered at once.
++const PLAIN: u32 = 5;
++const WAIT: Duration = Duration::from_secs(30);
++
++#[derive(Default)]
++struct Collector {
++    events: Mutex<Vec<(Instant, EngineEvent)>>,
++    condvar: Condvar,
++}
++
++impl EngineCallbacks for Collector {
++    fn on_event(&self, _session: SessionHandle, event: EngineEvent) {
++        self.events.lock().unwrap().push((Instant::now(), event));
++        self.condvar.notify_all();
++    }
++
++    fn on_log(&self, _level: mtproto_engine::LogLevel, message: &str) {
++        if std::env::var_os("MTPROTO_TEST_LOG").is_some() {
++            eprintln!("LOG {message}");
++        }
++    }
++}
++
++fn completed(events: &[(Instant, EngineEvent)], id: u64) -> usize {
++    events
++        .iter()
++        .filter(|(_, event)| matches!(event, EngineEvent::Rpc(RpcEvent::Completed { id: done, .. }) if done.0 == id))
++        .count()
++}
++
++/// Every connection dropped so far, with when and the name of its reason.
++fn drops_in(events: &[(Instant, EngineEvent)]) -> Vec<(Instant, &'static str)> {
++    events
++        .iter()
++        .filter_map(|(at, event)| match event {
++            EngineEvent::ConnectionDropped { reason, .. } => Some((*at, reason.name())),
++            _ => None,
++        })
++        .collect()
++}
++
++impl Collector {
++    fn wait_for(&self, timeout: Duration, predicate: impl Fn(&[(Instant, EngineEvent)]) -> bool) -> bool {
++        let deadline = Instant::now() + timeout;
++        let mut events = self.events.lock().unwrap();
++        loop {
++            if predicate(&events) {
++                return true;
++            }
++            let now = Instant::now();
++            if now >= deadline {
++                return false;
++            }
++            events = self.condvar.wait_timeout(events, deadline - now).unwrap().0;
++        }
++    }
++
++    fn completions(&self, id: u64) -> usize {
++        completed(&self.events.lock().unwrap(), id)
++    }
++
++    fn failures(&self) -> usize {
++        let events = self.events.lock().unwrap();
++        events.iter().filter(|(_, event)| matches!(event, EngineEvent::Rpc(RpcEvent::Failed { .. }))).count()
++    }
++
++    fn drops(&self) -> Vec<(Instant, &'static str)> {
++        drops_in(&self.events.lock().unwrap())
++    }
++
++    /// Every drop with its reason and how many seconds after `since` it came, for a failed assertion.
++    fn record(&self, since: Instant) -> String {
++        let drops: Vec<String> = self
++            .drops()
++            .iter()
++            .map(|(at, reason)| format!("{reason} {:.3} s", at.saturating_duration_since(since).as_secs_f64()))
++            .collect();
++        format!("drops after the send: [{}]", drops.join(", "))
++    }
++}
++
++fn setup(sim: &NetSim, key: &AuthKey, online: bool) -> SessionSetup {
++    let now = unix_seconds();
++    let mut setup = SessionSetup::new(
++        2,
++        SessionRole::Main,
++        vec![DcAddress { host: sim.address.ip().to_string(), port: sim.address.port(), secret: None }],
++    );
++    let salts = vec![ServerSalt { salt: SERVER_SALT, valid_since: now - 60.0, valid_until: now + 3600.0 }];
++    setup.auth_key = Some(AuthKeyMaterial { key: key.clone(), salts, init_hash: None });
++    setup.online = online;
++    setup
++}
++
++fn request(id: u64, body: Vec<u8>) -> RpcRequest {
++    RpcRequest { id: RequestId(id), body, flags: RequestFlags::default(), invoke_after: None }
++}
++
++fn engine(collector: &Arc<Collector>) -> Engine {
++    Engine::new(EngineConfig { worker_threads: 1, ..EngineConfig::default() }, collector.clone()).unwrap()
++}
++
++/// The link goes into a tunnel that lasts until the test ends it, just before the second request: the
++/// connection takes the request and nothing comes back, while every fresh connection is refused. The first
++/// drop comes the receive wait after the request, it is the receive wait's, and the engine tries to reconnect
++/// at once; once the tunnel ends the request completes, run once.
++#[test]
++fn a_request_on_a_connection_that_takes_its_bytes_and_answers_nothing_reconnects_after_the_receive_wait() {
++    for online in [false, true] {
++        let mode = if online { "online" } else { "offline" };
++        let key = random_key(if online { 92 } else { 91 });
++        let server = TestServer::start(vec![key.clone()], ServerOptions::default());
++        let profile = Profile { latency: Duration::from_millis(30), ..Profile::perfect() };
++        let sim = NetSim::start(server.address, profile, 21).unwrap();
++        let collector = Arc::new(Collector::default());
++        let engine = engine(&collector);
++        let session = engine.create_session(setup(&sim, &key, online));
++        engine.send(session, request(1, call(PLAIN, &1u64.to_le_bytes())));
++        assert!(collector.wait_for(WAIT, |events| completed(events, 1) == 1), "{mode}: the first call completes");
++        std::thread::sleep(Duration::from_secs(1));
++        let tag = 7;
++        sim.begin_tunnel();
++        let sent = Instant::now();
++        engine.send(session, request(2, call(tag, &2u64.to_le_bytes())));
++        let mut refused_before = sim.stats().refused;
++        let (dropped_at, reason) = loop {
++            let refused = sim.stats().refused;
++            if let Some(first) = collector.drops().first().copied() {
++                break first;
++            }
++            refused_before = refused;
++            assert!(sent.elapsed() < Duration::from_secs(45), "{mode}: no drop in 45 s; {}", collector.record(sent));
++            collector.wait_for(Duration::from_millis(5), |events| !drops_in(events).is_empty());
++        };
++        let after = dropped_at.saturating_duration_since(sent).as_secs_f64();
++        assert_eq!(reason, "receive_timeout", "{mode}: {}", collector.record(sent));
++        assert!(
++            (RECEIVE_WAIT - EARLY..=RECEIVE_WAIT + LATE).contains(&after),
++            "{mode}: the first drop came {after:.3} s after the request; {}",
++            collector.record(sent)
++        );
++        let reconnect_by = dropped_at + Duration::from_secs(1);
++        while sim.stats().refused <= refused_before && Instant::now() < reconnect_by {
++            std::thread::sleep(Duration::from_millis(5));
++        }
++        assert!(
++            sim.stats().refused > refused_before,
++            "{mode}: no reconnect was tried within 1 s of the drop; {}",
++            collector.record(sent)
++        );
++        eprintln!("{mode}: {}; refused {refused_before} before the drop", collector.record(sent));
++        sim.end_tunnel();
++        assert!(
++            collector.wait_for(WAIT, |events| completed(events, 2) >= 1),
++            "{mode}: the request never completed after the tunnel; {}",
++            collector.record(sent)
++        );
++        std::thread::sleep(Duration::from_millis(500));
++        assert_eq!(collector.completions(2), 1, "{mode}: completed once; {}", collector.record(sent));
++        assert_eq!(server.executions(tag), 1, "{mode}: the server ran it once; {}", collector.record(sent));
++        assert_eq!(collector.failures(), 0, "{mode}: {}", collector.record(sent));
++        engine.shutdown();
++    }
++}
++
++/// A 256 KB answer on a 24 KB/s downlink takes about 11 s, far past the receive wait: its bytes arriving keep
++/// the connection, which stays the only one, with no drop.
++#[test]
++fn a_connection_still_receiving_a_slow_answer_stays_up() {
++    let key = random_key(93);
++    let server = TestServer::start(vec![key.clone()], ServerOptions::default());
++    let profile = Profile {
++        latency: Duration::from_millis(30),
++        bandwidth: Some(24 * 1024),
++        max_chunk: 1400,
++        ..Profile::perfect()
++    };
++    let sim = NetSim::start(server.address, profile, 22).unwrap();
++    let collector = Arc::new(Collector::default());
++    let engine = engine(&collector);
++    let session = engine.create_session(setup(&sim, &key, false));
++    engine.send(session, request(1, call(PLAIN, &1u64.to_le_bytes())));
++    assert!(collector.wait_for(WAIT, |events| completed(events, 1) == 1), "the first call completes");
++    let sent = Instant::now();
++    engine.send(session, request(2, sized_call(256 * 1024)));
++    assert!(
++        collector.wait_for(Duration::from_secs(60), |events| completed(events, 2) >= 1),
++        "the slow answer never completed; {}",
++        collector.record(sent)
++    );
++    let took = sent.elapsed().as_secs_f64();
++    std::thread::sleep(Duration::from_millis(500));
++    eprintln!("the slow answer took {took:.3} s; {}", collector.record(sent));
++    assert!(took > 2.0 * RECEIVE_WAIT, "the answer took only {took:.3} s");
++    assert_eq!(collector.completions(2), 1, "{}", collector.record(sent));
++    assert!(collector.drops().is_empty(), "{}", collector.record(sent));
++    assert_eq!(sim.stats().connections, 1, "{}", collector.record(sent));
++    assert_eq!(server.executions(TAG_SIZED), 1, "{}", collector.record(sent));
++    engine.shutdown();
++}
++
++/// Through a fake-TLS secret, with the server writing 16 KB records as proxies relaying through 16 KB buffers
++/// do, a 40 KB answer on a 2 KB/s downlink takes about 20 s, and each record about 8 s, twice the receive
++/// wait, before any byte of it reaches the frame decoder: the bytes of the record still arriving keep the
++/// connection. The downlink queues every connection's bytes behind the answer, as a slow link's buffer does,
++/// so no fresh connection overtakes it either. The answer completes once, on the one connection, with no drop.
++#[test]
++fn a_connection_still_receiving_a_large_fake_tls_record_stays_up() {
++    let key = random_key(94);
++    let secret = [&[0xeeu8][..], &[0x44; 16], b"www.example.com"].concat();
++    let options =
++        ServerOptions { secret: Some(secret.clone()), tls_record_size: Some(16 * 1024), ..Default::default() };
++    let server = TestServer::start(vec![key.clone()], options);
++    let profile = Profile {
++        latency: Duration::from_millis(30),
++        bandwidth: Some(2 * 1024),
++        uplink: Some(1024 * 1024),
++        max_chunk: 1400,
++        fifo_queue: Some(Duration::from_secs(60)),
++        ..Profile::perfect()
++    };
++    let sim = NetSim::start(server.address, profile, 23).unwrap();
++    let collector = Arc::new(Collector::default());
++    let engine = engine(&collector);
++    let mut config = setup(&sim, &key, false);
++    config.addresses[0].secret = Some(secret);
++    let session = engine.create_session(config);
++    engine.send(session, request(1, call(PLAIN, &1u64.to_le_bytes())));
++    assert!(collector.wait_for(WAIT, |events| completed(events, 1) == 1), "the first call completes");
++    let sent = Instant::now();
++    engine.send(session, request(2, sized_call(40 * 1024)));
++    let done =
++        collector.wait_for(Duration::from_secs(90), |events| completed(events, 2) >= 1 || !drops_in(events).is_empty());
++    assert!(collector.drops().is_empty(), "dropped while a record was arriving; {}", collector.record(sent));
++    assert!(done, "the answer never completed; {}", collector.record(sent));
++    let took = sent.elapsed().as_secs_f64();
++    std::thread::sleep(Duration::from_millis(500));
++    eprintln!("the answer in 16 KB records took {took:.3} s; {}", collector.record(sent));
++    assert!(took > 4.0 * RECEIVE_WAIT, "the answer took only {took:.3} s");
++    assert_eq!(collector.completions(2), 1, "{}", collector.record(sent));
++    assert!(collector.drops().is_empty(), "{}", collector.record(sent));
++    assert_eq!(sim.stats().connections, 1, "{}", collector.record(sent));
++    assert_eq!(server.executions(TAG_SIZED), 1, "{}", collector.record(sent));
++    engine.shutdown();
++}
 diff --git a/crates/mtproto-engine/tests/support/cpu_time.rs b/crates/mtproto-engine/tests/support/cpu_time.rs
 new file mode 100644
 index 0000000..fb15cc0
@@ -17167,7 +18528,7 @@ index 6abc6f2..eb8c95b 100644
 +    }
 +}
 diff --git a/crates/mtproto-testserver/src/lib.rs b/crates/mtproto-testserver/src/lib.rs
-index c5686c6..b71c4bf 100644
+index c5686c6..ea25a73 100644
 --- a/crates/mtproto-testserver/src/lib.rs
 +++ b/crates/mtproto-testserver/src/lib.rs
 @@ -53,10 +53,22 @@ pub const TAG_TRICKLE_ONCE: u32 = 1020;
@@ -17193,17 +18554,20 @@ index c5686c6..b71c4bf 100644
  
  pub fn call(tag: u32, payload: &[u8]) -> Vec<u8> {
      let mut writer = Writer::new();
-@@ -128,6 +140,9 @@ pub struct ServerOptions {
+@@ -128,6 +140,12 @@ pub struct ServerOptions {
      /// `auth.bindTempAuthKey` for a temporary key bound before is refused with this error, as Telegram
      /// answers CONNECTION_NOT_INITED for a key another client bound and used without initConnection.
      pub refuse_rebinds: Option<&'static str>,
 +    /// A fake-TLS hello whose time is further than this from the server's clock is refused before any
 +    /// ServerHello: the connection closes.
 +    pub tls_time_window: Option<f64>,
++    /// The most a fake-TLS record the server writes carries, as proxies that relay through 16 KB buffers
++    /// write records that large; None is `MAX_TLS_PACKET_LENGTH`, as the client writes them.
++    pub tls_record_size: Option<usize>,
  }
  
  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-@@ -142,15 +157,32 @@ pub enum HttpProxyMode {
+@@ -142,15 +160,32 @@ pub enum HttpProxyMode {
  pub struct Stats {
      pub connections: usize,
      pub obfuscation_dc_ids: Vec<i16>,
@@ -17236,7 +18600,7 @@ index c5686c6..b71c4bf 100644
      pub client_pongs: usize,
      pub retransmissions: usize,
      pub retransmissions_in_container: usize,
-@@ -204,6 +236,14 @@ pub struct Stats {
+@@ -204,6 +239,14 @@ pub struct Stats {
      pub executed_with_key: Vec<(u32, u64)>,
      /// Each executed call's tag and the client session it arrived in.
      pub executed_in_session: Vec<(u32, i64)>,
@@ -17251,7 +18615,7 @@ index c5686c6..b71c4bf 100644
  }
  
  /// A key made by a `p_q_inner_data_temp_dc` handshake: it expires, and API calls under it are refused
-@@ -229,6 +269,36 @@ struct SessionState {
+@@ -229,6 +272,36 @@ struct SessionState {
      clock_offset: f64,
      awaiting_retransmission: HashSet<i64>,
      sent_packets: VecDeque<Vec<u8>>,
@@ -17288,7 +18652,60 @@ index c5686c6..b71c4bf 100644
  }
  
  #[derive(Clone, Copy)]
-@@ -700,8 +770,19 @@ fn serve_connection(
+@@ -463,6 +536,7 @@ struct Wire {
+     obfuscation: Option<ServerObfuscation>,
+     tls: bool,
+     tls_writer: TlsRecordWriter,
++    tls_record_size: Option<usize>,
+     tls_reader: TlsRecordReader,
+     raw: InputBuffer,
+     plain: InputBuffer,
+@@ -522,26 +596,35 @@ impl Wire {
+         let obfuscation = self.obfuscation.as_mut().expect("obfuscation");
+         obfuscation.encryptor.apply(&mut frame);
+         if self.tls {
+-            let mut out = Vec::new();
+-            self.tls_writer.write(&frame, &mut out);
++            let out = self.tls_records(&frame);
+             self.stream.write_all(&out)
+         } else {
+             self.stream.write_all(&frame)
+         }
+     }
+ 
++    /// `frame` as the application-data records the server writes.
++    fn tls_records(&mut self, frame: &[u8]) -> Vec<u8> {
++        let mut out = Vec::new();
++        match self.tls_record_size {
++            None => self.tls_writer.write(frame, &mut out),
++            Some(size) => {
++                for record in frame.chunks(size.clamp(1, usize::from(u16::MAX))) {
++                    out.extend_from_slice(b"\x17\x03\x03");
++                    out.extend_from_slice(&(record.len() as u16).to_be_bytes());
++                    out.extend_from_slice(record);
++                }
++            }
++        }
++        out
++    }
++
+     fn send_frame_drip(&mut self, payload: &[u8], rng: &mut XorShiftRandom) -> std::io::Result<()> {
+         let mut frame = Vec::new();
+         encode_frame(self.framing, payload, false, &mut self.rng, &mut frame);
+         let obfuscation = self.obfuscation.as_mut().expect("obfuscation");
+         obfuscation.encryptor.apply(&mut frame);
+-        let bytes = if self.tls {
+-            let mut out = Vec::new();
+-            self.tls_writer.write(&frame, &mut out);
+-            out
+-        } else {
+-            frame
+-        };
++        let bytes = if self.tls { self.tls_records(&frame) } else { frame };
+         for chunk in bytes.chunks(1 + (rng.next_u64() % 48) as usize) {
+             self.stream.write_all(chunk)?;
+             self.stream.flush()?;
+@@ -700,8 +783,19 @@ fn serve_connection(
          let record_length = ((record_header[3] as usize) << 8) | record_header[4] as usize;
          let mut hello = record_header;
          hello.extend(read_exact_raw(&mut stream, &mut raw, record_length, &stop)?);
@@ -17309,7 +18726,15 @@ index c5686c6..b71c4bf 100644
          }
          let response = server_hello_for_tests(&hello, proxy_key.as_ref().unwrap(), &mut rng);
          stream.write_all(&response)?;
-@@ -784,7 +865,10 @@ fn serve_connection(
+@@ -740,6 +834,7 @@ fn serve_connection(
+                 writer.write(&[], &mut sink);
+                 writer
+             },
++            tls_record_size: options.tls_record_size,
+             tls_reader,
+             raw,
+             plain: prefixed,
+@@ -784,13 +879,17 @@ fn serve_connection(
      let Some(obfuscation) = accept_obfuscated_header(&header, proxy_key.as_ref()) else {
          return Ok(());
      };
@@ -17321,7 +18746,14 @@ index c5686c6..b71c4bf 100644
      let framing = obfuscation.framing;
      let mut wire = Wire {
          stream,
-@@ -826,6 +910,11 @@ fn serve_frames(
+         obfuscation: Some(obfuscation),
+         tls: false,
+         tls_writer: TlsRecordWriter::new(),
++        tls_record_size: None,
+         tls_reader,
+         raw,
+         plain: InputBuffer::new(),
+@@ -826,6 +925,11 @@ fn serve_frames(
      let mut delayed: Vec<Delayed> = Vec::new();
      let result = serve_frames_inner(wire, shared.clone(), stop, options, &mut delayed);
      let mut guard = shared.lock().unwrap();
@@ -17333,7 +18765,7 @@ index c5686c6..b71c4bf 100644
      for item in delayed {
          if let Some(session) = guard.sessions.get_mut(&item.session_id) {
              seal_tracked(session, &item.body, true);
-@@ -893,6 +982,14 @@ fn serve_frames_inner(
+@@ -893,6 +997,14 @@ fn serve_frames_inner(
                  .ok()
                  .and_then(|message| message.body.get(..4).map(|head| u32::from_le_bytes(head.try_into().unwrap())))
                  == Some(ids::REQ_PQ_MULTI);
@@ -17348,7 +18780,7 @@ index c5686c6..b71c4bf 100644
              if starts_handshake {
                  let fault = shared.lock().unwrap().handshake_faults.pop_front();
                  match fault {
-@@ -1126,6 +1223,7 @@ fn process_packet(
+@@ -1126,6 +1238,7 @@ fn process_packet(
                  clock_offset: options.clock_offset,
                  awaiting_retransmission: HashSet::new(),
                  sent_packets: VecDeque::new(),
@@ -17356,7 +18788,7 @@ index c5686c6..b71c4bf 100644
              }
          });
          session.peer.server_time = server_now(session.clock_offset);
-@@ -1199,6 +1297,8 @@ fn process_packet(
+@@ -1199,6 +1312,8 @@ fn process_packet(
                      kill_now = true;
                  }
              }
@@ -17365,7 +18797,7 @@ index c5686c6..b71c4bf 100644
              for message in decoded.messages.iter().filter(|_| !kill_now) {
                  if !session.received.insert(message.msg_id) {
                      stats.duplicate_msg_ids += 1;
-@@ -1243,8 +1343,19 @@ fn process_packet(
+@@ -1243,8 +1358,19 @@ fn process_packet(
                      ids::MSGS_STATE_REQ => {
                          stats.state_requests += 1;
                          let asked = sp::read_vector_after_constructor(&message.body);
@@ -17387,7 +18819,7 @@ index c5686c6..b71c4bf 100644
                          outgoing.push((sp::msgs_state_info(message.msg_id, &info), true));
                      }
                      ids::MSG_RESEND_REQ | ids::MSG_RESEND_ANS_REQ => {
-@@ -1313,11 +1424,20 @@ fn process_packet(
+@@ -1313,11 +1439,20 @@ fn process_packet(
                      _ => {
                          let (call, flags) = unwrap_wrappers(&message.body);
                          stats.init_connections += usize::from(flags.init_connection);
@@ -17409,7 +18841,7 @@ index c5686c6..b71c4bf 100644
                          let (tag, payload) = match call {
                              Some(Inner::Call(tag, payload)) => (tag, payload),
                              Some(Inner::Api(constructor, body)) => {
-@@ -1363,6 +1483,11 @@ fn process_packet(
+@@ -1363,6 +1498,11 @@ fn process_packet(
                                  .push((sp::bad_server_salt(message.msg_id, message.seq_no, shared_ref.salt), false));
                              continue;
                          }
@@ -17421,7 +18853,7 @@ index c5686c6..b71c4bf 100644
                          let unique = (tag < TAG_FLOOD_ONCE && payload.len() >= 8)
                              .then(|| (tag, u64::from_le_bytes(payload[..8].try_into().unwrap())));
                          let doomed = unique.and_then(|key| shared_ref.doomed.get(&key).copied());
-@@ -1780,6 +1905,13 @@ fn process_packet(
+@@ -1780,6 +1920,13 @@ fn process_packet(
                                  outgoing.push((reply, true));
                                  transport_error = Some(-404);
                              }
@@ -17435,7 +18867,7 @@ index c5686c6..b71c4bf 100644
                              TAG_DROP_CONNECTION_ONCE if count == 1 => {
                                  session.peer.server_time = server_now(session.clock_offset);
                                  let msg_id = session.peer.next_msg_id(true);
-@@ -1823,6 +1955,7 @@ fn process_packet(
+@@ -1823,6 +1970,7 @@ fn process_packet(
                      }
                  }
              }
@@ -17443,7 +18875,7 @@ index c5686c6..b71c4bf 100644
          }
      }
      Reaction {
-@@ -2067,8 +2200,11 @@ fn future_salts_reply(req_msg_id: i64, salt: i64, clock_offset: f64) -> Vec<u8>
+@@ -2067,8 +2215,11 @@ fn future_salts_reply(req_msg_id: i64, salt: i64, clock_offset: f64) -> Vec<u8>
  #[derive(Default)]
  struct WrapperFlags {
      init_connection: bool,
@@ -17456,7 +18888,7 @@ index c5686c6..b71c4bf 100644
  }
  
  enum Inner {
-@@ -2085,10 +2221,10 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+@@ -2085,10 +2236,10 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
          };
          match constructor {
              ids::INVOKE_AFTER_MSG => {
@@ -17470,7 +18902,7 @@ index c5686c6..b71c4bf 100644
              }
              ids::INVOKE_WITHOUT_UPDATES => flags.without_updates = true,
              ids::INVOKE_WITH_LAYER => {
-@@ -2097,19 +2233,18 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+@@ -2097,19 +2248,18 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
                      return (None, flags);
                  }
                  flags.init_connection = true;
@@ -17497,7 +18929,7 @@ index c5686c6..b71c4bf 100644
              }
              INVOKE_WITH_APNS_SECRET => {
                  let _ = reader.read_bytes();
-@@ -2133,9 +2268,10 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+@@ -2133,9 +2283,10 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
                      return (None, flags);
                  };
                  let (inner, inner_flags) = unwrap_wrappers(&unpacked);
@@ -17509,7 +18941,7 @@ index c5686c6..b71c4bf 100644
                  return (inner, flags);
              }
              _ => return (None, flags),
-@@ -2143,6 +2279,14 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
+@@ -2143,6 +2294,14 @@ fn unwrap_wrappers(body: &[u8]) -> (Option<Inner>, WrapperFlags) {
      }
  }
  
@@ -17524,7 +18956,7 @@ index c5686c6..b71c4bf 100644
  /// Skips the JSONValue `initConnection` carries as `params`, which tdlib sends.
  fn skip_json_value(reader: &mut Reader<'_>, depth: usize) -> Option<()> {
      const JSON_NULL: u32 = 0x3f6d_7b68;
-@@ -2190,3 +2334,220 @@ pub fn random_key(seed: u64) -> AuthKey {
+@@ -2190,3 +2349,220 @@ pub fn random_key(seed: u64) -> AuthKey {
      let mut rng = XorShiftRandom::new(seed);
      AuthKey::new(rng.array())
  }
@@ -17746,7 +19178,7 @@ index c5686c6..b71c4bf 100644
 +    }
 +}
 diff --git a/docs/protocol-coverage.md b/docs/protocol-coverage.md
-index 097c0c9..b840d78 100644
+index 097c0c9..5f47264 100644
 --- a/docs/protocol-coverage.md
 +++ b/docs/protocol-coverage.md
 @@ -102,7 +102,7 @@ Fault injection used by the engine tests (`crates/mtproto-testserver`): `TAG_TRA
@@ -17758,6 +19190,25 @@ index 097c0c9..b840d78 100644
  | S22 | `msgs_state_info` for our `msgs_state_req` (status flags masked with `& 7`) | P-180, P-181 | 1..3 resend, 4 ack | — | Same | `reconnect_after_retransmit_window_asks_state_and_resends_only_unreceived` | ok |
  | S23 | `msgs_state_info` whose `info` length differs from the request | — | Error | — | Ignored; the request is retried later | `state_info_with_mismatched_length_is_ignored` | ok |
  | S24 | Our `msgs_state_req` never answered | — | Re-asked on the next connection | — | Re-asked after 20 s on the same connection (previously never, while the first request was outstanding) | `unanswered_state_request_is_retried` | fixed |
+@@ -205,15 +205,15 @@ always means a fresh `msg_id`.
+ | ID | Condition | Spec | tdlib | MtProtoKit | Rust engine | Tests | Δ |
+ |---|---|---|---|---|---|---|---|
+ | L01 | `ping_delay_disconnect` cadence, online/offline timing | P-216, §4.10 | rtt-based online, 60/135 s offline | No keepalive | Same as tdlib while the connection is quiet and on the online main session; on the others, while answers keep arriving a ping rides along only after a quarter of the disconnect delay the last ping gave the server and goes out alone only after half of it, and a large answer's acknowledgement waits up to 1 s for a request to ride with: on a 64 kbit/s uplink this halved the packets an offline session sent (79 → 44, pings 15 → 5) | `online_mode_pings_faster`, `ping_and_read_timeouts`, `a_session_receiving_answers_pings_no_more_than_the_server_needs`, `the_server_hears_a_ping_within_the_delay_it_was_given_when_the_round_trip_grows`, `a_round_trip_grown_past_the_ping_delay_neither_spins_nor_misses_the_server`, `a_session_never_asks_to_be_woken_with_nothing_to_do`, `a_large_answer_is_acknowledged_with_the_request_it_prompts` | better |
+-| L02 | Silently dead connection (blackhole, NAT timeout) while answers are awaited by an offline (worker) session | — | 135 s | 12 s response timer | rtt-grade ping and read timeouts whenever queries or state/resend requests are outstanding: detected after ~7 s (`max(2, 1.5·rtt + 1) · 3.5`), previously 135 s | `offline_session_with_a_pending_query_detects_a_dead_connection_fast` | fixed |
++| L02 | Silently dead connection (blackhole, NAT timeout) while answers are awaited by an offline (worker) session | — | 135 s | 12 s response timer | rtt-grade ping and read timeouts whenever queries or state/resend requests are outstanding: detected after ~7 s (`max(2, 1.5·rtt + 1) · 3.5`), previously 135 s. On a connection that has answered, Telegram Desktop's receive wait comes first, for every session, online or not, whatever the send-queue reading says: the connection is given up (`receive_timeout`) when nothing arrives within 4 s of a packet that needs an answer (a query, a ping, a state, resend or future-salts request, `rpc_drop_answer`, `destroy_auth_key`; acks and pongs do not count), or within that wait per 8 KB of a larger packet, at most 64 s; never before the packet's transmit grace ends (L20), and later by what other sessions' uploads may hold it up; a larger packet after it lengthens the wait, a smaller one never shortens it; each such cut doubles the wait, up to 64 s, and a connection's first answer shrinks it to twice the time that answer took, at least 4 s. What shows the server alive clears it, a fresh packet, a matched quick ack, or a frame or a fake-TLS record still arriving (L04, L10), but not bytes the kernel saw acknowledged, which a hop that terminates TCP acknowledges for a dead server. The cut is not held while a racer is tried (L18): the session reconnects at once, and the fresh connection's allowance (L19) is at least the current wait. A connection that never answered and HTTP keep their own timers | `offline_session_with_a_pending_query_detects_a_dead_connection_fast`, `receive_wait_tests::a_small_request_on_a_connection_that_answers_nothing_is_given_up_after_the_receive_wait_whatever_the_reading_and_mode`, `receive_wait_tests::bytes_still_arriving_keep_the_connection_and_the_next_packet_starts_the_wait_again`, `receive_wait_tests::pongs_keep_a_connection_whose_query_goes_unanswered_and_the_answer_wait_still_asks`, `receive_wait_tests::an_answer_to_a_large_request_within_its_scaled_wait_keeps_the_connection`, `receive_wait_tests::a_request_behind_other_sessions_uploads_gets_the_uplink_queue_on_top_of_the_wait`, `receive_wait_tests::a_failed_wait_doubles_covers_the_next_connections_first_exchange_and_a_fast_first_answer_brings_it_back`, `receive_wait_tests::a_connection_that_never_answered_and_http_keep_their_own_timers`, `silent_connection::a_request_on_a_connection_that_takes_its_bytes_and_answers_nothing_reconnects_after_the_receive_wait`, `silent_connection::a_connection_still_receiving_a_slow_answer_stays_up`, `silent_connection::a_connection_still_receiving_a_large_fake_tls_record_stays_up`, `transport::a_fake_tls_record_still_arriving_is_pending_until_its_end_arrives` | fixed |
+ | L03 | Idle offline session | §4.10 | 135 s | — | 135 s kept | `offline_idle_session_keeps_the_long_timeout` | ok |
+ | L04 | Slow but alive link (a large response trickling in) | — | Main online session can time out mid-packet | Response timer reset by partial reads | Every received byte refreshes both the read and the ping deadline, so slow links are never cut | `slow_link_trickling_bytes_never_times_out` | fixed |
+ | L05 | Ping right after (re)connect | §4.11 | Same | Actualization ping | Same | `reconnect_sends_a_ping_immediately`, `request_roundtrip_with_ping_and_acks` | ok |
+ | L06 | Reconnect backoff | §6.2 | Flood controls | 1..64 s | Immediate, then 0.3, 1, 2, 4 s with ±20 % jitter; reset on network change and on any decrypted packet; `-429` keeps its own longer delay (previously 0, 1, 2, 4, 8 s) | `transport::reconnect_ladder_is_fast_and_jittered`, `engine::network_unavailable_blocks_connections`, `engine::idle_workers_disconnect_and_reconnect_on_demand` | fixed |
+ | L07 | Handshake that never answers | §1.1 | 10 s | No handshake timeout (M25) | 10 s timeout → `AuthKeyCreationFailed("handshake timeout")` → retry | `engine::stalled_handshake_is_raced_away_and_the_key_is_created` (recovery by racing a new connection; the 10 s timeout itself has no direct test) | new |
+-| L08 | Silent blackhole while a ping is unanswered (no RST, no FIN) | — | ~7 s (`max(2, 1.5·rtt + 1) · 3.5` read timeout) | 12 s response timer | Probe: dead when nothing was read since the ping, the ping left our buffer, and the kernel send queue (`SO_NWRITE`) has not drained for `clamp(max(rtt + 4·rttvar, 1.5·rtt_peak) + 0.25, 1, 8) s × backoff`; a draining queue (slow upload) is progress and is never cut; each false alarm doubles the backoff, a timely pong halves it. While answers keep arriving no ping goes out (L01), so on a connection that dies mid-download the probe starts once reading has been quiet for the ping-may delay (about 1 s). A connection that has not answered yet gets at least the fresh allowance (L19). The classic timeouts stay as a backstop | `silent_connection_is_cut_by_the_probe_long_before_the_read_timeout`, `draining_backlog_is_progress_and_never_trips_the_probe`, `without_backlog_information_only_the_classic_timeouts_apply`, `inbound_bytes_after_the_ping_cancel_the_probe`, `probe_backoff_grows_after_a_false_alarm_and_relaxes_after_fast_pongs` | better |
++| L08 | Silent blackhole while a ping is unanswered (no RST, no FIN) | — | ~7 s (`max(2, 1.5·rtt + 1) · 3.5` read timeout) | 12 s response timer | Probe: dead when nothing was read since the ping, the ping left our buffer, and the kernel send queue (`SO_NWRITE`) has not drained for `clamp(max(rtt + 4·rttvar, 1.5·rtt_peak) + 0.25, 1, 8) s × backoff`; a draining queue (slow upload) is progress and is never cut; each false alarm doubles the backoff, a timely pong halves it. While answers keep arriving no ping goes out (L01), so on a connection that dies mid-download the probe starts once reading has been quiet for the ping-may delay (about 1 s). A connection that has not answered yet gets at least the fresh allowance (L19). The classic timeouts stay as a backstop. On a connection that has answered an unanswered ping also starts the receive wait (L02), which no reading is needed for and no racer holds (L18): the connection is given up the receive wait (4 s at first) after the ping, so an idle session there is given up that long after its next ping, within about 70 s of its last one when offline, instead of the 135 s of L03 | `silent_connection_is_cut_by_the_probe_long_before_the_read_timeout`, `draining_backlog_is_progress_and_never_trips_the_probe`, `without_backlog_information_only_the_classic_timeouts_apply`, `inbound_bytes_after_the_ping_cancel_the_probe`, `probe_backoff_grows_after_a_false_alarm_and_relaxes_after_fast_pongs`, `receive_wait_tests::an_unanswered_ping_on_an_idle_connection_is_given_up_after_the_receive_wait` | better |
+ | L09 | Several busy sessions on one worker thread | — | One thread per DC | One global queue (M20) | Each socket reads at most 512 KiB per turn; sessions with more data are revisited round-robin with a zero poll timeout. media/perfect p99 27–32 ms → 13–14 ms (MtProtoKit 16–19 ms) | engine benchmarks | better |
+-| L18 | A connection that worked goes silent past the probe, ping, read or request timer (stall, tunnel, NAT rebinding, queue behind an upload) | — | Reconnect | Waits for TCP | Kept for up to 30 s while a racer, first on its own address and then alternating with the others, proves a fresh connection with a nonce check: a fresh packet or a quick ack on the old one keeps it and drops the racer, a verified racer replaces it; without a racer to try (proxy, no addresses) or after 30 s it is dropped as before | `a_connection_that_falls_silent_in_a_tunnel_is_kept_and_resumes`, `a_dead_connection_loses_the_race_to_a_fresh_one`, `a_silent_connection_is_replaced_on_its_own_address_when_the_others_are_dead`, `calls_wait_out_a_bloated_uplink_instead_of_reconnecting`, `waiting_out_an_outage_costs_next_to_no_cpu` | better |
++| L18 | A connection that worked goes silent past the probe, ping, read or request timer (stall, tunnel, NAT rebinding, queue behind an upload) | — | Reconnect | Waits for TCP | Kept for up to 30 s while a racer, first on its own address and then alternating with the others, proves a fresh connection with a nonce check: a fresh packet or a quick ack on the old one keeps it and drops the racer, a verified racer replaces it; without a racer to try (proxy, no addresses) or after 30 s it is dropped as before. While a packet that needs an answer is unanswered it is kept only until the receive wait ends (L02), which drops it with any racer and reconnects at once: a silence shorter than the wait is ridden out (3 s tunnels every 3 s), a longer one is not waited out | `a_connection_that_falls_silent_in_a_tunnel_is_kept_and_resumes`, `silent_connection::a_request_on_a_connection_that_takes_its_bytes_and_answers_nothing_reconnects_after_the_receive_wait`, `a_dead_connection_loses_the_race_to_a_fresh_one`, `a_silent_connection_is_replaced_on_its_own_address_when_the_others_are_dead`, `calls_wait_out_a_bloated_uplink_instead_of_reconnecting`, `waiting_out_an_outage_costs_next_to_no_cpu` | better |
+ | L19 | First exchange on a fresh connection over a slow or busy link | — | rtt-based | Waits for TCP | Fresh allowance: no probe, ping or read cut before `max(4 s · 2^silent cuts in a row, 1.5 × the slowest recent first answer)`, at most 16 s, and at least half again what other sessions' uploads still have to send at the measured uplink rate, also for the silent racer, capped at 16 s; both inputs are forgotten on a network change. A verified silent racer waits for a primary that is only slow, up to 3 of the racer's round trips, and takes over if the primary fails | `fresh_connections_cut_silent_get_longer_each_time_and_learn_from_slow_first_answers`, `a_slow_first_answer_raises_the_fresh_allowance_only_so_far`, `a_fresh_connection_waits_out_a_deep_queue_behind_another_upload`, `a_racer_that_answers_first_waits_for_a_primary_that_is_only_slow`, `a_waiting_racer_takes_over_when_the_silent_primary_is_given_up` | better |
+ | L20 | Large upload parts behind a TCP-terminating hop or a bloated buffer, where the socket drains long before the server has the bytes | — | — | Response timer | Transmit grace for the oldest unconfirmed packet of 4 KB or more: its size over half the measured uplink rate (2 KB/s floor, 4 KB/s unmeasured) plus a round trip, at most 120 s, only once the connection answered; packets are confirmed by quick acks, pongs and answers to queries sent under a fresh msg_id; a large packet asks for a quick ack unless it carries such a query while another large packet's quick ack is still on its way (each quick ack is a server packet of its own, which on a lossy downlink holds up the answers behind it), so packets carrying only resent queries always ask; a packet of any size that drops an answer while large packets wait asks too; rates are delivery rates; an expired grace stretches to what could have crossed unless that is 8× below the peak measured lately; when an answered connection closes after such a refusal on an upload part, the peak comes down 4× for two minutes, so a drop of up to 32× costs the resent part one cut, while a run of dead connections behind a TCP-terminating hop (where nothing tells a slow live connection from a dead one) is noticed after about 3, 16, 35 and 120 s at a 2 MB/s peak with 512 KB parts, the cycle starting over when the lowering lapses or a delivery shows the link fast, and within about 12 s on a direct path; a stretch that ended in a cut gives the measured rate back; the grace is ignored once the kernel queue has not moved for 10 s | `parts_flushed_together_keep_their_grace_until_each_arrives`, `a_pong_riding_with_a_part_measures_the_uplink_not_the_network`, `a_quick_ack_for_the_last_part_keeps_the_connection_until_its_answer`, `large_packets_ask_for_one_quick_ack_at_a_time`, `resent_parts_each_ask_for_a_quick_ack`, `dropping_the_answer_to_a_part_asks_for_a_quick_ack_in_its_place`, `an_answer_lets_the_next_part_ask_for_a_quick_ack_when_its_own_never_came`, `a_part_slower_than_its_grace_stretches_it_instead_of_timing_out`, `a_dead_connection_on_a_fast_uplink_gets_no_stretched_grace`, `an_uplink_that_dropped_far_below_its_peak_costs_one_cut_not_a_loop`, `a_deep_uplink_drop_costs_the_resent_part_one_cut`, `after_one_forgiven_cut_a_dead_connection_is_still_noticed_quickly`, `a_small_packet_cut_says_nothing_about_the_uplink`, `a_run_of_dead_upload_connections_is_noticed_ever_later_but_bounded`, `a_lowered_peak_lapses`, `a_fast_delivery_after_a_cut_restores_the_peak`, `a_run_of_dead_upload_connections_leaves_no_slow_rate_behind`, `slow_uplink_uploads_complete_without_reconnect_loops` | better |
+ 
 @@ -240,7 +240,7 @@ always means a fresh `msg_id`.
  | E17 | Invalid codes: 0, ≥ 10000, ≤ −10000 | §5.7 | Treated as 500 | Verbatim | Normalized to 500 (retried as E15) | `rpc_errors_are_sanitized_like_tdlib`, `tl::rpc_errors_are_sanitized`, `rpc::negative_and_normalized_codes_are_retried_as_server_errors` | fixed |
  | E18 | Error text that is not valid UTF-8 | §5.7 | `INVALID_UTF8_ERROR_MESSAGE` | Lossy | `INVALID_UTF8_ERROR_MESSAGE` (previously lossy replacement characters) | `rpc::invalid_utf8_error_messages_are_replaced`, `rpc_errors_are_sanitized_like_tdlib` | fixed |
