@@ -1,0 +1,86 @@
+Subject: Reject HEVC tile counts the DXVA picture parameters cannot hold
+
+Upstream: https://github.com/FFmpeg/FFmpeg/commit/296720a7be44fe03569e13e57ea7899cb77f3895
+Backport to release/8.1 (CVE-2026-125239).
+
+diff --git a/libavcodec/d3d12va_hevc.c b/libavcodec/d3d12va_hevc.c
+index 1bf1faf9cb..b6634bfd87 100644
+--- a/libavcodec/d3d12va_hevc.c
++++ b/libavcodec/d3d12va_hevc.c
+@@ -65,7 +65,8 @@ static int d3d12va_hevc_start_frame(AVCodecContext *avctx,
+ 
+     ctx->used_mask = 0;
+ 
+-    ff_dxva2_hevc_fill_picture_parameters(avctx, (AVDXVAContext *)ctx, &ctx_pic->pp);
++    if (ff_dxva2_hevc_fill_picture_parameters(avctx, (AVDXVAContext *)ctx, &ctx_pic->pp) < 0)
++        return -1;
+ 
+     ff_dxva2_hevc_fill_scaling_lists(avctx, (AVDXVAContext *)ctx, &ctx_pic->qm);
+ 
+diff --git a/libavcodec/dxva2_hevc.c b/libavcodec/dxva2_hevc.c
+index 85698dfcce..c5e3600f21 100644
+--- a/libavcodec/dxva2_hevc.c
++++ b/libavcodec/dxva2_hevc.c
+@@ -57,7 +57,7 @@ static int get_refpic_index(const DXVA_PicParams_HEVC *pp, int surface_index)
+     return 0xff;
+ }
+ 
+-void ff_dxva2_hevc_fill_picture_parameters(const AVCodecContext *avctx, AVDXVAContext *ctx,
++int ff_dxva2_hevc_fill_picture_parameters(const AVCodecContext *avctx, AVDXVAContext *ctx,
+                                     DXVA_PicParams_HEVC *pp)
+ {
+     const HEVCContext *h = avctx->priv_data;
+@@ -143,14 +143,19 @@ void ff_dxva2_hevc_fill_picture_parameters(const AVCodecContext *avctx, AVDXVACo
+     pp->pps_cb_qp_offset            = pps->cb_qp_offset;
+     pp->pps_cr_qp_offset            = pps->cr_qp_offset;
+     if (pps->tiles_enabled_flag) {
++        if (pps->num_tile_columns > FF_ARRAY_ELEMS(pp->column_width_minus1) + 1 ||
++            pps->num_tile_rows    > FF_ARRAY_ELEMS(pp->row_height_minus1) + 1) {
++            av_log((void *)avctx, AV_LOG_ERROR, "Too many tiles\n");
++            return AVERROR(ENOSYS);
++        }
+         pp->num_tile_columns_minus1 = pps->num_tile_columns - 1;
+         pp->num_tile_rows_minus1    = pps->num_tile_rows - 1;
+ 
+         if (!pps->uniform_spacing_flag) {
+-            for (i = 0; i < pps->num_tile_columns; i++)
++            for (i = 0; i < FFMIN(pps->num_tile_columns, FF_ARRAY_ELEMS(pp->column_width_minus1)); i++)
+                 pp->column_width_minus1[i] = pps->column_width[i] - 1;
+ 
+-            for (i = 0; i < pps->num_tile_rows; i++)
++            for (i = 0; i < FFMIN(pps->num_tile_rows, FF_ARRAY_ELEMS(pp->row_height_minus1)); i++)
+                 pp->row_height_minus1[i] = pps->row_height[i] - 1;
+         }
+     }
+@@ -200,6 +205,8 @@ void ff_dxva2_hevc_fill_picture_parameters(const AVCodecContext *avctx, AVDXVACo
+     DO_REF_LIST(LT_CURR, RefPicSetLtCurr);
+ 
+     pp->StatusReportFeedbackNumber = 1 + DXVA_CONTEXT_REPORT_ID(avctx, ctx)++;
++
++    return 0;
+ }
+ 
+ void ff_dxva2_hevc_fill_scaling_lists(const AVCodecContext *avctx, AVDXVAContext *ctx, DXVA_Qmatrix_HEVC *qm)
+@@ -376,7 +383,8 @@ static int dxva2_hevc_start_frame(AVCodecContext *avctx,
+     av_assert0(ctx_pic);
+ 
+     /* Fill up DXVA_PicParams_HEVC */
+-    ff_dxva2_hevc_fill_picture_parameters(avctx, ctx, &ctx_pic->pp);
++    if (ff_dxva2_hevc_fill_picture_parameters(avctx, ctx, &ctx_pic->pp) < 0)
++        return -1;
+ 
+     /* Fill up DXVA_Qmatrix_HEVC */
+     ff_dxva2_hevc_fill_scaling_lists(avctx, ctx, &ctx_pic->qm);
+diff --git a/libavcodec/dxva2_internal.h b/libavcodec/dxva2_internal.h
+index 6cbd0e42d7..31826b073f 100644
+--- a/libavcodec/dxva2_internal.h
++++ b/libavcodec/dxva2_internal.h
+@@ -172,7 +172,7 @@ void ff_dxva2_h264_fill_picture_parameters(const AVCodecContext *avctx, AVDXVACo
+ void ff_dxva2_h264_fill_scaling_lists(const AVCodecContext *avctx, AVDXVAContext *ctx, DXVA_Qmatrix_H264 *qm);
+ 
+ #if CONFIG_HEVC_D3D12VA_HWACCEL || CONFIG_HEVC_D3D11VA_HWACCEL || CONFIG_HEVC_D3D11VA2_HWACCEL || CONFIG_HEVC_DXVA2_HWACCEL
+-void ff_dxva2_hevc_fill_picture_parameters(const AVCodecContext *avctx, AVDXVAContext *ctx, DXVA_PicParams_HEVC *pp);
++int ff_dxva2_hevc_fill_picture_parameters(const AVCodecContext *avctx, AVDXVAContext *ctx, DXVA_PicParams_HEVC *pp);
+ 
+ void ff_dxva2_hevc_fill_scaling_lists(const AVCodecContext *avctx, AVDXVAContext *ctx, DXVA_Qmatrix_HEVC *qm);
+ #endif
