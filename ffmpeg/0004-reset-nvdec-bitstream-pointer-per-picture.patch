@@ -1,0 +1,17 @@
+Subject: Forget the previous NVDEC bitstream pointer when a picture starts
+
+Upstream: https://github.com/FFmpeg/FFmpeg/commit/03cd7851955c023f1ff4c8a495d47e996d01485a
+Backport to release/8.1 (CVE-2026-125265).
+
+diff --git a/libavcodec/nvdec.c b/libavcodec/nvdec.c
+index 0774fb4d5e..77672ec5be 100644
+--- a/libavcodec/nvdec.c
++++ b/libavcodec/nvdec.c
+@@ -579,6 +579,7 @@ int ff_nvdec_start_frame(AVCodecContext *avctx, AVFrame *frame)
+     NVDECFrame *cf = NULL;
+     int ret;
+ 
++    ctx->bitstream     = NULL;
+     ctx->bitstream_len = 0;
+     ctx->nb_slices     = 0;
+ 
