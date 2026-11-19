@@ -1,0 +1,31 @@
+Subject: Parse Vorbis parser extradata only once
+
+Upstream: https://github.com/FFmpeg/FFmpeg/commit/90f5e61a1da2dcc0050169af8ca593530f26071b
+Backport to release/8.1 (CVE-2026-125224).
+Adapted to release/8.1, whose parser keeps a pointer to its parse
+context: a flag records that the extradata was parsed, as upstream's
+extradata_parsed does.
+
+diff --git a/libavcodec/vorbis_parser.c b/libavcodec/vorbis_parser.c
+index 88b81fcb53..844faffa14 100644
+--- a/libavcodec/vorbis_parser.c
++++ b/libavcodec/vorbis_parser.c
+@@ -304,6 +304,7 @@ AVVorbisParseContext *av_vorbis_parse_init(const uint8_t *extradata,
+ 
+ typedef struct VorbisParseContext {
+     AVVorbisParseContext *vp;
++    int extradata_parsed;
+ } VorbisParseContext;
+ 
+ static int vorbis_parse(AVCodecParserContext *s1, AVCodecContext *avctx,
+@@ -313,8 +314,9 @@ static int vorbis_parse(AVCodecParserContext *s1, AVCodecContext *avctx,
+     VorbisParseContext *s = s1->priv_data;
+     int duration;
+ 
+-    if (!s->vp && avctx->extradata && avctx->extradata_size) {
++    if (!s->extradata_parsed && avctx->extradata && avctx->extradata_size) {
+         s->vp = av_vorbis_parse_init(avctx->extradata, avctx->extradata_size);
++        s->extradata_parsed = 1;
+     }
+     if (!s->vp)
+         goto end;
