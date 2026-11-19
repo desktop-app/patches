@@ -1,0 +1,22 @@
+Subject: Reject MPEG audio packets too large for the bit reader
+
+Upstream: https://github.com/FFmpeg/FFmpeg/commit/0b007e0634de5b4424b9993c95a6c1c50de0115b
+Backport to release/8.1 (CVE-2026-125072).
+Adapted to release/8.1, where error_protection is a field of the
+decoder context rather than of its header.
+
+diff --git a/libavcodec/mpegaudiodec_template.c b/libavcodec/mpegaudiodec_template.c
+index 08b79312c6..f68ea5b1ad 100644
+--- a/libavcodec/mpegaudiodec_template.c
++++ b/libavcodec/mpegaudiodec_template.c
+@@ -1474,7 +1474,9 @@ static int mp_decode_frame(MPADecodeContext *s, OUT_INT **samples,
+     int i, nb_frames, ch, ret;
+     OUT_INT *samples_ptr;
+ 
+-    init_get_bits(&s->gb, buf + HEADER_SIZE, (buf_size - HEADER_SIZE) * 8);
++    ret = init_get_bits8(&s->gb, buf + HEADER_SIZE, buf_size - HEADER_SIZE);
++    if (ret < 0)
++        return ret;
+     if (s->error_protection)
+         s->crc = get_bits(&s->gb, 16);
+ 
