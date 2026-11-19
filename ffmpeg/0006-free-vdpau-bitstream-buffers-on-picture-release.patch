@@ -1,0 +1,143 @@
+Subject: Free the VDPAU bitstream buffer table when a picture is released
+
+Upstream: https://github.com/FFmpeg/FFmpeg/commit/2c6cd8098844f2367f8ba0a3a483e405c8f76449
+Backport to release/8.1 (CVE-2026-125242).
+
+diff --git a/libavcodec/vdpau.c b/libavcodec/vdpau.c
+index e99ac5338d..2c13113551 100644
+--- a/libavcodec/vdpau.c
++++ b/libavcodec/vdpau.c
+@@ -349,6 +349,13 @@ int ff_vdpau_common_end_frame(AVCodecContext *avctx, AVFrame *frame,
+     return vdpau_error(status);
+ }
+ 
++void ff_vdpau_free_frame_priv(AVRefStructOpaque hwctx, void *data)
++{
++    struct vdpau_picture_context *pic_ctx = data;
++
++    av_freep(&pic_ctx->bitstream_buffers);
++}
++
+ #if CONFIG_MPEG1_VDPAU_HWACCEL || \
+     CONFIG_MPEG2_VDPAU_HWACCEL || CONFIG_MPEG4_VDPAU_HWACCEL || \
+     CONFIG_VC1_VDPAU_HWACCEL   || CONFIG_WMV3_VDPAU_HWACCEL
+diff --git a/libavcodec/vdpau_av1.c b/libavcodec/vdpau_av1.c
+index b7e7fa8b0c..aaf8cd57c0 100644
+--- a/libavcodec/vdpau_av1.c
++++ b/libavcodec/vdpau_av1.c
+@@ -362,6 +362,7 @@ const FFHWAccel ff_av1_vdpau_hwaccel = {
+     .end_frame      = vdpau_av1_end_frame,
+     .decode_slice   = vdpau_av1_decode_slice,
+     .frame_priv_data_size = sizeof(struct vdpau_picture_context),
++    .free_frame_priv = ff_vdpau_free_frame_priv,
+     .init           = vdpau_av1_init,
+     .uninit         = ff_vdpau_common_uninit,
+     .frame_params   = ff_vdpau_common_frame_params,
+diff --git a/libavcodec/vdpau_h264.c b/libavcodec/vdpau_h264.c
+index 51c7e99900..df0ae7d5c8 100644
+--- a/libavcodec/vdpau_h264.c
++++ b/libavcodec/vdpau_h264.c
+@@ -271,6 +271,7 @@ const FFHWAccel ff_h264_vdpau_hwaccel = {
+     .end_frame      = vdpau_h264_end_frame,
+     .decode_slice   = vdpau_h264_decode_slice,
+     .frame_priv_data_size = sizeof(struct vdpau_picture_context),
++    .free_frame_priv = ff_vdpau_free_frame_priv,
+     .init           = vdpau_h264_init,
+     .uninit         = ff_vdpau_common_uninit,
+     .frame_params   = ff_vdpau_common_frame_params,
+diff --git a/libavcodec/vdpau_hevc.c b/libavcodec/vdpau_hevc.c
+index 1a92c32b27..1a8429475e 100644
+--- a/libavcodec/vdpau_hevc.c
++++ b/libavcodec/vdpau_hevc.c
+@@ -551,6 +551,7 @@ const FFHWAccel ff_hevc_vdpau_hwaccel = {
+     .end_frame      = vdpau_hevc_end_frame,
+     .decode_slice   = vdpau_hevc_decode_slice,
+     .frame_priv_data_size = sizeof(struct vdpau_picture_context),
++    .free_frame_priv = ff_vdpau_free_frame_priv,
+     .init           = vdpau_hevc_init,
+     .uninit         = ff_vdpau_common_uninit,
+     .frame_params   = ff_vdpau_common_frame_params,
+diff --git a/libavcodec/vdpau_internal.h b/libavcodec/vdpau_internal.h
+index 347576e0c3..8a4ed13d1a 100644
+--- a/libavcodec/vdpau_internal.h
++++ b/libavcodec/vdpau_internal.h
+@@ -30,6 +30,7 @@
+ #include "libavutil/frame.h"
+ #include "libavutil/hwcontext.h"
+ #include "libavutil/hwcontext_vdpau.h"
++#include "libavutil/refstruct.h"
+ 
+ #include "avcodec.h"
+ #include "vdpau.h"
+@@ -125,6 +126,7 @@ int ff_vdpau_common_start_frame(struct vdpau_picture_context *pic,
+                                 const uint8_t *buffer, uint32_t size);
+ int ff_vdpau_common_end_frame(AVCodecContext *avctx, AVFrame *frame,
+                               struct vdpau_picture_context *pic);
++void ff_vdpau_free_frame_priv(AVRefStructOpaque hwctx, void *data);
+ int ff_vdpau_mpeg_end_frame(AVCodecContext *avctx);
+ int ff_vdpau_add_buffer(struct vdpau_picture_context *pic, const uint8_t *buf,
+                         uint32_t buf_size);
+diff --git a/libavcodec/vdpau_mpeg12.c b/libavcodec/vdpau_mpeg12.c
+index 4d16f18089..b9cf03ecae 100644
+--- a/libavcodec/vdpau_mpeg12.c
++++ b/libavcodec/vdpau_mpeg12.c
+@@ -116,6 +116,7 @@ const FFHWAccel ff_mpeg1_vdpau_hwaccel = {
+     .end_frame      = ff_vdpau_mpeg_end_frame,
+     .decode_slice   = vdpau_mpeg_decode_slice,
+     .frame_priv_data_size = sizeof(struct vdpau_picture_context),
++    .free_frame_priv = ff_vdpau_free_frame_priv,
+     .init           = vdpau_mpeg1_init,
+     .uninit         = ff_vdpau_common_uninit,
+     .priv_data_size = sizeof(VDPAUContext),
+@@ -151,6 +152,7 @@ const FFHWAccel ff_mpeg2_vdpau_hwaccel = {
+     .end_frame      = ff_vdpau_mpeg_end_frame,
+     .decode_slice   = vdpau_mpeg_decode_slice,
+     .frame_priv_data_size = sizeof(struct vdpau_picture_context),
++    .free_frame_priv = ff_vdpau_free_frame_priv,
+     .init           = vdpau_mpeg2_init,
+     .uninit         = ff_vdpau_common_uninit,
+     .frame_params   = ff_vdpau_common_frame_params,
+diff --git a/libavcodec/vdpau_mpeg4.c b/libavcodec/vdpau_mpeg4.c
+index 668720a231..a5a480a7b8 100644
+--- a/libavcodec/vdpau_mpeg4.c
++++ b/libavcodec/vdpau_mpeg4.c
+@@ -121,6 +121,7 @@ const FFHWAccel ff_mpeg4_vdpau_hwaccel = {
+     .end_frame      = ff_vdpau_mpeg_end_frame,
+     .decode_slice   = vdpau_mpeg4_decode_slice,
+     .frame_priv_data_size = sizeof(struct vdpau_picture_context),
++    .free_frame_priv = ff_vdpau_free_frame_priv,
+     .init           = vdpau_mpeg4_init,
+     .uninit         = ff_vdpau_common_uninit,
+     .frame_params   = ff_vdpau_common_frame_params,
+diff --git a/libavcodec/vdpau_vc1.c b/libavcodec/vdpau_vc1.c
+index a5fd8156f4..fecd5f1da4 100644
+--- a/libavcodec/vdpau_vc1.c
++++ b/libavcodec/vdpau_vc1.c
+@@ -148,6 +148,7 @@ const FFHWAccel ff_wmv3_vdpau_hwaccel = {
+     .end_frame      = ff_vdpau_mpeg_end_frame,
+     .decode_slice   = vdpau_vc1_decode_slice,
+     .frame_priv_data_size = sizeof(struct vdpau_picture_context),
++    .free_frame_priv = ff_vdpau_free_frame_priv,
+     .init           = vdpau_vc1_init,
+     .uninit         = ff_vdpau_common_uninit,
+     .frame_params   = ff_vdpau_common_frame_params,
+@@ -165,6 +166,7 @@ const FFHWAccel ff_vc1_vdpau_hwaccel = {
+     .end_frame      = ff_vdpau_mpeg_end_frame,
+     .decode_slice   = vdpau_vc1_decode_slice,
+     .frame_priv_data_size = sizeof(struct vdpau_picture_context),
++    .free_frame_priv = ff_vdpau_free_frame_priv,
+     .init           = vdpau_vc1_init,
+     .uninit         = ff_vdpau_common_uninit,
+     .frame_params   = ff_vdpau_common_frame_params,
+diff --git a/libavcodec/vdpau_vp9.c b/libavcodec/vdpau_vp9.c
+index 7b3c1ff4d7..83a17ed74d 100644
+--- a/libavcodec/vdpau_vp9.c
++++ b/libavcodec/vdpau_vp9.c
+@@ -232,6 +232,7 @@ const FFHWAccel ff_vp9_vdpau_hwaccel = {
+     .end_frame      = vdpau_vp9_end_frame,
+     .decode_slice   = vdpau_vp9_decode_slice,
+     .frame_priv_data_size = sizeof(struct vdpau_picture_context),
++    .free_frame_priv = ff_vdpau_free_frame_priv,
+     .init           = vdpau_vp9_init,
+     .uninit         = ff_vdpau_common_uninit,
+     .frame_params   = ff_vdpau_common_frame_params,
