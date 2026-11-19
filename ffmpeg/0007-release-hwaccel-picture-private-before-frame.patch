@@ -1,0 +1,177 @@
+Subject: Release hwaccel picture private data before its frame
+
+Upstream: https://github.com/FFmpeg/FFmpeg/commit/838c660bb3cd66ba74981b453c14c79214f6ef92
+Backport to release/8.1 (CVE-2026-125252).
+Prerequisite of 0008. Adapted to release/8.1, where the MJPEG decoder
+still frees this data with av_freep() rather than av_refstruct_unref().
+
+diff --git a/libavcodec/av1dec.c b/libavcodec/av1dec.c
+index 2b3a36aa5c..b65a314fbe 100644
+--- a/libavcodec/av1dec.c
++++ b/libavcodec/av1dec.c
+@@ -707,10 +707,9 @@ static void av1_frame_replace(AV1Frame *dst, const AV1Frame *src)
+ 
+     dst->raw_frame_header = src->raw_frame_header;
+ 
+-    ff_progress_frame_replace(&dst->pf, &src->pf);
+-
+     av_refstruct_replace(&dst->hwaccel_picture_private,
+                           src->hwaccel_picture_private);
++    ff_progress_frame_replace(&dst->pf, &src->pf);
+ 
+     dst->spatial_id = src->spatial_id;
+     dst->temporal_id = src->temporal_id;
+diff --git a/libavcodec/h264_picture.c b/libavcodec/h264_picture.c
+index aa3d2629c8..53c4927097 100644
+--- a/libavcodec/h264_picture.c
++++ b/libavcodec/h264_picture.c
+@@ -71,9 +71,6 @@ static void h264_copy_picture_params(H264Picture *dst, const H264Picture *src)
+         av_refstruct_replace(&dst->ref_index[i],       src->ref_index[i]);
+     }
+ 
+-    av_refstruct_replace(&dst->hwaccel_picture_private,
+-                          src->hwaccel_picture_private);
+-
+     av_refstruct_replace(&dst->decode_error_flags, src->decode_error_flags);
+ 
+     dst->qscale_table = src->qscale_table;
+@@ -117,6 +114,8 @@ int ff_h264_ref_picture(H264Picture *dst, const H264Picture *src)
+     ret = ff_thread_ref_frame(&dst->tf, &src->tf);
+     if (ret < 0)
+         goto fail;
++    av_refstruct_replace(&dst->hwaccel_picture_private,
++                          src->hwaccel_picture_private);
+ 
+     if (src->needs_fg) {
+         ret = av_frame_ref(dst->f_grain, src->f_grain);
+@@ -144,6 +143,8 @@ int ff_h264_replace_picture(H264Picture *dst, const H264Picture *src)
+     av_assert0(src->tf.f == src->f);
+ 
+     dst->tf.f = dst->f;
++    av_refstruct_replace(&dst->hwaccel_picture_private,
++                          src->hwaccel_picture_private);
+     ret = ff_thread_replace_frame(&dst->tf, &src->tf);
+     if (ret < 0)
+         goto fail;
+@@ -159,6 +160,7 @@ int ff_h264_replace_picture(H264Picture *dst, const H264Picture *src)
+ 
+     return 0;
+ fail:
++    av_refstruct_unref(&dst->hwaccel_picture_private);
+     ff_h264_unref_picture(dst);
+     return ret;
+ }
+diff --git a/libavcodec/hwaccel_internal.h b/libavcodec/hwaccel_internal.h
+index ac860f8ab0..64c865e858 100644
+--- a/libavcodec/hwaccel_internal.h
++++ b/libavcodec/hwaccel_internal.h
+@@ -101,9 +101,9 @@ typedef struct FFHWAccel {
+     /**
+      * Size of per-frame hardware accelerator private data.
+      *
+-     * Private data is allocated with av_mallocz() before
+-     * AVCodecContext.get_buffer() and deallocated after
+-     * AVCodecContext.release_buffer().
++     * Private data is allocated with ff_hwaccel_frame_priv_alloc() and
++     * released before the frame, so free_frame_priv() can still use the
++     * frame's device context.
+      */
+     int frame_priv_data_size;
+ 
+diff --git a/libavcodec/mjpegdec.c b/libavcodec/mjpegdec.c
+index 33c31ad6aa..f81e8e252d 100644
+--- a/libavcodec/mjpegdec.c
++++ b/libavcodec/mjpegdec.c
+@@ -2930,6 +2930,7 @@ av_cold int ff_mjpeg_decode_end(AVCodecContext *avctx)
+         av_log(avctx, AV_LOG_INFO, "Single field\n");
+     }
+ 
++    av_freep(&s->hwaccel_picture_private);
+     av_frame_free(&s->picture);
+     s->picture_ptr = NULL;
+ 
+@@ -2952,7 +2953,6 @@ av_cold int ff_mjpeg_decode_end(AVCodecContext *avctx)
+ 
+     reset_icc_profile(s);
+ 
+-    av_freep(&s->hwaccel_picture_private);
+     av_freep(&s->jls_state);
+ 
+     return 0;
+diff --git a/libavcodec/mpegpicture.c b/libavcodec/mpegpicture.c
+index 3f32fe8773..569243fde9 100644
+--- a/libavcodec/mpegpicture.c
++++ b/libavcodec/mpegpicture.c
+@@ -32,11 +32,10 @@ static void mpv_pic_reset(AVRefStructOpaque unused, void *obj)
+ {
+     MPVPicture *pic = obj;
+ 
++    av_refstruct_unref(&pic->hwaccel_picture_private);
+     av_frame_unref(pic->f);
+     ff_thread_progress_reset(&pic->progress);
+ 
+-    av_refstruct_unref(&pic->hwaccel_picture_private);
+-
+     av_refstruct_unref(&pic->mbskip_table);
+     av_refstruct_unref(&pic->qscale_table_base);
+     av_refstruct_unref(&pic->mb_type_base);
+diff --git a/libavcodec/vp8.c b/libavcodec/vp8.c
+index 0395933dfe..e6a29f8202 100644
+--- a/libavcodec/vp8.c
++++ b/libavcodec/vp8.c
+@@ -2868,10 +2868,10 @@ av_cold int ff_vp8_decode_init(AVCodecContext *avctx)
+ #if HAVE_THREADS
+ static void vp8_replace_frame(VP8Frame *dst, const VP8Frame *src)
+ {
+-    ff_progress_frame_replace(&dst->tf, &src->tf);
+-    av_refstruct_replace(&dst->seg_map, src->seg_map);
+     av_refstruct_replace(&dst->hwaccel_picture_private,
+                           src->hwaccel_picture_private);
++    ff_progress_frame_replace(&dst->tf, &src->tf);
++    av_refstruct_replace(&dst->seg_map, src->seg_map);
+ }
+ 
+ #define REBASE(pic) ((pic) ? (pic) - &s_src->frames[0] + &s->frames[0] : NULL)
+diff --git a/libavcodec/vp9.c b/libavcodec/vp9.c
+index f8289bbaba..6d2dad0caf 100644
+--- a/libavcodec/vp9.c
++++ b/libavcodec/vp9.c
+@@ -150,6 +150,8 @@ static void vp9_frame_replace(VP9Frame *dst, const VP9Frame *src)
+     av_refstruct_replace(&dst->header_ref, src->header_ref);
+     dst->frame_header = src->frame_header;
+ 
++    av_refstruct_replace(&dst->hwaccel_picture_private,
++                          src->hwaccel_picture_private);
+     ff_progress_frame_replace(&dst->tf, &src->tf);
+ 
+     av_refstruct_replace(&dst->extradata, src->extradata);
+@@ -157,9 +159,6 @@ static void vp9_frame_replace(VP9Frame *dst, const VP9Frame *src)
+     dst->segmentation_map = src->segmentation_map;
+     dst->mv = src->mv;
+     dst->uses_2pass = src->uses_2pass;
+-
+-    av_refstruct_replace(&dst->hwaccel_picture_private,
+-                          src->hwaccel_picture_private);
+ }
+ 
+ static int update_size(AVCodecContext *avctx, int w, int h)
+diff --git a/libavcodec/vvc/refs.c b/libavcodec/vvc/refs.c
+index 77391abd7b..d5bbc5abf3 100644
+--- a/libavcodec/vvc/refs.c
++++ b/libavcodec/vvc/refs.c
+@@ -51,6 +51,7 @@ void ff_vvc_unref_frame(VVCFrameContext *fc, VVCFrame *frame, int flags)
+     if (!(frame->flags & ~VVC_FRAME_FLAG_CORRUPT))
+         frame->flags = 0;
+     if (!frame->flags) {
++        av_refstruct_unref(&frame->hwaccel_picture_private);
+         av_frame_unref(frame->frame);
+ 
+         if (frame->needs_fg) {
+@@ -69,7 +70,6 @@ void ff_vvc_unref_frame(VVCFrameContext *fc, VVCFrame *frame, int flags)
+         av_refstruct_unref(&frame->rpl_tab);
+ 
+         frame->collocated_ref = NULL;
+-        av_refstruct_unref(&frame->hwaccel_picture_private);
+     }
+ }
+ 

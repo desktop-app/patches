@@ -1,0 +1,277 @@
+Subject: Destroy the VA-API buffers of a picture released without being issued
+
+Upstream: https://github.com/FFmpeg/FFmpeg/commit/4221a63ce869ade862557ca64693bf77f5032971
+Backport to release/8.1 (CVE-2026-125252).
+
+diff --git a/libavcodec/mjpegdec.c b/libavcodec/mjpegdec.c
+index f81e8e252d..54263f69b6 100644
+--- a/libavcodec/mjpegdec.c
++++ b/libavcodec/mjpegdec.c
+@@ -757,6 +757,7 @@ int ff_mjpeg_decode_sof(MJpegDecodeContext *s)
+                 s->avctx->pix_fmt,
+                 AV_PIX_FMT_NONE,
+             };
++            av_refstruct_unref(&s->hwaccel_picture_private);
+             s->hwaccel_pix_fmt = ff_get_format(s->avctx, pix_fmts);
+             if (s->hwaccel_pix_fmt < 0)
+                 return AVERROR(EINVAL);
+diff --git a/libavcodec/vaapi_av1.c b/libavcodec/vaapi_av1.c
+index b8f5472c14..16646830af 100644
+--- a/libavcodec/vaapi_av1.c
++++ b/libavcodec/vaapi_av1.c
+@@ -452,6 +452,7 @@ const FFHWAccel ff_av1_vaapi_hwaccel = {
+     .end_frame            = vaapi_av1_end_frame,
+     .decode_slice         = vaapi_av1_decode_slice,
+     .frame_priv_data_size = sizeof(VAAPIDecodePicture),
++    .free_frame_priv      = ff_vaapi_decode_free_frame_priv,
+     .init                 = vaapi_av1_decode_init,
+     .uninit               = vaapi_av1_decode_uninit,
+     .frame_params         = ff_vaapi_common_frame_params,
+diff --git a/libavcodec/vaapi_decode.c b/libavcodec/vaapi_decode.c
+index 4ac2df5b43..e7f5545dba 100644
+--- a/libavcodec/vaapi_decode.c
++++ b/libavcodec/vaapi_decode.c
+@@ -135,34 +135,44 @@ int ff_vaapi_decode_make_slice_buffer(AVCodecContext *avctx,
+     return 0;
+ }
+ 
+-static void ff_vaapi_decode_destroy_buffers(AVCodecContext *avctx,
++static void ff_vaapi_decode_destroy_buffers(void *logctx, VADisplay display,
+                                             VAAPIDecodePicture *pic)
+ {
+-    VAAPIDecodeContext *ctx = avctx->internal->hwaccel_priv_data;
+     VAStatus vas;
+     int i;
+ 
+     for (i = 0; i < pic->nb_param_buffers; i++) {
+-        vas = vaDestroyBuffer(ctx->hwctx->display,
+-                              pic->param_buffers[i]);
++        vas = vaDestroyBuffer(display, pic->param_buffers[i]);
+         if (vas != VA_STATUS_SUCCESS) {
+-            av_log(avctx, AV_LOG_ERROR, "Failed to destroy "
++            av_log(logctx, AV_LOG_ERROR, "Failed to destroy "
+                    "parameter buffer %#x: %d (%s).\n",
+                    pic->param_buffers[i], vas, vaErrorStr(vas));
+         }
+     }
+ 
+     for (i = 0; i < 2 * pic->nb_slices; i++) {
+-        vas = vaDestroyBuffer(ctx->hwctx->display,
+-                              pic->slice_buffers[i]);
++        vas = vaDestroyBuffer(display, pic->slice_buffers[i]);
+         if (vas != VA_STATUS_SUCCESS) {
+-            av_log(avctx, AV_LOG_ERROR, "Failed to destroy slice "
++            av_log(logctx, AV_LOG_ERROR, "Failed to destroy slice "
+                    "slice buffer %#x: %d (%s).\n",
+                    pic->slice_buffers[i], vas, vaErrorStr(vas));
+         }
+     }
+ }
+ 
++static void vaapi_decode_free_buffers(void *logctx, VADisplay display,
++                                      VAAPIDecodePicture *pic)
++{
++    ff_vaapi_decode_destroy_buffers(logctx, display, pic);
++
++    pic->nb_param_buffers           = 0;
++    pic->nb_param_buffers_allocated = 0;
++    av_freep(&pic->param_buffers);
++    pic->nb_slices                  = 0;
++    pic->nb_slice_buffers_allocated = 0;
++    av_freep(&pic->slice_buffers);
++}
++
+ int ff_vaapi_decode_issue(AVCodecContext *avctx,
+                           VAAPIDecodePicture *pic)
+ {
+@@ -219,7 +229,7 @@ int ff_vaapi_decode_issue(AVCodecContext *avctx,
+ 
+     if (CONFIG_VAAPI_1 || ctx->hwctx->driver_quirks &
+         AV_VAAPI_DRIVER_QUIRK_RENDER_PARAM_BUFFERS)
+-        ff_vaapi_decode_destroy_buffers(avctx, pic);
++        ff_vaapi_decode_destroy_buffers(avctx, ctx->hwctx->display, pic);
+ 
+     err = 0;
+     goto exit;
+@@ -231,7 +241,7 @@ fail_with_picture:
+                "after error: %d (%s).\n", vas, vaErrorStr(vas));
+     }
+ fail:
+-    ff_vaapi_decode_destroy_buffers(avctx, pic);
++    ff_vaapi_decode_destroy_buffers(avctx, ctx->hwctx->display, pic);
+ fail_at_end:
+ exit:
+     pic->nb_param_buffers           = 0;
+@@ -247,18 +257,21 @@ exit:
+ int ff_vaapi_decode_cancel(AVCodecContext *avctx,
+                            VAAPIDecodePicture *pic)
+ {
+-    ff_vaapi_decode_destroy_buffers(avctx, pic);
++    VAAPIDecodeContext *ctx = avctx->internal->hwaccel_priv_data;
+ 
+-    pic->nb_param_buffers           = 0;
+-    pic->nb_param_buffers_allocated = 0;
+-    av_freep(&pic->param_buffers);
+-    pic->nb_slices                  = 0;
+-    pic->nb_slice_buffers_allocated = 0;
+-    av_freep(&pic->slice_buffers);
++    vaapi_decode_free_buffers(avctx, ctx->hwctx->display, pic);
+ 
+     return 0;
+ }
+ 
++void ff_vaapi_decode_free_frame_priv(AVRefStructOpaque hwctx, void *data)
++{
++    AVHWDeviceContext    *device_ctx = hwctx.nc;
++    AVVAAPIDeviceContext *vactx      = device_ctx->hwctx;
++
++    vaapi_decode_free_buffers(device_ctx, vactx->display, data);
++}
++
+ static const struct {
+     uint32_t fourcc;
+     enum AVPixelFormat pix_fmt;
+diff --git a/libavcodec/vaapi_decode.h b/libavcodec/vaapi_decode.h
+index 7813473c98..2c696c7891 100644
+--- a/libavcodec/vaapi_decode.h
++++ b/libavcodec/vaapi_decode.h
+@@ -24,6 +24,7 @@
+ #include "libavutil/frame.h"
+ #include "libavutil/hwcontext.h"
+ #include "libavutil/hwcontext_vaapi.h"
++#include "libavutil/refstruct.h"
+ 
+ #include "avcodec.h"
+ 
+@@ -79,6 +80,7 @@ int ff_vaapi_decode_issue(AVCodecContext *avctx,
+                           VAAPIDecodePicture *pic);
+ int ff_vaapi_decode_cancel(AVCodecContext *avctx,
+                            VAAPIDecodePicture *pic);
++void ff_vaapi_decode_free_frame_priv(AVRefStructOpaque hwctx, void *data);
+ 
+ int ff_vaapi_decode_init(AVCodecContext *avctx);
+ int ff_vaapi_decode_uninit(AVCodecContext *avctx);
+diff --git a/libavcodec/vaapi_h264.c b/libavcodec/vaapi_h264.c
+index 7f00da09fc..32ecc97c66 100644
+--- a/libavcodec/vaapi_h264.c
++++ b/libavcodec/vaapi_h264.c
+@@ -403,6 +403,7 @@ const FFHWAccel ff_h264_vaapi_hwaccel = {
+     .end_frame            = &vaapi_h264_end_frame,
+     .decode_slice         = &vaapi_h264_decode_slice,
+     .frame_priv_data_size = sizeof(VAAPIDecodePicture),
++    .free_frame_priv      = &ff_vaapi_decode_free_frame_priv,
+     .init                 = &ff_vaapi_decode_init,
+     .uninit               = &ff_vaapi_decode_uninit,
+     .frame_params         = &ff_vaapi_common_frame_params,
+diff --git a/libavcodec/vaapi_hevc.c b/libavcodec/vaapi_hevc.c
+index 878f7965c4..c529bec968 100644
+--- a/libavcodec/vaapi_hevc.c
++++ b/libavcodec/vaapi_hevc.c
+@@ -665,6 +665,7 @@ const FFHWAccel ff_hevc_vaapi_hwaccel = {
+     .end_frame            = vaapi_hevc_end_frame,
+     .decode_slice         = vaapi_hevc_decode_slice,
+     .frame_priv_data_size = sizeof(VAAPIDecodePictureHEVC),
++    .free_frame_priv      = ff_vaapi_decode_free_frame_priv,
+     .init                 = ff_vaapi_decode_init,
+     .uninit               = ff_vaapi_decode_uninit,
+     .frame_params         = ff_vaapi_common_frame_params,
+diff --git a/libavcodec/vaapi_mjpeg.c b/libavcodec/vaapi_mjpeg.c
+index c8b59b8afa..bc05e336a6 100644
+--- a/libavcodec/vaapi_mjpeg.c
++++ b/libavcodec/vaapi_mjpeg.c
+@@ -152,6 +152,7 @@ const FFHWAccel ff_mjpeg_vaapi_hwaccel = {
+     .end_frame            = &vaapi_mjpeg_end_frame,
+     .decode_slice         = &vaapi_mjpeg_decode_slice,
+     .frame_priv_data_size = sizeof(VAAPIDecodePicture),
++    .free_frame_priv      = &ff_vaapi_decode_free_frame_priv,
+     .init                 = &ff_vaapi_decode_init,
+     .uninit               = &ff_vaapi_decode_uninit,
+     .frame_params         = &ff_vaapi_common_frame_params,
+diff --git a/libavcodec/vaapi_mpeg2.c b/libavcodec/vaapi_mpeg2.c
+index 925f0db1ba..9fb4a5b038 100644
+--- a/libavcodec/vaapi_mpeg2.c
++++ b/libavcodec/vaapi_mpeg2.c
+@@ -184,6 +184,7 @@ const FFHWAccel ff_mpeg2_vaapi_hwaccel = {
+     .end_frame            = &vaapi_mpeg2_end_frame,
+     .decode_slice         = &vaapi_mpeg2_decode_slice,
+     .frame_priv_data_size = sizeof(VAAPIDecodePicture),
++    .free_frame_priv      = &ff_vaapi_decode_free_frame_priv,
+     .init                 = &ff_vaapi_decode_init,
+     .uninit               = &ff_vaapi_decode_uninit,
+     .frame_params         = &ff_vaapi_common_frame_params,
+diff --git a/libavcodec/vaapi_mpeg4.c b/libavcodec/vaapi_mpeg4.c
+index d936a290cd..81f0f357ad 100644
+--- a/libavcodec/vaapi_mpeg4.c
++++ b/libavcodec/vaapi_mpeg4.c
+@@ -192,6 +192,7 @@ const FFHWAccel ff_mpeg4_vaapi_hwaccel = {
+     .end_frame            = &vaapi_mpeg4_end_frame,
+     .decode_slice         = &vaapi_mpeg4_decode_slice,
+     .frame_priv_data_size = sizeof(VAAPIDecodePicture),
++    .free_frame_priv      = &ff_vaapi_decode_free_frame_priv,
+     .init                 = &ff_vaapi_decode_init,
+     .uninit               = &ff_vaapi_decode_uninit,
+     .frame_params         = &ff_vaapi_common_frame_params,
+@@ -210,6 +211,7 @@ const FFHWAccel ff_h263_vaapi_hwaccel = {
+     .end_frame            = &vaapi_mpeg4_end_frame,
+     .decode_slice         = &vaapi_mpeg4_decode_slice,
+     .frame_priv_data_size = sizeof(VAAPIDecodePicture),
++    .free_frame_priv      = &ff_vaapi_decode_free_frame_priv,
+     .init                 = &ff_vaapi_decode_init,
+     .uninit               = &ff_vaapi_decode_uninit,
+     .frame_params         = &ff_vaapi_common_frame_params,
+diff --git a/libavcodec/vaapi_vc1.c b/libavcodec/vaapi_vc1.c
+index a3dd3140e2..f518e2ee26 100644
+--- a/libavcodec/vaapi_vc1.c
++++ b/libavcodec/vaapi_vc1.c
+@@ -515,6 +515,7 @@ const FFHWAccel ff_wmv3_vaapi_hwaccel = {
+     .end_frame            = &vaapi_vc1_end_frame,
+     .decode_slice         = &vaapi_vc1_decode_slice,
+     .frame_priv_data_size = sizeof(VAAPIDecodePicture),
++    .free_frame_priv      = &ff_vaapi_decode_free_frame_priv,
+     .init                 = &ff_vaapi_decode_init,
+     .uninit               = &ff_vaapi_decode_uninit,
+     .frame_params         = &ff_vaapi_common_frame_params,
+@@ -532,6 +533,7 @@ const FFHWAccel ff_vc1_vaapi_hwaccel = {
+     .end_frame            = &vaapi_vc1_end_frame,
+     .decode_slice         = &vaapi_vc1_decode_slice,
+     .frame_priv_data_size = sizeof(VAAPIDecodePicture),
++    .free_frame_priv      = &ff_vaapi_decode_free_frame_priv,
+     .init                 = &ff_vaapi_decode_init,
+     .uninit               = &ff_vaapi_decode_uninit,
+     .frame_params         = &ff_vaapi_common_frame_params,
+diff --git a/libavcodec/vaapi_vp8.c b/libavcodec/vaapi_vp8.c
+index b9b1f2aa51..ec226d5386 100644
+--- a/libavcodec/vaapi_vp8.c
++++ b/libavcodec/vaapi_vp8.c
+@@ -230,6 +230,7 @@ const FFHWAccel ff_vp8_vaapi_hwaccel = {
+     .end_frame            = &vaapi_vp8_end_frame,
+     .decode_slice         = &vaapi_vp8_decode_slice,
+     .frame_priv_data_size = sizeof(VAAPIDecodePicture),
++    .free_frame_priv      = &ff_vaapi_decode_free_frame_priv,
+     .init                 = &ff_vaapi_decode_init,
+     .uninit               = &ff_vaapi_decode_uninit,
+     .frame_params         = &ff_vaapi_common_frame_params,
+diff --git a/libavcodec/vaapi_vp9.c b/libavcodec/vaapi_vp9.c
+index 7d57f340e0..f113de96ef 100644
+--- a/libavcodec/vaapi_vp9.c
++++ b/libavcodec/vaapi_vp9.c
+@@ -178,6 +178,7 @@ const FFHWAccel ff_vp9_vaapi_hwaccel = {
+     .end_frame            = vaapi_vp9_end_frame,
+     .decode_slice         = vaapi_vp9_decode_slice,
+     .frame_priv_data_size = sizeof(VAAPIDecodePicture),
++    .free_frame_priv      = ff_vaapi_decode_free_frame_priv,
+     .init                 = ff_vaapi_decode_init,
+     .uninit               = ff_vaapi_decode_uninit,
+     .frame_params         = ff_vaapi_common_frame_params,
+diff --git a/libavcodec/vaapi_vvc.c b/libavcodec/vaapi_vvc.c
+index 908db7bfab..4800caae03 100644
+--- a/libavcodec/vaapi_vvc.c
++++ b/libavcodec/vaapi_vvc.c
+@@ -650,6 +650,7 @@ const FFHWAccel ff_vvc_vaapi_hwaccel = {
+     .end_frame            = &vaapi_vvc_end_frame,
+     .decode_slice         = &vaapi_vvc_decode_slice,
+     .frame_priv_data_size = sizeof(VAAPIDecodePictureVVC),
++    .free_frame_priv      = &ff_vaapi_decode_free_frame_priv,
+     .init                 = &ff_vaapi_decode_init,
+     .uninit               = &ff_vaapi_decode_uninit,
+     .frame_params         = &ff_vaapi_common_frame_params,
