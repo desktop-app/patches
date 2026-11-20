@@ -1,0 +1,19 @@
+Use the underlying keyboard layout when an input method has no override.
+Squirrel input-mode objects have no Unicode key-layout data, so selecting
+them produces invalid shortcut candidates. Preserve explicit overrides.
+
+Related issue: https://github.com/telegramdesktop/tdesktop/issues/30860
+Based on Qt v6.11.2 (ef55f427f2c8b410d34f8a7681020a3000cf6866).
+
+diff --git a/src/gui/platform/darwin/qapplekeymapper.mm b/src/gui/platform/darwin/qapplekeymapper.mm
+--- a/src/gui/platform/darwin/qapplekeymapper.mm
++++ b/src/gui/platform/darwin/qapplekeymapper.mm
+@@ -360,7 +360,7 @@
+ {
+     QCFType<TISInputSourceRef> source = TISCopyInputMethodKeyboardLayoutOverride();
+     if (!source)
+-        source = TISCopyCurrentKeyboardInputSource();
++        source = TISCopyCurrentKeyboardLayoutInputSource();
+ 
+     if (m_keyboardMode != NullMode && source == m_currentInputSource)
+         return false;
