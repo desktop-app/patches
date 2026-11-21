@@ -1,28 +1,90 @@
+From d6a64f599b9c4e5dc0e1d0ef5ec9f468ab2fb1da Mon Sep 17 00:00:00 2001
+From: Eskil Abrahamsen Blomfeldt <eskil.abrahamsen-blomfeldt@qt.io>
+Date: Thu, 19 Nov 2026 10:35:49 +0100
+Subject: [PATCH] directwrite: Use effective pixel size for choosing asymmetric AA
+
+Microsoft documentation recommends using asymmetric antialiasing for
+fonts that are 16 pixels or smaller. But we only checked the unscaled
+pixel size, and never applied the DPR. So a font set to 16px on a
+system with 200% scaling for instance, would look ugly.
+
+In addition, we used the PreferNoHinting preference to enable symmetric
+rendering for the PreferDefaultHinting, which would also disable
+grid fitting.
+
+This patch now always defaults to PreferVerticalHinting as default on
+DPI-scaled systems, and selects symmetric rendering based on the same
+logic that was already used for PreferFullHinting. It also updates
+the condition, so that we prefer symmetric rendering if the pixel size
+multiplied by the DPR is higher than 16.
+
+This does mean that on systems with multiple screens, or when drawing
+into an QImage, you can get symmetric rendering for some fonts that
+are actually 16 px or less. But this looks better than the alternative
+(asymmetric rendering for large fonts), so it is acceptable as an
+improvement.
+
+Fixes: QTBUG-100774
+Change-Id: I69e5b0414291694fbc9d6624233e61d7cc2cb933
+Reviewed-by: Eirik Aavitsland <eirik.aavitsland@qt.io>
+---
+
 diff --git a/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp b/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
-index 2ee1d6e96b1..0b18dc780fc 100644
+index f842f2f..d49e67d 100644
 --- a/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
 +++ b/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
-@@ -169,11 +169,7 @@ static QFont::HintingPreference determineHinting(const QFontDef &fontDef)
+@@ -168,15 +168,10 @@
+ {
      QFont::HintingPreference hintingPreference = QFont::HintingPreference(fontDef.hintingPreference);
      if (hintingPreference == QFont::PreferDefaultHinting) {
-         if (!qFuzzyCompare(qApp->devicePixelRatio(), 1.0)) {
+-        if (!qFuzzyCompare(qApp->devicePixelRatio(), 1.0)) {
 -            // Microsoft documentation recommends using asymmetric rendering for small fonts
 -            // at pixel size 16 and less, and symmetric for larger fonts.
 -            hintingPreference = fontDef.pixelSize > 16.0
 -                                    ? QFont::PreferNoHinting
 -                                    : QFont::PreferVerticalHinting;
+-        } else {
++        if (!qFuzzyCompare(qApp->devicePixelRatio(), 1.0))
 +            hintingPreference = QFont::PreferVerticalHinting;
-         } else {
++        else
              hintingPreference = QFont::PreferFullHinting;
-         }
-@@ -236,9 +232,8 @@ DWRITE_RENDERING_MODE QWindowsFontEngineDirectWrite::hintingPreferenceToRenderin
-     QFont::HintingPreference hintingPreference = determineHinting(fontDef);
-     switch (hintingPreference) {
+-        }
+     }
+ 
+     return hintingPreference;
+@@ -189,8 +184,12 @@
+                             << fontDef.families;
+ 
+         // We default to symmetric antialiasing for fonts without hinting and for pixel sizes
+-        // over 16.
+-        m_useSymmetricAntialiasing = fontDef.pixelSize > 16 || !hasHinting();
++        // over 16 as recommended by Microsoft documentation. We use the maximum DPR for this,
++        // which means text on multi-screen setups may get symmetric rendering when it strictly
++        // speaking should not, but this looks better than using asymmetric rendering on scaled
++        // fonts.
++        const qreal effectivePixelSize = fontDef.pixelSize * qApp->devicePixelRatio();
++        m_useSymmetricAntialiasing = effectivePixelSize > 16.0 || !hasHinting();
+ 
+         qCDebug(lcQpaFonts) << "    After checking pixel size and hinting, defaulting to:"
+                             << bool(m_useSymmetricAntialiasing);
+@@ -209,7 +208,7 @@
+                     const quint16 rangeMaxPPEM = qFromBigEndian<quint16>(start + 4 + i * 4);
+                     qCDebug(lcQpaFonts) << "    GASP range " << i << "upper limit == " << rangeMaxPPEM;
+ 
+-                    if (rangeMaxPPEM >= fontDef.pixelSize) {
++                    if (rangeMaxPPEM >= effectivePixelSize) {
+                         const quint16 rangeGaspBehavior = qFromBigEndian<quint16>(start + 4 + i * 4 + 2);
+                         qCDebug(lcQpaFonts) << "    GASP behavior " << i << "==" << rangeGaspBehavior;
+ 
+@@ -238,7 +237,10 @@
      case QFont::PreferNoHinting:
--        return DWRITE_RENDERING_MODE_CLEARTYPE_NATURAL_SYMMETRIC;
+         return DWRITE_RENDERING_MODE_CLEARTYPE_NATURAL_SYMMETRIC;
      case QFont::PreferVerticalHinting:
 -        return DWRITE_RENDERING_MODE_CLEARTYPE_NATURAL;
-+        return DWRITE_RENDERING_MODE_CLEARTYPE_NATURAL_SYMMETRIC;
++        if (useSymmetricAntialiasing())
++            return DWRITE_RENDERING_MODE_CLEARTYPE_NATURAL_SYMMETRIC;
++        else
++            return DWRITE_RENDERING_MODE_CLEARTYPE_NATURAL;
      default:
          if (useSymmetricAntialiasing())
              return DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC;
