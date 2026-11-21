@@ -16,8 +16,6 @@ chmod a+x $FullExecPath/../gas-preprocessor/cpp
 
 ./configure --prefix=$FullScriptPath/../local $ARCH_PARAM \
 --toolchain=msvc \
---extra-cflags="-DCONFIG_SAFE_BITSTREAM_READER=1" \
---extra-cxxflags="-DCONFIG_SAFE_BITSTREAM_READER=1" \
 --disable-programs \
 --disable-doc \
 --disable-network \
