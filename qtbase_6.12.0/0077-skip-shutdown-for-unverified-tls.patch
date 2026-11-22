@@ -1,0 +1,19 @@
+Subject: Skip OpenSSL shutdown for unverified Qt sessions.
+From: Yauheni Pervenenka <yauheni.pervenenka@viber.com>
+Date: Thu, 12 Nov 2026 12:50:54 +0300
+
+Upstream: https://code.qt.io/cgit/qt/qtbase.git/commit/?id=619152dc9f9825c9bcd49b633c820c3a9e351a98
+
+diff --git a/src/plugins/tls/openssl/qtls_openssl.cpp b/src/plugins/tls/openssl/qtls_openssl.cpp
+index 5d35c24991f..fa10daf0199 100644
+--- a/src/plugins/tls/openssl/qtls_openssl.cpp
++++ b/src/plugins/tls/openssl/qtls_openssl.cpp
+@@ -1170,7 +1170,7 @@ void TlsCryptographOpenSSL::transmit()
+ void TlsCryptographOpenSSL::disconnectFromHost()
+ {
+     if (ssl) {
+-        if (!shutdown && !q_SSL_in_init(ssl) && !systemOrSslErrorDetected) {
++        if (!shutdown && q->isEncrypted() && !q_SSL_in_init(ssl) && !systemOrSslErrorDetected) {
+             if (q_SSL_shutdown(ssl) != 1) {
+                 // Some error may be queued, clear it.
+                 QTlsBackendOpenSSL::clearErrorQueue();
