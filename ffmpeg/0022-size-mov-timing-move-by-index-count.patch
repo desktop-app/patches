@@ -1,0 +1,19 @@
+Subject: Size MOV timing table moves by the index count.
+From: Michael Niedermayer <michael@niedermayer.cc>
+Date: Fri, 2 Oct 2026 17:53:26 +0200
+
+Upstream: https://github.com/FFmpeg/FFmpeg/commit/0260f625ba51ba9f02b189da757862fd96fb1da0
+
+diff --git a/libavformat/mov.c b/libavformat/mov.c
+index 71c4e38c88592..e3e0100e11613 100644
+--- a/libavformat/mov.c
++++ b/libavformat/mov.c
+@@ -6380,7 +6380,7 @@ static int mov_read_trun(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+                 (sti->nb_index_entries - index_entry_pos));
+         memmove(sc->tts_data + index_entry_pos + entries,
+                 sc->tts_data + index_entry_pos,
+-                sizeof(*sc->tts_data) * (sc->tts_count - index_entry_pos));
++                sizeof(*sc->tts_data) * (sti->nb_index_entries - index_entry_pos));
+         if (index_entry_pos < sc->current_sample) {
+             sc->current_sample += entries;
+         }
