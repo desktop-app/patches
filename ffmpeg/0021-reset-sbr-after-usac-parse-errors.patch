@@ -1,0 +1,46 @@
+Subject: Disable SBR after a USAC parse error.
+From: Michael Niedermayer <michael@niedermayer.cc>
+Date: Sat, 10 Oct 2026 07:22:41 +0200
+
+Upstream: https://github.com/FFmpeg/FFmpeg/commit/1436f560753a15757d59f3b425a3ab1a1bb0ed6b
+
+diff --git a/libavcodec/aacsbr_template.c b/libavcodec/aacsbr_template.c
+index cc22b64416bcd..f398d79a615da 100644
+--- a/libavcodec/aacsbr_template.c
++++ b/libavcodec/aacsbr_template.c
+@@ -1210,12 +1210,11 @@ int ff_aac_sbr_config_usac(AACDecContext *ac, ChannelElement *che,
+     return 0;
+ }
+ 
+-int ff_aac_sbr_decode_usac_data(AACDecContext *ac, ChannelElement *che,
+-                                AACUsacElemConfig *ue, GetBitContext *gb,
+-                                int sbr_ch, int indep_flag)
++static int read_usac_sbr_data(AACDecContext *ac, SpectralBandReplication *sbr,
++                              AACUsacElemConfig *ue, GetBitContext *gb,
++                              int sbr_ch, int indep_flag)
+ {
+     int ret;
+-    SpectralBandReplication *sbr = get_sbr(che);
+     int info_present = 1;
+     int header_present = 1;
+ 
+@@ -1356,6 +1355,19 @@ int ff_aac_sbr_decode_usac_data(AACDecContext *ac, ChannelElement *che,
+ 
+     return 0;
+ }
++
++int ff_aac_sbr_decode_usac_data(AACDecContext *ac, ChannelElement *che,
++                                AACUsacElemConfig *ue, GetBitContext *gb,
++                                int sbr_ch, int indep_flag)
++{
++    SpectralBandReplication *sbr = get_sbr(che);
++    int ret = read_usac_sbr_data(ac, sbr, ue, gb, sbr_ch, indep_flag);
++
++    if (ret < 0)
++        sbr_turnoff(sbr);
++
++    return ret;
++}
+ #endif
+ 
+ /**
