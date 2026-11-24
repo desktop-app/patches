@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Tue, 24 Nov 2026 12:00:00
+Subject: [PATCH] Prefer natural antialiasing in DirectWrite regardless of the scale
+
+Without a scale the default hinting preference turns into full hinting,
+which renders with GDI_CLASSIC and lays glyphs out with GDI compatible
+whole pixel advances and without subpixel positions. A font without
+horizontal hints, such as Open Sans 3 hinted in VTT by y only, then lands
+at arbitrary subpixel phases inside its rounded cells, so the gaps between
+letters vary by a pixel and symmetric letters render lopsided.
+
+Prefer natural antialiasing at any scale, as on scaled screens already:
+glyphs keep their natural advances and subpixel positions like in
+browsers, while symmetric smoothing is still picked by the effective
+pixel size and the gasp table.
+
+diff --git a/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp b/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
+index ad3efa99591..a7f571aba05 100644
+--- a/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
++++ b/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
+@@ -167,12 +167,8 @@ static DWRITE_MEASURING_MODE renderModeToMeasureMode(DWRITE_RENDERING_MODE rende
+ static QFont::HintingPreference determineHinting(const QFontDef &fontDef)
+ {
+     QFont::HintingPreference hintingPreference = QFont::HintingPreference(fontDef.hintingPreference);
+-    if (hintingPreference == QFont::PreferDefaultHinting) {
+-        if (!qFuzzyCompare(qApp->devicePixelRatio(), 1.0))
+-            hintingPreference = QFont::PreferVerticalHinting;
+-        else
+-            hintingPreference = QFont::PreferFullHinting;
+-    }
++    if (hintingPreference == QFont::PreferDefaultHinting)
++        hintingPreference = QFont::PreferVerticalHinting;
+ 
+     return hintingPreference;
+ }
