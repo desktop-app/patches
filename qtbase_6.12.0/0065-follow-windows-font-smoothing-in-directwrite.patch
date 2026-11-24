@@ -18,6 +18,12 @@ whole pixels. Scaled text keeps antialiasing, as with Qt 5, because Qt
 lays it out in logical pixels and the scale would stretch the rounded
 advances. Color glyphs stay antialiased.
 
+Standard smoothing has no glyphs of its own either: the grayscale masks
+are made from ClearType renders with qGray, a luminance weighting that
+counts the left third of a pixel twice as much as the right one. With
+IDWriteFactory2, render them with DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+which takes the 1x1 texture.
+
 diff --git a/src/gui/text/windows/qwindowsfontdatabase.cpp b/src/gui/text/windows/qwindowsfontdatabase.cpp
 index 3a1f9557574..c2d4107f8ca 100644
 --- a/src/gui/text/windows/qwindowsfontdatabase.cpp
@@ -45,48 +51,149 @@ index 2c5f8f63c8b..489d3f30775 100644
      HDC hdc = 0;
  #if QT_CONFIG(directwrite)
 diff --git a/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp b/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
-index 2ee1d6e96b1..ab62c6b6f3e 100644
+index 2ee1d6e96b1..b69906458de 100644
 --- a/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
 +++ b/src/gui/text/windows/qwindowsfontenginedirectwrite.cpp
-@@ -228,9 +228,17 @@ bool QWindowsFontEngineDirectWrite::useSymmetricAntialiasing() const
+@@ -228,9 +228,16 @@ bool QWindowsFontEngineDirectWrite::useSymmetricAntialiasing() const
      return m_useSymmetricAntialiasing;
  }
  
-+bool QWindowsFontEngineDirectWrite::fontSmoothingDisabled() const
++bool QWindowsFontEngineDirectWrite::fontSmoothingDisabled(const QFontDef &fontDef) const
 +{
-+    return !m_fontEngineData->fontSmoothingEnabled
-+            && qFuzzyCompare(qApp->devicePixelRatio(), 1.0);
++    return (fontDef.styleStrategy & QFont::NoAntialias)
++            || (!m_fontEngineData->fontSmoothingEnabled
++                && qFuzzyCompare(qApp->devicePixelRatio(), 1.0));
 +}
 +
  DWRITE_RENDERING_MODE QWindowsFontEngineDirectWrite::hintingPreferenceToRenderingMode(const QFontDef &fontDef) const
  {
 -    if ((fontDef.styleStrategy & QFont::NoAntialias) && glyphFormat != QFontEngine::Format_ARGB)
-+    const bool aliased = (fontDef.styleStrategy & QFont::NoAntialias)
-+            || fontSmoothingDisabled();
-+    if (aliased && glyphFormat != QFontEngine::Format_ARGB)
++    if (fontSmoothingDisabled(fontDef) && glyphFormat != QFontEngine::Format_ARGB)
          return DWRITE_RENDERING_MODE_ALIASED;
  
      QFont::HintingPreference hintingPreference = determineHinting(fontDef);
-@@ -831,7 +839,9 @@ QImage QWindowsFontEngineDirectWrite::alphaMapForGlyph(glyph_t glyph,
+@@ -801,7 +808,7 @@ QImage QWindowsFontEngineDirectWrite::alphaMapForGlyph(glyph_t glyph,
+                                                        const QFixedPoint &subPixelPosition,
+                                                        const QTransform &t)
+ {
+-    QImage im = imageForGlyph(glyph, subPixelPosition, glyphMargin(Format_A8), t);
++    QImage im = imageForGlyph(glyph, subPixelPosition, glyphMargin(Format_A8), t, QColor(), true);
+ 
+     if (!im.isNull()) {
+         QImage alphaMap(im.width(), im.height(), QImage::Format_Alpha8);
+@@ -831,7 +838,7 @@ QImage QWindowsFontEngineDirectWrite::alphaMapForGlyph(glyph_t glyph,
  bool QWindowsFontEngineDirectWrite::supportsHorizontalSubPixelPositions() const
  {
      QFont::HintingPreference hinting = determineHinting(fontDef);
 -    return (hinting != QFont::PreferFullHinting && !(fontDef.styleStrategy & QFont::NoAntialias));
-+    return (hinting != QFont::PreferFullHinting
-+            && !(fontDef.styleStrategy & QFont::NoAntialias)
-+            && !fontSmoothingDisabled());
++    return (hinting != QFont::PreferFullHinting && !fontSmoothingDisabled(fontDef));
  }
  
  QFontEngine::Properties QWindowsFontEngineDirectWrite::properties() const
+@@ -907,7 +914,10 @@ bool QWindowsFontEngineDirectWrite::renderColr0GlyphRun(QImage *image,
+     }
+ 
+     if (!qFuzzyIsNull(a))
+-        renderGlyphRun(image, r, g, b, a, colorGlyphsAnalysis.Get(), boundingRect, renderMode);
++        renderGlyphRun(image, r, g, b, a, colorGlyphsAnalysis.Get(), boundingRect,
++                       renderMode == DWRITE_RENDERING_MODE_ALIASED
++                           ? DWRITE_TEXTURE_ALIASED_1x1
++                           : DWRITE_TEXTURE_CLEARTYPE_3x1);
+ 
+     return true;
+ }
+@@ -1629,7 +1639,8 @@ QImage QWindowsFontEngineDirectWrite::imageForGlyph(glyph_t t,
+                                                     const QFixedPoint &subPixelPosition,
+                                                     int margin,
+                                                     const QTransform &originalTransform,
+-                                                    const QColor &color)
++                                                    const QColor &color,
++                                                    bool grayscale)
+ {
+     UINT16 glyphIndex = t;
+     FLOAT glyphAdvance = 0;
+@@ -1669,6 +1680,8 @@ QImage QWindowsFontEngineDirectWrite::imageForGlyph(glyph_t t,
+     ComPtr<IDWriteFactory2> factory2;
+     HRESULT hr = m_fontEngineData->directWriteFactory->QueryInterface(__uuidof(IDWriteFactory2),
+                                                                       &factory2);
++    // Grayscale antialiasing needs IDWriteFactory2
++    grayscale = grayscale && SUCCEEDED(hr) && renderMode != DWRITE_RENDERING_MODE_ALIASED;
+     ComPtr<IDWriteGlyphRunAnalysis> glyphAnalysis;
+     if (!SUCCEEDED(hr)) {
+         qErrnoWarning(hr, "%s: Failed to query IDWriteFactory2 interface.", __FUNCTION__);
+@@ -1688,7 +1701,8 @@ QImage QWindowsFontEngineDirectWrite::imageForGlyph(glyph_t t,
+                     renderMode,
+                     measureMode,
+                     gridFitMode,
+-                    DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
++                    grayscale ? DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE
++                              : DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
+                     0.0, 0.0,
+                     &glyphAnalysis
+                     );
+@@ -1750,7 +1764,9 @@ QImage QWindowsFontEngineDirectWrite::imageForGlyph(glyph_t t,
+                            a,
+                            glyphAnalysis.Get(),
+                            boundingRect,
+-                           renderMode);
++                           renderMode == DWRITE_RENDERING_MODE_ALIASED || grayscale
++                               ? DWRITE_TEXTURE_ALIASED_1x1
++                               : DWRITE_TEXTURE_CLEARTYPE_3x1);
+         }
+ 
+         return image;
+@@ -1767,7 +1783,7 @@ void QWindowsFontEngineDirectWrite::renderGlyphRun(QImage *destination,
+                                                    float a,
+                                                    IDWriteGlyphRunAnalysis *glyphAnalysis,
+                                                    const QRect &boundingRect,
+-                                                   DWRITE_RENDERING_MODE renderMode) const
++                                                   DWRITE_TEXTURE_TYPE textureType) const
+ {
+     const int width = destination->width();
+     const int height = destination->height();
+@@ -1788,9 +1804,7 @@ void QWindowsFontEngineDirectWrite::renderGlyphRun(QImage *destination,
+         BYTE *alphaValues = alphaValueArray.data();
+         memset(alphaValues, 0, size);
+ 
+-        HRESULT hr = glyphAnalysis->CreateAlphaTexture(renderMode == DWRITE_RENDERING_MODE_ALIASED
+-                                                               ? DWRITE_TEXTURE_ALIASED_1x1
+-                                                               : DWRITE_TEXTURE_CLEARTYPE_3x1,
++        HRESULT hr = glyphAnalysis->CreateAlphaTexture(textureType,
+                                                        &rect,
+                                                        alphaValues,
+                                                        size);
+@@ -1816,7 +1830,7 @@ void QWindowsFontEngineDirectWrite::renderGlyphRun(QImage *destination,
+                                         qRound(qAlpha(currentRgb) * (1.0 - averageAlpha) + averageAlpha * 255));
+                     }
+                 }
+-            } else if (renderMode == DWRITE_RENDERING_MODE_ALIASED) {
++            } else if (textureType == DWRITE_TEXTURE_ALIASED_1x1) {
+                 for (int y = 0; y < height; ++y) {
+                     uint *dest = reinterpret_cast<uint *>(destination->scanLine(y));
+                     BYTE *src = alphaValues + width * y;
 diff --git a/src/gui/text/windows/qwindowsfontenginedirectwrite_p.h b/src/gui/text/windows/qwindowsfontenginedirectwrite_p.h
-index c9f05fecd51..75dfb2fd58d 100644
+index c9f05fecd51..cf50f353829 100644
 --- a/src/gui/text/windows/qwindowsfontenginedirectwrite_p.h
 +++ b/src/gui/text/windows/qwindowsfontenginedirectwrite_p.h
-@@ -163,6 +163,7 @@ private:
-                         DWRITE_RENDERING_MODE renderMode) const;
+@@ -151,7 +151,8 @@ private:
+                          const QFixedPoint &subPixelPosition,
+                          int margin,
+                          const QTransform &xform,
+-                         const QColor &color = QColor());
++                         const QColor &color = QColor(),
++                         bool grayscale = false);
+     void collectMetrics();
+     void renderGlyphRun(QImage *destination,
+                         float r,
+@@ -160,9 +161,10 @@ private:
+                         float a,
+                         IDWriteGlyphRunAnalysis *glyphAnalysis,
+                         const QRect &boundingRect,
+-                        DWRITE_RENDERING_MODE renderMode) const;
++                        DWRITE_TEXTURE_TYPE textureType) const;
      static QString filenameFromFontFile(IDWriteFontFile *fontFile);
      DWRITE_RENDERING_MODE hintingPreferenceToRenderingMode(const QFontDef &fontDef) const;
-+    bool fontSmoothingDisabled() const;
++    bool fontSmoothingDisabled(const QFontDef &fontDef) const;
  
      const QSharedPointer<QWindowsFontEngineData> m_fontEngineData;
  
