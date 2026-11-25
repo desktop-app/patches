@@ -1,3 +1,36 @@
+diff --git a/src/plugins/platforms/wayland/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp b/src/plugins/platforms/wayland/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
+index 445c9a4855d..37c6748645e 100644
+--- a/src/plugins/platforms/wayland/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
++++ b/src/plugins/platforms/wayland/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
+@@ -19,6 +19,7 @@
+ #include <QtWaylandClient/private/qwaylandabstractdecoration_p.h>
+ 
+ #include <QtGui/QGuiApplication>
++#include <QtGui/private/qhighdpiscaling_p.h>
+ #include <QtGui/private/qwindow_p.h>
+ 
+ QT_BEGIN_NAMESPACE
+@@ -835,9 +836,10 @@ std::unique_ptr<QWaylandXdgSurface::Positioner> QWaylandXdgSurface::createPositi
+     }
+ 
+     // Override with properties fauxAPI
++    const auto parentFactor = QHighDpiScaling::factor(parent->window());
+     const QVariant placementAnchorVariant = m_window->window()->property("_q_waylandPopupAnchorRect");
+     if (placementAnchorVariant.isValid())
+-        placementAnchor = placementAnchorVariant.toRect();
++        placementAnchor = QHighDpi::scale(placementAnchorVariant.toRect(), parentFactor);
+     const QVariant anchorVariant = m_window->window()->property("_q_waylandPopupAnchor");
+     if (anchorVariant.isValid())
+         anchor = anchorVariant.value<Qt::Edges>();
+@@ -849,7 +851,7 @@ std::unique_ptr<QWaylandXdgSurface::Positioner> QWaylandXdgSurface::createPositi
+         constraintAdjustment = constraintAdjustmentVariant.toUInt();
+     const QVariant offsetVariant = m_window->window()->property("_q_waylandPopupOffset");
+     if (offsetVariant.isValid())
+-        offset = offsetVariant.toPoint();
++        offset = QHighDpi::scale(offsetVariant.toPoint(), parentFactor);
+ 
+     // set_popup expects a position relative to the parent
+     QRect windowGeometry = m_window->windowContentGeometry();
 diff --git a/src/plugins/platforms/wayland/qwaylandwindow.cpp b/src/plugins/platforms/wayland/qwaylandwindow.cpp
 index 5b997f3a9ce..f838c129a7e 100644
 --- a/src/plugins/platforms/wayland/qwaylandwindow.cpp
