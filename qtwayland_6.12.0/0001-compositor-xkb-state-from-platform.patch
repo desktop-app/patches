@@ -1,8 +1,8 @@
 diff --git a/src/compositor/CMakeLists.txt b/src/compositor/CMakeLists.txt
-index f9d2bcf2..8a77fd46 100644
+index 3cb18fdc..905198d4 100644
 --- a/src/compositor/CMakeLists.txt
 +++ b/src/compositor/CMakeLists.txt
-@@ -67,6 +67,7 @@ qt_internal_add_module(WaylandCompositor
+@@ -69,6 +69,7 @@ qt_internal_add_module(WaylandCompositor
          Qt::CorePrivate
          Qt::GuiPrivate
          Qt::WaylandGlobalPrivate
@@ -10,7 +10,7 @@ index f9d2bcf2..8a77fd46 100644
      PUBLIC_LIBRARIES
          Qt::Core
          Qt::Gui
-@@ -75,6 +76,7 @@ qt_internal_add_module(WaylandCompositor
+@@ -77,6 +78,7 @@ qt_internal_add_module(WaylandCompositor
          Qt::CorePrivate
          Qt::GuiPrivate
          Qt::WaylandGlobalPrivate
@@ -19,10 +19,10 @@ index f9d2bcf2..8a77fd46 100644
          "^qwayland-.*\.h|^wayland-.*-protocol\.h"
      ATTRIBUTION_FILE_DIR_PATHS
 diff --git a/src/compositor/compositor_api/qwaylandkeyboard.cpp b/src/compositor/compositor_api/qwaylandkeyboard.cpp
-index 8af7fbd8..fd511ed9 100644
+index 358c6453..8d018e32 100644
 --- a/src/compositor/compositor_api/qwaylandkeyboard.cpp
 +++ b/src/compositor/compositor_api/qwaylandkeyboard.cpp
-@@ -10,9 +10,14 @@
+@@ -11,9 +11,14 @@
  #include <QtWaylandCompositor/QWaylandSeat>
  #include <QtWaylandCompositor/QWaylandClient>
  
@@ -37,7 +37,7 @@ index 8af7fbd8..fd511ed9 100644
  #include <QKeyEvent>
  #include <fcntl.h>
  #include <unistd.h>
-@@ -147,6 +152,23 @@ void QWaylandKeyboardPrivate::sendKeyEvent(uint code, uint32_t state)
+@@ -153,6 +158,23 @@ void QWaylandKeyboardPrivate::sendKeyEvent(uint code, uint32_t state)
  }
  
  #if QT_CONFIG(xkbcommon)
@@ -61,11 +61,66 @@ index 8af7fbd8..fd511ed9 100644
  void QWaylandKeyboardPrivate::maybeUpdateXkbScanCodeTable()
  {
      if (!scanCodesByQtKey.isEmpty() || !xkbState())
+@@ -201,7 +223,7 @@ void QWaylandKeyboardPrivate::updateModifierState(uint code, uint32_t state)
+     if (!xkbContext())
+         return;
+ 
+-    xkb_state_update_key(xkbState(), code, state == WL_KEYBOARD_KEY_STATE_PRESSED ? XKB_KEY_DOWN : XKB_KEY_UP);
++    xkb_state_update_key(mXkbState.get(), code, state == WL_KEYBOARD_KEY_STATE_PRESSED ? XKB_KEY_DOWN : XKB_KEY_UP);
+ 
+     uint32_t modsDepressed = xkb_state_serialize_mods(xkbState(), XKB_STATE_MODS_DEPRESSED);
+     uint32_t modsLatched = xkb_state_serialize_mods(xkbState(), XKB_STATE_MODS_LATCHED);
+@@ -246,6 +268,11 @@ void QWaylandKeyboardPrivate::updateModifierState(uint code, uint32_t state)
+ // see http://lists.freedesktop.org/archives/wayland-devel/2013-October/011395.html
+ void QWaylandKeyboardPrivate::maybeUpdateKeymap()
+ {
++#if QT_CONFIG(xkbcommon)
++    if (xkbContext() && xkb_state_get_keymap(xkbState()) != xkb_state_get_keymap(mXkbState.get()))
++        pendingKeymap = true;
++#endif
++
+     // There must be no keys pressed when changing the keymap,
+     // see http://lists.freedesktop.org/archives/wayland-devel/2013-October/011395.html
+     if (!pendingKeymap || !keys.isEmpty())
+@@ -262,7 +289,7 @@ void QWaylandKeyboardPrivate::maybeUpdateKeymap()
+         send_keymap(res->handle, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, keymap_fd, keymap_size);
+     }
+ 
+-    xkb_state_update_mask(xkbState(), 0, modsLatched, modsLocked, 0, 0, 0);
++    xkb_state_update_mask(mXkbState.get(), 0, modsLatched, modsLocked, 0, 0, 0);
+     if (focusResource)
+         send_modifiers(focusResource->handle,
+                        compositor()->nextSerial(),
+@@ -372,6 +399,12 @@ void QWaylandKeyboardPrivate::createXKBKeymap()
+     if (!xkbContext())
+         return;
+ 
++    if (xkbState() != mXkbState.get()) {
++        scanCodesByQtKey.clear();
++        createXKBState(xkb_state_get_keymap(xkbState()));
++        return;
++    }
++
+     QWaylandKeymap *keymap = seat->keymap();
+     QByteArray rules = keymap->rules().toLocal8Bit();
+     QByteArray model = keymap->model().toLocal8Bit();
+@@ -524,6 +557,11 @@ void QWaylandKeyboard::sendKeyReleaseEvent(uint code)
+ void QWaylandKeyboardPrivate::checkAndRepairModifierState(QKeyEvent *ke)
+ {
+ #if QT_CONFIG(xkbcommon)
++    if (xkbState() != mXkbState.get()) {
++        updateModifierState(ke->nativeScanCode(), WL_KEYBOARD_KEY_STATE_PRESSED);
++        return;
++    }
++
+     if (ke->modifiers() != currentModifierState) {
+         if (focusResource && ke->key() != Qt::Key_Shift
+                 && ke->key() != Qt::Key_Control && ke->key() != Qt::Key_Alt
 diff --git a/src/compositor/compositor_api/qwaylandkeyboard_p.h b/src/compositor/compositor_api/qwaylandkeyboard_p.h
-index a91c60e4..5d975faa 100644
+index 53b6a2fe..6c21606c 100644
 --- a/src/compositor/compositor_api/qwaylandkeyboard_p.h
 +++ b/src/compositor/compositor_api/qwaylandkeyboard_p.h
-@@ -51,7 +51,7 @@ public:
+@@ -52,7 +52,7 @@ public:
      void focused(QWaylandSurface* surface);
  
  #if QT_CONFIG(xkbcommon)
