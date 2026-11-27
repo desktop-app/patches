@@ -1,0 +1,134 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Date: Sat, 28 Nov 2026 12:00:00
+Subject: [PATCH] Blend subpixel text on Windows like Chromium does
+
+Subpixel glyph coverage is blended with gamma correction by the system
+ClearType gamma, 1.4 by default. That keeps light text on dark backgrounds
+noticeably thinner than in Chromium, while dark text on light backgrounds
+comes out a bit lighter.
+
+Do what Skia does in Chromium on Windows instead: adjust the coverage by
+a table picked by the text color, built for sRGB with contrast 1.0, and
+blend plainly.
+
+diff --git a/src/gui/painting/qdrawhelper.cpp b/src/gui/painting/qdrawhelper.cpp
+index d86ac81..d0f267b 100644
+--- a/src/gui/painting/qdrawhelper.cpp
++++ b/src/gui/painting/qdrawhelper.cpp
+@@ -6066,6 +6066,78 @@ static void qt_alphargbblit_generic(QRasterBuffer *rasterBuffer,
+ }
+ #endif
+ 
++#if defined(Q_OS_WIN)
++// Skia's SkTMaskGamma_build_correcting_lut with Chromium's Windows settings: sRGB, contrast 1.0.
++static constexpr int TextCoverageLuminanceBits = 3;
++
++static float textSrgbToLinear(float value)
++{
++    return value <= 0.04045f
++            ? value / 12.92f
++            : std::pow((value + 0.055f) / 1.055f, 2.4f);
++}
++
++static float textLinearToSrgb(float value)
++{
++    return value <= 0.0031308f
++            ? value * 12.92f
++            : 1.055f * std::pow(value, 1.0f / 2.4f) - 0.055f;
++}
++
++static void buildTextCoverageTable(uchar *table, int srcI, float contrast)
++{
++    const float src = srcI / 255.0f;
++    const float linearSrc = textSrgbToLinear(src);
++    // The background is unknown, so guess the perceptual inverse of the text.
++    const float dst = 1.0f - src;
++    const float linearDst = textSrgbToLinear(dst);
++    const float adjustedContrast = contrast * linearDst;
++    for (int i = 0; i < 256; ++i) {
++        const float rawCoverage = i / 255.0f;
++        const float coverage = rawCoverage
++                + (1.0f - rawCoverage) * adjustedContrast * rawCoverage;
++        float result = coverage;
++        if (std::abs(src - dst) >= 1.0f / 256.0f) {
++            const float out = textLinearToSrgb(
++                    linearSrc * coverage + (1.0f - coverage) * linearDst);
++            // Undo what the plain blend will do.
++            result = (out - dst) / (src - dst);
++        }
++        table[i] = uchar(std::clamp(std::lround(result * 255.0f), 0L, 255L));
++    }
++}
++
++namespace {
++struct TextCoverageTables
++{
++    TextCoverageTables()
++    {
++        for (int i = 0; i < (1 << TextCoverageLuminanceBits); ++i) {
++            // Scale the luminance bucket to 0..255 by repeating its bits.
++            buildTextCoverageTable(tables[i], (i << 5) | (i << 2) | (i >> 1), 1.0f);
++        }
++    }
++
++    const uchar *forChannel(int value) const
++    {
++        return tables[value >> (8 - TextCoverageLuminanceBits)];
++    }
++
++    uchar tables[1 << TextCoverageLuminanceBits][256];
++};
++} // namespace
++#endif // Q_OS_WIN
++
++static inline uint adjustTextCoverage(uint coverage, const uchar *const *tables)
++{
++    if (!tables)
++        return coverage;
++    return (coverage & 0xff000000)
++            | (uint(tables[0][qRed(coverage)]) << 16)
++            | (uint(tables[1][qGreen(coverage)]) << 8)
++            | uint(tables[2][qBlue(coverage)]);
++}
++
+ static void qt_alphargbblit_argb32(QRasterBuffer *rasterBuffer,
+                                    int x, int y, const QRgba64 &color,
+                                    const uint *src, int mapWidth, int mapHeight, int srcStride,
+@@ -6077,6 +6149,19 @@ static void qt_alphargbblit_argb32(QRasterBuffer *rasterBuffer,
+     const quint32 c = color.toArgb32();
+ 
+     const QColorTrcLut *colorProfile = nullptr;
++    const uchar *const *coverageTables = nullptr;
++
++#if defined(Q_OS_WIN)
++    const uchar *channelTables[3] = {};
++    if (useGammaCorrection && color.isOpaque()) {
++        static const TextCoverageTables tables;
++        channelTables[0] = tables.forChannel(qRed(c));
++        channelTables[1] = tables.forChannel(qGreen(c));
++        channelTables[2] = tables.forChannel(qBlue(c));
++        coverageTables = channelTables;
++        useGammaCorrection = false;
++    }
++#endif
+ 
+     if (useGammaCorrection)
+         colorProfile = QGuiApplicationPrivate::instance()->colorProfileForA32Text();
+@@ -6090,7 +6175,7 @@ static void qt_alphargbblit_argb32(QRasterBuffer *rasterBuffer,
+         const int destStride = rasterBuffer->stride<quint32>();
+         while (--mapHeight >= 0) {
+             for (int i = 0; i < mapWidth; ++i) {
+-                const uint coverage = src[i];
++                const uint coverage = adjustTextCoverage(src[i], coverageTables);
+                 alphargbblend_argb32(dst + i, coverage, srcColor, c, colorProfile);
+             }
+ 
+@@ -6116,7 +6201,7 @@ static void qt_alphargbblit_argb32(QRasterBuffer *rasterBuffer,
+                 int end = qMin<int>(x + mapWidth, clip.x + clip.len);
+ 
+                 for (int xp=start; xp<end; ++xp) {
+-                    const uint coverage = src[xp - x];
++                    const uint coverage = adjustTextCoverage(src[xp - x], coverageTables);
+                     alphargbblend_argb32(dst + xp, coverage, srcColor, c, colorProfile);
+                 }
+             } // for (i -> line.count)
