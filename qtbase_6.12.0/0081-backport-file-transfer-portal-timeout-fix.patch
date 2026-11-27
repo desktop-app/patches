@@ -1,0 +1,31 @@
+From fdcaec3ea6b620c0d9a6df5504425355684ffb5a Mon Sep 17 00:00:00 2001
+From: David Redondo <qt@david-redondo.de>
+Date: Wed, 25 Nov 2026 16:36:48 +0100
+Subject: [PATCH] QXdgDesktopPortalFileTransfer: Increase timeout to 5 second
+
+10 milliseconds can be not enough for example for snap operations, when
+they talk to the portal it launches another process to get info about the
+application which can take a while.
+The document portal also runs a snap process for every file the app wants
+to access.
+5 seconds is kinda long but measuring shows it's needed.
+
+Change-Id: I61d8d30f7610c927310d823c5115c819ba6073b3
+Reviewed-by: David Edmundson <davidedmundson@kde.org>
+Reviewed-by: Ilya Fedin <fedin-ilja2010@ya.ru>
+(cherry picked from commit 9d6d5dd79f168ab397240ef085f44b0e02691a24)
+---
+
+diff --git a/src/gui/platform/unix/qxdgdesktopportalfiletransfer.cpp b/src/gui/platform/unix/qxdgdesktopportalfiletransfer.cpp
+index 6301dea..ba85151 100644
+--- a/src/gui/platform/unix/qxdgdesktopportalfiletransfer.cpp
++++ b/src/gui/platform/unix/qxdgdesktopportalfiletransfer.cpp
+@@ -28,7 +28,7 @@
+ constexpr auto portalService = "org.freedesktop.portal.Documents"_L1;
+ constexpr auto portalPath = "/org/freedesktop/portal/documents"_L1;
+ constexpr auto fileTransferInterface = "org.freedesktop.portal.FileTransfer"_L1;
+-constexpr int portalWaitTimeMs = 10;
++constexpr int portalWaitTimeMs = 5000;
+ 
+ QLatin1StringView fileTransferMimeType()
+ {

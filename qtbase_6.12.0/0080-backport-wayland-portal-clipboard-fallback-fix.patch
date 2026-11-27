@@ -1,0 +1,29 @@
+From 0b5d94dc5244275df8034beee0fa94d85908bf99 Mon Sep 17 00:00:00 2001
+From: David Redondo <qt@david-redondo.de>
+Date: Wed, 25 Nov 2026 16:45:08 +0100
+Subject: [PATCH] QWaylandDataOffer: Fix fallback when retrieving from portal fails
+
+mime at this point is the type for the token but we want to fetch data
+for the original mimetype. Just go through retrieveData_sys again which
+will handle also conversion to/from mozUrl.
+
+Change-Id: I5309109e955aafee700162f7184012f4921dd638
+Reviewed-by: Ilya Fedin <fedin-ilja2010@ya.ru>
+Reviewed-by: David Edmundson <davidedmundson@kde.org>
+(cherry picked from commit a04ad5abafc064888927f03e501ca7f627163fc6)
+---
+
+diff --git a/src/plugins/platforms/wayland/qwaylanddataoffer.cpp b/src/plugins/platforms/wayland/qwaylanddataoffer.cpp
+index 5ec7f07..78b562a 100644
+--- a/src/plugins/platforms/wayland/qwaylanddataoffer.cpp
++++ b/src/plugins/platforms/wayland/qwaylanddataoffer.cpp
+@@ -236,7 +236,8 @@
+             }
+         } else {
+             qCInfo(lcQpaWayland) << "Failed retrieving files, falling back to uris";
+-            content = readData(mime).value_or(QByteArray());
++            m_types.removeAll(QXdgDesktopPortalFileTransfer::fileTransferMimeType());
++            return retrieveData_sys(uriList(), type);
+         }
+     }
+ #endif
